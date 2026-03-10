@@ -4,6 +4,7 @@ S3 equivalent of sparse_storage_benchmark.py.
 Reads data already uploaded by sparse_storage_setup_s3.py.
 """
 
+import asyncio
 import time
 
 import lancedb
@@ -13,8 +14,8 @@ import scipy.sparse as sp
 import zarr
 from obstore.store import S3Store
 from zarr.storage import ObjectStore
-from zarrs.utils import ChunkItem
-from zarrs.pipeline import get_codec_pipeline_impl
+
+from lancell.batch_selection import ObstoreShardReader
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -62,37 +63,7 @@ def query_two_tbl(meta_tbl, blob_tbl, where: str) -> tuple[pd.DataFrame, list, l
     return obs, gi, cv
 
 
-
-def batch_read_zarr(impl, starts, ends, shard_shape):
-    starts = np.asarray(starts, dtype=np.int64)
-    ends = np.asarray(ends, dtype=np.int64)
-    lengths = ends - starts
-    total_rows = int(lengths.sum())
-    shard_rows = shard_shape[0]
-
-    items = []
-    out_offset = 0
-    for i in range(len(starts)):
-        s = int(starts[i])
-        e = int(ends[i])
-        while s < e:
-            shard_idx = s // shard_rows
-            local_start = s % shard_rows
-            chunk_len = min(e, (shard_idx + 1) * shard_rows) - s
-            items.append(ChunkItem(
-                key=f"c/{shard_idx}/0",
-                chunk_subset=[slice(local_start, local_start + chunk_len)],
-                chunk_shape=shard_shape,
-                subset=[slice(out_offset, out_offset + chunk_len)],
-                shape=(total_rows,),
-            ))
-            out_offset += chunk_len
-            s += chunk_len
-
-    return items, total_rows, lengths
-
-
-def query_zarr(meta_tbl, indices_arr, counts_arr, where: str) -> tuple[pd.DataFrame, list, list]:
+def query_zarr_obstore(meta_tbl, reader_indices, reader_counts, where: str) -> tuple[pd.DataFrame, list, list]:
     meta = meta_tbl.search().where(where).select(
         METADATA_COLS + ["zarr_start", "zarr_end"]
     ).to_arrow().to_pydict()
@@ -101,23 +72,15 @@ def query_zarr(meta_tbl, indices_arr, counts_arr, where: str) -> tuple[pd.DataFr
     starts = np.array(meta["zarr_start"], dtype=np.int64)
     ends = np.array(meta["zarr_end"], dtype=np.int64)
 
-    # Build chunk items once (same layout for both arrays)
-    indices_impl = get_codec_pipeline_impl(indices_arr.metadata, indices_arr.store, strict=True)
-    counts_impl = get_codec_pipeline_impl(counts_arr.metadata, counts_arr.store, strict=True)
-    shard_shape = indices_arr.shards
-    items, total_rows, lengths = batch_read_zarr(indices_impl, starts, ends, shard_shape)
+    async def _fetch():
+        return await asyncio.gather(
+            reader_indices.read_ranges(starts, ends),
+            reader_counts.read_ranges(starts, ends),
+        )
+    (gi_flat, gi_lengths), (cv_flat, cv_lengths) = asyncio.run(_fetch())
 
-    out_indices = np.empty(total_rows, dtype=np.int32)
-    indices_impl.retrieve_chunks_and_apply_index(items, out_indices)
-
-    out_counts = np.empty(total_rows, dtype=np.float32)
-    counts_impl.retrieve_chunks_and_apply_index(items, out_counts)
-
-    # Split flat arrays into per-cell lists
-    splits = np.cumsum(lengths.astype(np.int64))[:-1]
-    gi_list = np.split(out_indices, splits)
-    cv_list = np.split(out_counts, splits)
-
+    gi_list = np.split(gi_flat, np.cumsum(gi_lengths)[:-1])
+    cv_list = np.split(cv_flat, np.cumsum(cv_lengths)[:-1])
     return obs, gi_list, cv_list
 
 
@@ -146,7 +109,7 @@ def bench(name: str, fn, queries: list[tuple[str, str]]):
         med_load = np.median(load_times)
         med_csr = np.median(csr_times)
         med_total = med_load + med_csr
-        results[label] = {"load": med_load, "csr": med_csr, "total": med_total, "n": n}
+        results[label] = {"load": med_load, "csr": med_csr, "total": med_total, "n": n, "mat": mat}
         print(f"  {name:<22s} | {label:<16s} | n={n:>6d} | load={med_load:.4f}s | csr={med_csr:.4f}s | total={med_total:.4f}s")
     return results
 
@@ -171,19 +134,53 @@ def main():
     print(f"Zarr indices: shape={indices_arr.shape}, shards={indices_arr.shards}")
     print(f"Zarr counts:  shape={counts_arr.shape}, shards={counts_arr.shards}")
 
+    # Create obstore-based shard readers
+    indices_s3 = S3Store(
+        "epiblast",
+        prefix="lancell_data_structure_test/approach3_indices.zarr/",
+        region="us-east-2",
+    )
+    counts_s3 = S3Store(
+        "epiblast",
+        prefix="lancell_data_structure_test/approach3_counts.zarr/",
+        region="us-east-2",
+    )
+    reader_indices = ObstoreShardReader(indices_s3, indices_arr)
+    reader_counts = ObstoreShardReader(counts_s3, counts_arr)
+
     print(f"\n--- Benchmark ({N_REPEATS} repeats, median) ---\n")
     r1 = bench("blob_column", lambda w: query_blob_col(tbl1, w), QUERIES)
     print()
     r2 = bench("two_tables", lambda w: query_two_tbl(meta2, blob2, w), QUERIES)
     print()
-    r3 = bench("zarr", lambda w: query_zarr(meta3, indices_arr, counts_arr, w), QUERIES)
+    r3 = bench("zarr_obstore", lambda w: query_zarr_obstore(meta3, reader_indices, reader_counts, w), QUERIES)
+
+    # Verify all approaches return identical results
+    all_benches = [("blob_col", r1), ("two_tbl", r2), ("zarr_obstore", r3)]
+    print("\n--- Verifying result consistency across all approaches ---")
+    for _, label in QUERIES:
+        ref_name, ref = all_benches[0]
+        ref_mat = ref[label]["mat"]
+        for cmp_name, cmp in all_benches[1:]:
+            cmp_mat = cmp[label]["mat"]
+            try:
+                assert ref_mat.shape == cmp_mat.shape, (
+                    f"[{label}] shape mismatch: {ref_name} {ref_mat.shape} vs {cmp_name} {cmp_mat.shape}"
+                )
+                diff = ref_mat - cmp_mat
+                assert diff.nnz == 0, (
+                    f"[{label}] data mismatch: {ref_name} vs {cmp_name} ({diff.nnz} differing elements)"
+                )
+                print(f"  {label}: {ref_name} == {cmp_name} OK ({ref_mat.shape[0]} cells)")
+            except AssertionError as e:
+                print(f"  {label}: {ref_name} != {cmp_name} FAIL: {e}")
 
     # Summary
     labels = [label for _, label in QUERIES]
-    all_results = [("blob_col", r1), ("two_tbl", r2), ("zarr", r3)]
+    all_results = [("blob_col", r1), ("two_tbl", r2), ("zarr_obstore", r3)]
 
-    print(f"\n{'='*80}")
-    print(f"{'':>26s} | {'blob_col':>24s} | {'two_tbl':>24s} | {'zarr':>24s}")
+    print(f"\n{'='*96}")
+    print(f"{'':>26s} | {'blob_col':>24s} | {'two_tbl':>24s} | {'zarr_obstore':>24s}")
     print(f"{'Query':<18s} {'N':>6s} | {'load':>8s} {'csr':>8s} {'total':>8s}| {'load':>8s} {'csr':>8s} {'total':>8s}| {'load':>8s} {'csr':>8s} {'total':>8s}")
     print(f"{'-'*106}")
     for label in labels:
