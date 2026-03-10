@@ -16,7 +16,7 @@ import zarr
 from obstore.store import S3Store
 from zarr.storage import ObjectStore
 
-from lancell.batch_selection import ObstoreShardReader
+from lancell.batch_selection import BatchAsyncArray
 
 ALL_METHODS = ["one_table", "two_table", "zarr_obstore"]
 
@@ -162,8 +162,8 @@ def main():
         print(f"Zarr indices: shape={indices_arr.shape}, shards={indices_arr.shards}")
         print(f"Zarr counts:  shape={counts_arr.shape}, shards={counts_arr.shards}")
 
-        reader_indices = ObstoreShardReader(indices_arr)
-        reader_counts = ObstoreShardReader(counts_arr)
+        reader_indices = BatchAsyncArray.from_array(indices_arr)
+        reader_counts = BatchAsyncArray.from_array(counts_arr)
         r3 = bench("zarr_obstore", lambda w: query_zarr_obstore(meta3, reader_indices, reader_counts, w), QUERIES)
         all_benches.append(("zarr_obstore", r3))
         print()

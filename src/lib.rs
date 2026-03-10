@@ -7,6 +7,7 @@ use std::sync::Arc;
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3_object_store::AnyObjectStore;
 use rayon::prelude::*;
 use tokio::runtime::Runtime;
 
@@ -16,7 +17,6 @@ use zarrs::array::{
     CodecOptions, DataType, FillValue,
 };
 use zarrs::metadata::ConfigurationSerialize;
-use zarrs_object_store::object_store::aws::{AmazonS3, AmazonS3Builder};
 use zarrs_object_store::object_store::path::Path as ObjectPath;
 use zarrs_object_store::object_store::{ObjectStore, ObjectStoreExt};
 use zarrs_object_store::AsyncObjectStore;
@@ -33,17 +33,19 @@ struct SubchunkRef {
     elem_end: usize,   // end offset within decoded subchunk (elements)
 }
 
-/// A fast shard reader for zarr sharded arrays stored on S3.
+/// A fast shard reader for zarr sharded arrays.
 ///
 /// Uses zarrs at init time for metadata extraction and inner codec chain reconstruction.
-/// At read time, performs batched S3 I/O via `object_store::get_ranges` (one call per shard)
+/// At read time, performs batched I/O via `object_store::get_ranges` (one call per shard)
 /// and decodes subchunks with zarrs' `CodecChain::decode`.
+///
+/// Works with any object store backend supported by obstore (S3, GCS, Azure, local, etc.).
 #[pyclass]
-struct RustShardReader {
+struct RustBatchReader {
     /// zarrs array (for chunk_key encoding)
-    array: Arc<Array<AsyncObjectStore<AmazonS3>>>,
-    /// Direct S3 access for batched I/O
-    s3: Arc<AmazonS3>,
+    array: Arc<Array<AsyncObjectStore<Arc<dyn ObjectStore>>>>,
+    /// Direct store access for batched I/O
+    store: Arc<dyn ObjectStore>,
     /// Inner codec chain (reconstructed from sharding config)
     inner_codecs: Arc<CodecChain>,
     /// Index codec chain (for decoding shard indexes)
@@ -68,7 +70,7 @@ struct RustShardReader {
 // Internal helpers (non-pymethod)
 // ---------------------------------------------------------------------------
 
-impl RustShardReader {
+impl RustBatchReader {
     /// Phase 1: Map element ranges to subchunk references, grouped by shard.
     ///
     /// Returns per-range subchunk refs and a deduplicated shard→subchunk-indices map.
@@ -129,7 +131,7 @@ impl RustShardReader {
         (range_refs, shard_subchunks)
     }
 
-    /// Phase 2: Fetch shard indexes and compressed subchunk data from S3.
+    /// Phase 2: Fetch shard indexes and compressed subchunk data from the store.
     ///
     /// For each shard, resolves the object key, fetches/caches the shard index,
     /// then issues a single `get_ranges` call for all needed subchunks.
@@ -141,7 +143,7 @@ impl RustShardReader {
         let shard_tasks: Vec<_> = shard_subchunks
             .into_iter()
             .map(|(shard_idx, needed_subchunks)| {
-                let s3 = self.s3.clone();
+                let store = self.store.clone();
                 let array = self.array.clone();
                 let cache = self.shard_index_cache.clone();
                 let index_codecs = self.index_codecs.clone();
@@ -160,13 +162,13 @@ impl RustShardReader {
                             idx.clone()
                         } else {
                             drop(cache_guard);
-                            let meta = s3
+                            let meta = store
                                 .head(&path)
                                 .await
                                 .map_err(|e| format!("HEAD shard {shard_idx}: {e}"))?;
                             let shard_len = meta.size as u64;
                             let index_start = shard_len - index_encoded_size as u64;
-                            let index_bytes = s3
+                            let index_bytes = store
                                 .get_range(&path, index_start..shard_len)
                                 .await
                                 .map_err(|e| format!("GET index shard {shard_idx}: {e}"))?;
@@ -223,7 +225,7 @@ impl RustShardReader {
                     let fetched = if byte_ranges.is_empty() {
                         vec![]
                     } else {
-                        s3.get_ranges(&path, &byte_ranges)
+                        store.get_ranges(&path, &byte_ranges)
                             .await
                             .map_err(|e| format!("get_ranges shard {shard_idx}: {e}"))?
                     };
@@ -335,44 +337,26 @@ impl RustShardReader {
 }
 
 #[pymethods]
-impl RustShardReader {
+impl RustBatchReader {
     #[new]
     fn new(py_zarr_array: &Bound<'_, PyAny>) -> PyResult<Self> {
-        // 1. Extract S3 config from arr.store.store (obstore S3Store)
+        // 1. Extract obstore from zarr array and convert to Arc<dyn ObjectStore>
         let store_wrapper = py_zarr_array.getattr("store")?;
-        let s3_store = store_wrapper.getattr("store")?;
-        let config = s3_store.getattr("config")?;
-        let bucket: String = config
-            .call_method1("get", ("bucket", ""))?
-            .extract()?;
-        let region: String = config
-            .call_method1("get", ("region", "us-east-2"))?
-            .extract()?;
-        let prefix: String = s3_store
-            .getattr("prefix")?
-            .extract::<Option<String>>()?
-            .unwrap_or_default();
+        let obstore = store_wrapper.getattr("store")?;
+        let any_store: AnyObjectStore = obstore.extract()?;
+        let store: Arc<dyn ObjectStore> = any_store.into_dyn();
 
-        // 2. Build S3 (keep Arc for direct batched I/O)
-        let s3 = AmazonS3Builder::new()
-            .with_bucket_name(&bucket)
-            .with_region(&region)
-            .build()
-            .map_err(|e| PyRuntimeError::new_err(format!("failed to create S3 store: {e}")))?;
-        let s3 = Arc::new(s3);
-
-        // 3. Build zarrs Array for metadata extraction
-        let store = Arc::new(AsyncObjectStore::new((*s3).clone()));
+        // 2. Build zarrs Array for metadata extraction
+        let zarrs_store = Arc::new(AsyncObjectStore::new(Arc::clone(&store)));
         let runtime = Arc::new(
             Runtime::new()
                 .map_err(|e| PyRuntimeError::new_err(format!("tokio runtime: {e}")))?,
         );
-        let prefix_normalized = prefix.trim_matches('/');
         let array = runtime
-            .block_on(Array::async_open(store, &format!("/{prefix_normalized}")))
+            .block_on(Array::async_open(zarrs_store, "/"))
             .map_err(|e| PyRuntimeError::new_err(format!("failed to open zarr array: {e}")))?;
 
-        // 4. Extract metadata
+        // 3. Extract metadata
         let dtype_size = array
             .data_type()
             .fixed_size()
@@ -391,7 +375,7 @@ impl RustShardReader {
         let chunk_size = subchunk_shape[0].get() as usize;
         let chunks_per_shard = shard_size / chunk_size;
 
-        // 5. Extract inner codec chain from sharding configuration
+        // 4. Extract inner codec chain from sharding configuration
         let codec_chain = array.codecs();
         let a2b_codec = codec_chain.array_to_bytes_codec();
         let configuration = a2b_codec
@@ -415,7 +399,7 @@ impl RustShardReader {
                 .map_err(|e| PyRuntimeError::new_err(format!("index codecs: {e}")))?,
         );
 
-        // 6. Compute index encoded size
+        // 5. Compute index encoded size
         let index_shape: Vec<NonZeroU64> = vec![
             NonZeroU64::new(chunks_per_shard as u64).unwrap(),
             NonZeroU64::new(2).unwrap(),
@@ -439,7 +423,7 @@ impl RustShardReader {
 
         Ok(Self {
             array: Arc::new(array),
-            s3,
+            store,
             inner_codecs,
             index_codecs,
             subchunk_shape: subchunk_shape.to_vec(),
@@ -486,8 +470,8 @@ impl RustShardReader {
         // Phases 2-4 run without the GIL
         let runtime = self.runtime.clone();
         let (flat_data, lengths_vec) = py
-            .allow_threads(|| -> Result<(Vec<u8>, Vec<i64>), String> {
-                // Phase 2: Fetch compressed data from S3
+            .detach(|| -> Result<(Vec<u8>, Vec<i64>), String> {
+                // Phase 2: Fetch compressed data from the store
                 let (compressed, fills) = runtime.block_on(
                     self.fetch_shard_data(shard_subchunks)
                 )?;
@@ -508,6 +492,6 @@ impl RustShardReader {
 
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<RustShardReader>()?;
+    m.add_class::<RustBatchReader>()?;
     Ok(())
 }

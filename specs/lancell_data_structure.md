@@ -8,8 +8,8 @@ By having a single manifest table for all cells we effectively remove the need f
 - Handling multimodal cells?
   - Just load the relevant zarr paths and feature space columns. Can construct the AnnDatas separately.
 - Handling chromosomes and bulk data?
-- Linking perturbations directly to DNA (how possible is this?)
-  - This is great for some kinds of perturbations which target enhancers and promoters and let's us query perturbations by genomic loci instead of plain gene name.
+- Linking perturbations directly to DNA (how possible is this from guide barcodes, what if we don't have the guides?)
+  - This is great for some kinds of perturbations which target enhancers and promoters and it let's us query perturbations by genomic loci instead of plain gene name.
 - Reference genome arrays (or tables with 1 base per?)
   - Can store the gene name annotations in the columns
 - Add columns for each zarr feature space (lance handles column addition quite well). Extremely fast DNA read requests for contiguous regions, from zarr or from table.

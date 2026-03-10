@@ -8,12 +8,13 @@ name = "_rust"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"] }
-numpy = "0.23"
+pyo3 = { version = "0.27", features = ["extension-module"] }
+numpy = "0.27"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 rayon = "1"
 
 # zarrs for metadata + codec chain (no I/O at read time)
 zarrs = { version = "0.23", default-features = false, features = ["async", "sharding", "zstd", "crc32c"] }
-zarrs_object_store = { version = "0.6", features = ["aws"] }
-# object_store comes transitively via zarrs_object_store
+zarrs_object_store = "0.6"
+# Accept any object_store backend from Python via obstore
+pyo3-object_store = "0.8"
