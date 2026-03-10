@@ -255,22 +255,11 @@ class ObstoreShardReader:
         self.zstd_codec = Zstd()
         self.chunk_bytes = self.chunk_size * self.dtype.itemsize
 
-        # Create Rust reader if available
+        # Create Rust reader if available (extracts S3 config from arr.store internally)
         self._rust_reader = None
         if _HAS_RUST:
             try:
-                config = s3_store.config
-                bucket = config.get("bucket", "")
-                region = config.get("region", "us-east-2")
-                prefix = s3_store.prefix or ""
-                self._rust_reader = RustShardReader(
-                    bucket=bucket,
-                    prefix=prefix,
-                    region=region,
-                    chunk_size=self.chunk_size,
-                    shard_size=self.shard_size,
-                    dtype=self.dtype.name,
-                )
+                self._rust_reader = RustShardReader(arr)
             except Exception as e:
                 print(f"    [warn] Failed to create RustShardReader, using Python fallback: {e}")
 

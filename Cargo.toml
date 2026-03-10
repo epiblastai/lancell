@@ -1,0 +1,19 @@
+[package]
+name = "lancell"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+rayon = "1"
+
+# zarrs for metadata + codec chain (no I/O at read time)
+zarrs = { version = "0.23", default-features = false, features = ["async", "sharding", "zstd", "crc32c"] }
+zarrs_object_store = { version = "0.6", features = ["aws"] }
+# object_store comes transitively via zarrs_object_store
