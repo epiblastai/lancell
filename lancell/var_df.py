@@ -8,8 +8,6 @@ The var_df is a parquet file with one row per local feature.  Row *i*
 corresponds to local feature index *i* in the dataset's zarr arrays.
 """
 
-from __future__ import annotations
-
 import io
 from typing import TYPE_CHECKING
 
