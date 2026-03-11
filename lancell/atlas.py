@@ -76,8 +76,8 @@ def _extract_pointer_fields(
             if t is type(None):
                 continue
             if t is SparseZarrPointer or t is DenseZarrPointer:
-                # TODO: Enforce this in validation for the LancellBaseSchema
                 # Convention: field name == FeatureSpace value.
+                # Enforced at class-definition time in LancellBaseSchema.__init_subclass__.
                 # We use the field name (not t.feature_space) because t is
                 # the *type* SparseZarrPointer, not an instance — there's no
                 # .feature_space value to read at class-introspection time.

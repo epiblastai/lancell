@@ -76,13 +76,19 @@ class LancellBaseSchema(LanceModel):
                 inner_types = get_args(annotation)
             else:
                 inner_types = (annotation,)
-            # TODO: The name of the field must be a value in `FeatureSpace`, because we
-            # need this when parsing the schema to know which registry to look up in.
             if any(
                 t is SparseZarrPointer or t is DenseZarrPointer
                 for t in inner_types
                 if t is not type(None)
             ):
+                # Validate that the field name is a valid FeatureSpace value,
+                # because we use the field name to look up the registry.
+                valid_values = {fs.value for fs in FeatureSpace}
+                if name not in valid_values:
+                    raise TypeError(
+                        f"{cls.__name__}.{name}: pointer field name must match "
+                        f"a FeatureSpace value. Valid values: {sorted(valid_values)}"
+                    )
                 return  # found one, we're good
         raise TypeError(
             f"{cls.__name__} must declare at least one SparseZarrPointer or DenseZarrPointer field"
