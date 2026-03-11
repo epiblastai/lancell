@@ -255,11 +255,15 @@ class RaggedAtlas:
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
 
-        # TODO: We don't have to validate everything, but we 100% need
-        # to validate that global_index is contiguous and unique for any
-        # and all registry_tables. It's an absolute nightmare if that's
-        # broken. The feature registry tables themselves are generally quite
-        # small so this ought to be cheap to do and worth it for sanity.
+        # Eagerly validate that global_index is contiguous 0..N-1 within each
+        # registry table. A broken index silently corrupts every remap and
+        # every reconstructed AnnData — worth catching on open even though
+        # the tables are small.
+        registry_errors = self._validate_registries()
+        if registry_errors:
+            raise ValueError(
+                f"Registry validation failed at init: {registry_errors}"
+            )
 
     # -- Construction -------------------------------------------------------
 
