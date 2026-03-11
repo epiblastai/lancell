@@ -4,7 +4,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Self
 
-from lancedb.pydantic import LanceModel
+import pyarrow as pa
+from lancedb.pydantic import LanceModel, Vector
 from pydantic import Field, model_validator
 
 
@@ -395,6 +396,50 @@ class CellIndex(LanceModel):
     perturbation_durations_hr: list[float] | None
     # List of json dump with additional metadata for each perturbation
     perturbation_additional_metadata: list[str] | None
+
+    # Private fields that define the zarr group and relevant ranges
+    # for loading data. Multimodal measurements might have zarr groups
+    # and ranges for for multiple feature spaces. All cells must have
+    # a measurement in at least 1 feature space.
+
+    # Points to a zarr group with `indices` as one array
+    # and another subgroup called `layers` with arrays for `counts`,
+    # `log_counts`, `log_normalized_counts`, etc.
+    _zarr_group_gene_expression: str | None = None
+    # Start and end index into the arrays. `indices` and all `layers`
+    # have identical layouts by construction.
+    _start_gene_expression: int | None = None
+    _end_gene_expression: int | None = None
+
+    # Points to a zarr group for chromatin accessibility data.
+    # May contain raw fragments, called peaks, or both.
+    _zarr_group_chromatin_accessibility: str | None = None
+    # Raw fragments: arrays for `fragment_starts`, `fragment_ends`
+    # (genomic coordinates). Stored so users can re-call peaks on
+    # a subset of cells.
+    _start_fragments: int | None = None
+    _end_fragments: int | None = None
+    # Peak counts: arrays for `indices` and `counts`, same COO
+    # pattern as gene expression. Feature mapping in group attrs
+    # maps local peak index → ReferenceSequenceSchema.uid + peak
+    # start/end coordinates.
+    _start_peaks: int | None = None
+    _end_peaks: int | None = None
+
+    # Both protein abundance and image features are expected to be
+    # dense arrays that can easily be stored as 2D cell x feature
+    # matrices. Only need the row index to load a cell. Top level
+    # group has a single dense array.
+    _zarr_group_protein_abundance: str | None = None
+    _index_protein_abundance: int | None = None
+    _zarr_group_image_features: str | None = None
+    _index_image_features: int | None = None
+    # Image tiles are similarly dense and we assume that they
+    # correspond to an (N, C, H, W) array where N is the number
+    # of tiles and C is channels. Chunks must not partition along
+    # C, H, or W. Only need the index for the first dimension.
+    _zarr_group_image_tiles: str | None = None
+    _index_image_tiles: int | None = None
 
     # Auto-filled field
     perturbation_search_string: str = ""
