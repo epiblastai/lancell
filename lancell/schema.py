@@ -86,7 +86,7 @@ class LancellBaseSchema(LanceModel):
     def _require_at_least_one_pointer(self):
         """Instance-time: at least one pointer must be non-None."""
         for name in self.model_fields:
-            if isinstance(getattr(self, name), (SparseZarrPointer, DenseZarrPointer)):
+            if isinstance(getattr(self, name), SparseZarrPointer | DenseZarrPointer):
                 return self
         raise ValueError(
             f"{type(self).__name__} requires at least one populated zarr pointer field"

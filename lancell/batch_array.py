@@ -2,7 +2,6 @@ import asyncio
 from functools import cached_property
 
 import numpy as np
-
 from zarr.core.array import Array, AsyncArray
 from zarr.core.sync import sync
 
@@ -72,9 +71,7 @@ class BatchArray(Array):
         async_array = BatchAsyncArray.from_array(array)
         return cls(async_array)
 
-    def read_ranges(
-        self, starts: np.ndarray, ends: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def read_ranges(self, starts: np.ndarray, ends: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Read element ranges from the sharded array.
 
         Parameters

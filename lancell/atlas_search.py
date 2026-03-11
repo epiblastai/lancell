@@ -9,8 +9,6 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 import scipy.sparse as sp
-from lancedb.query import FullTextOperator, MatchQuery
-
 from epiblast.multimodal_rag.ingestion_utils import lookup_gene_indices_from_table
 from epiblast.multimodal_rag.schema import (
     CHROMATIN_ACCESSIBILITY_TABLE,
@@ -20,6 +18,7 @@ from epiblast.multimodal_rag.schema import (
     IMAGE_TILES_TABLE,
     PROTEIN_ABUNDANCE_TABLE,
 )
+from lancedb.query import FullTextOperator, MatchQuery
 
 # Scalar-indexed columns on modality tables that support exact-match filtering.
 _SCALAR_FIELDS: dict[str, type] = {
