@@ -95,9 +95,17 @@ class LancellBaseSchema(LanceModel):
 
 class FeatureBaseSchema(LanceModel):
     """
-    Minimal schema for a feature space. For example, this could be a gene expression feature space
-    with `gene_name` as a field. Only a uid is strictly required however. Each zarr group dataset
-    has a mapping from its local feature space to the global feature space.
+    Minimal schema for a global feature registry entry.
+
+    Each feature space (e.g. genes, proteins) maintains its own registry where
+    every row is a unique feature. Subclass this to add modality-specific fields.
+
+    Fields:
+        uid: Canonical stable identifier. Safe to preserve across registry rebuilds.
+        global_index: Dense integer for compute paths (gather/scatter in NumPy,
+            PyTorch, Arrow, Rust). Unique within one feature registry. May be
+            reassigned on registry rebuild — use uid for durable references.
     """
 
     uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    global_index: int | None = None

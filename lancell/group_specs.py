@@ -54,6 +54,7 @@ class ZarrGroupSpec(BaseModel):
 
     feature_space: FeatureSpace
     pointer_kind: PointerKind
+    has_var_df: bool = False
     required_arrays: list[ArraySpec] = []
     required_subgroups: list[SubgroupSpec] = []
 
@@ -129,6 +130,7 @@ class ZarrGroupSpec(BaseModel):
 GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.GENE_EXPRESSION,
     pointer_kind=PointerKind.SPARSE,
+    has_var_df=True,
     required_arrays=[
         ArraySpec(array_name="indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
     ],
@@ -157,6 +159,7 @@ CHROMATIN_FRAGMENT_SPEC = ZarrGroupSpec(
 CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.CHROMATIN_PEAK,
     pointer_kind=PointerKind.SPARSE,
+    has_var_df=True,
     required_arrays=[
         ArraySpec(array_name="peak_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
         ArraySpec(array_name="peak_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
@@ -166,6 +169,7 @@ CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
 PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.PROTEIN_ABUNDANCE,
     pointer_kind=PointerKind.DENSE,
+    has_var_df=True,
     required_arrays=[
         ArraySpec(array_name="data", ndim=2, dtype_kind=DTypeKind.FLOAT),
     ],
@@ -174,6 +178,7 @@ PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
 IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.IMAGE_FEATURES,
     pointer_kind=PointerKind.DENSE,
+    has_var_df=True,
     required_arrays=[
         ArraySpec(array_name="data", ndim=2, dtype_kind=DTypeKind.FLOAT),
     ],
