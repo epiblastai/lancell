@@ -9,7 +9,7 @@ the full API — no manifest file to maintain.
 import dataclasses
 import functools
 from collections import defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from types import UnionType
 from typing import Union, get_args, get_origin
 
@@ -23,8 +23,10 @@ import pyarrow as pa
 import scipy.sparse as sp
 import zarr
 
+from lancell.batch_array import BatchArray
 from lancell.group_specs import ZARR_SPECS, FeatureSpace, PointerKind, ZarrGroupSpec
 from lancell.schema import (
+    DatasetRecord,
     DenseZarrPointer,
     FeatureBaseSchema,
     LancellBaseSchema,
@@ -74,10 +76,11 @@ def _extract_pointer_fields(
             if t is type(None):
                 continue
             if t is SparseZarrPointer or t is DenseZarrPointer:
-                # We need to know which FeatureSpace this field is for.
-                # Convention: field name matches FeatureSpace value.
-                # e.g. field "gene_expression" -> FeatureSpace.GENE_EXPRESSION
-                # TODO: Confused on why this is using name instead of t.feature_space?
+                # TODO: Enforce this in validation for the LancellBaseSchema
+                # Convention: field name == FeatureSpace value.
+                # We use the field name (not t.feature_space) because t is
+                # the *type* SparseZarrPointer, not an instance — there's no
+                # .feature_space value to read at class-introspection time.
                 feature_space = _field_name_to_feature_space(name)
                 spec = ZARR_SPECS[feature_space]
                 pointer_kind = PointerKind.SPARSE if t is SparseZarrPointer else PointerKind.DENSE
@@ -108,6 +111,113 @@ def _field_name_to_feature_space(field_name: str) -> FeatureSpace:
 
 
 # ---------------------------------------------------------------------------
+# Pre-flight schema alignment
+# ---------------------------------------------------------------------------
+
+# Fields set automatically by the atlas — never expected in user-provided obs.
+_AUTO_FIELDS = {"uid", "dataset_uid"}
+
+
+def _schema_obs_fields(
+    cell_schema: type[LancellBaseSchema],
+) -> dict[str, bool]:
+    """Return {field_name: required} for user-supplied obs fields.
+
+    Excludes auto-generated fields (uid, dataset_uid) and pointer fields.
+    """
+    pointer_fields = _extract_pointer_fields(cell_schema)
+    result: dict[str, bool] = {}
+    for name, field_info in cell_schema.model_fields.items():
+        if name in _AUTO_FIELDS or name in pointer_fields:
+            continue
+        required = field_info.is_required()
+        result[name] = required
+    return result
+
+
+def validate_obs_columns(
+    obs: pd.DataFrame,
+    cell_schema: type[LancellBaseSchema],
+) -> list[str]:
+    """Validate that obs columns match the cell schema.
+
+    Parameters
+    ----------
+    obs:
+        The obs DataFrame from an AnnData.
+    cell_schema:
+        The schema class to validate against.
+
+    Returns
+    -------
+    list[str]
+        List of error strings. Empty list means valid.
+    """
+    errors: list[str] = []
+    schema_fields = _schema_obs_fields(cell_schema)
+    obs_cols = set(obs.columns)
+
+    for field_name, required in schema_fields.items():
+        if required and field_name not in obs_cols:
+            errors.append(f"Missing required column '{field_name}'")
+
+    return errors
+
+
+# TODO: I don't understand this function? I thought the purpose was to provide a mapping
+# of current adata.obs columns to their respective fields in cell_schema. This current function
+# just errors unless everything is already aligned. It only supports column dropping.
+def align_obs_to_schema(
+    adata: ad.AnnData,
+    cell_schema: type[LancellBaseSchema],
+    *,
+    inplace: bool = False,
+) -> ad.AnnData:
+    """Align an AnnData's obs to match a cell schema.
+
+    - Raises if required fields are missing.
+    - Adds ``None`` columns for optional fields not present.
+    - Drops extra columns not in the schema.
+
+    Parameters
+    ----------
+    adata:
+        The AnnData to align.
+    cell_schema:
+        The schema class to align to.
+    inplace:
+        If True, modify ``adata`` in place. Otherwise return a copy.
+
+    Returns
+    -------
+    ad.AnnData
+        The aligned AnnData.
+    """
+    errors = validate_obs_columns(adata.obs, cell_schema)
+    if errors:
+        raise ValueError(
+            f"Cannot align obs to schema: {errors}"
+        )
+
+    if not inplace:
+        adata = adata.copy()
+
+    schema_fields = _schema_obs_fields(cell_schema)
+    obs_cols = set(adata.obs.columns)
+
+    # Add None columns for optional fields not present
+    for field_name, required in schema_fields.items():
+        if not required and field_name not in obs_cols:
+            adata.obs[field_name] = None
+
+    # Drop extra columns not in schema
+    keep = [c for c in adata.obs.columns if c in schema_fields]
+    adata.obs = adata.obs[keep]
+
+    return adata
+
+
+# ---------------------------------------------------------------------------
 # RaggedAtlas
 # ---------------------------------------------------------------------------
 
@@ -124,23 +234,27 @@ class RaggedAtlas:
         db: lancedb.DBConnection,
         cell_table: lancedb.table.Table,
         cell_schema: type[LancellBaseSchema],
-        # TODO: Wouldn't it be better to pass a zarr group directly. We could
-        # create individual datasets as subgroups under the main group. Just
-        # simplifies the process of otherwise initializing zarr stores for every dataset.
-        store: obstore.store.ObjectStore,
-        pointer_fields: dict[str, PointerFieldInfo],
+        root: zarr.Group,
         registry_tables: dict[FeatureSpace, lancedb.table.Table],
+        dataset_table: lancedb.table.Table,
     ) -> None:
         self.db = db
         self.cell_table = cell_table
         self._cell_schema = cell_schema
-        self._store = store
-        self._zarr_store = zarr.storage.ObjectStore(store)
-        # TODO: Why are the next two variables passed in instead of extracted from the schema?
-        self._pointer_fields = pointer_fields
+        self._root = root
+        self._store = root.store.store
+        self._pointer_fields = _extract_pointer_fields(cell_schema)
         self._registry_tables = registry_tables
+        self._dataset_table = dataset_table
+        # TODO: Which of these should be LRU caches?
         self._remap_cache: dict[str, np.ndarray] = {}
-        self._zarr_group_cache: dict[str, zarr.Group] = {}
+        self._batch_reader_cache: dict[str, BatchArray] = {}
+
+        # TODO: We don't have to validate everything, but we 100% need
+        # to validate that global_index is contiguous and unique for any
+        # and all registry_tables. It's an absolute nightmare if that's
+        # broken. The feature registry tables themselves are generally quite
+        # small so this ought to be cheap to do and worth it for sanity.
 
     # -- Construction -------------------------------------------------------
 
@@ -171,10 +285,9 @@ class RaggedAtlas:
             Tables are created for each. Default table name convention:
             ``"{feature_space.value}_registry"``.
         """
-        pointer_fields = _extract_pointer_fields(cell_schema)
-
         db = lancedb.connect(db_uri)
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
+        dataset_table = db.create_table("_datasets", schema=DatasetRecord)
 
         registry_tables: dict[FeatureSpace, lancedb.table.Table] = {}
         if registry_schemas:
@@ -182,13 +295,15 @@ class RaggedAtlas:
                 table_name = f"{fs.value}_registry"
                 registry_tables[fs] = db.create_table(table_name, schema=schema_cls)
 
+        root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
+
         return cls(
             db=db,
             cell_table=cell_table,
             cell_schema=cell_schema,
-            store=store,
-            pointer_fields=pointer_fields,
+            root=root,
             registry_tables=registry_tables,
+            dataset_table=dataset_table,
         )
 
     @classmethod
@@ -220,11 +335,15 @@ class RaggedAtlas:
             Defaults to ``"{feature_space.value}_registry"`` for each
             feature space that has ``has_var_df=True`` in its spec.
         """
-        pointer_fields = _extract_pointer_fields(cell_schema)
-
         db = lancedb.connect(db_uri)
         cell_table = db.open_table(cell_table_name)
+        # TODO: Require dataset_table_name and dataset_schema as arguments instead
+        # of hardcoding.
+        dataset_table = db.open_table("_datasets")
 
+        # _extract_pointer_fields is called in __init__, but we need it here
+        # to resolve registry table names before constructing the atlas.
+        pointer_fields = _extract_pointer_fields(cell_schema)
         resolved_registries: dict[FeatureSpace, lancedb.table.Table] = {}
         for pf in pointer_fields.values():
             spec = ZARR_SPECS[pf.feature_space]
@@ -236,25 +355,18 @@ class RaggedAtlas:
                 table_name = f"{pf.feature_space.value}_registry"
             resolved_registries[pf.feature_space] = db.open_table(table_name)
 
+        root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
+
         return cls(
             db=db,
             cell_table=cell_table,
             cell_schema=cell_schema,
-            store=store,
-            pointer_fields=pointer_fields,
+            root=root,
             registry_tables=resolved_registries,
+            dataset_table=dataset_table,
         )
 
     # -- Store helpers ------------------------------------------------------
-
-    # TODO: I believe we could remove `_open_zarr_group` and  `_get_zarr_group_cached`
-    # if we path the zarr group directly in the pointer instead of the store + group name.
-    # Not sure if there's additional overhead to opening the zarr group (does it reread
-    # the json every time you call zarr_group[group_name]?). If so then we might want
-    # to keep the cache.
-    def _open_zarr_group(self, zarr_group: str, mode: str = "r") -> zarr.Group:
-        """Open a zarr group relative to the atlas store."""
-        return zarr.open_group(self._zarr_store, mode=mode, path=zarr_group)
 
     def _get_remap(self, zarr_group: str) -> np.ndarray:
         """Load a remap array, using the cache."""
@@ -262,11 +374,21 @@ class RaggedAtlas:
             self._remap_cache[zarr_group] = read_remap(self._store, zarr_group)
         return self._remap_cache[zarr_group]
 
-    def _get_zarr_group_cached(self, zarr_group: str) -> zarr.Group:
-        """Open a zarr group, using the cache."""
-        if zarr_group not in self._zarr_group_cache:
-            self._zarr_group_cache[zarr_group] = self._open_zarr_group(zarr_group)
-        return self._zarr_group_cache[zarr_group]
+    # Any reason not to use the built-in functools.lru_cache for this?
+    _BATCH_READER_CACHE_MAX = 64
+
+    def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchArray:
+        """Get a cached BatchArray reader for a zarr array."""
+        key = f"{zarr_group}/{array_name}"
+        if key not in self._batch_reader_cache:
+            if len(self._batch_reader_cache) >= self._BATCH_READER_CACHE_MAX:
+                # Evict oldest entry
+                oldest_key = next(iter(self._batch_reader_cache))
+                del self._batch_reader_cache[oldest_key]
+            self._batch_reader_cache[key] = BatchArray.from_array(
+                self._root[f"{zarr_group}/{array_name}"]
+            )
+        return self._batch_reader_cache[key]
 
     # -- Query entry point --------------------------------------------------
 
@@ -274,30 +396,108 @@ class RaggedAtlas:
         """Start building a query against this atlas."""
         return AtlasQuery(self)
 
+    # -- Feature registration -----------------------------------------------
+
+    def register_features(
+        self,
+        feature_space: FeatureSpace,
+        features: list[FeatureBaseSchema] | pl.DataFrame,
+    ) -> int:
+        """Register features in a feature registry.
+
+        Must be called before ``add_from_anndata`` for feature spaces that
+        have a registry (``has_var_df=True``).
+
+        Parameters
+        ----------
+        feature_space:
+            Which feature space to register features for.
+        features:
+            Either a list of ``FeatureBaseSchema`` records or a Polars
+            DataFrame with at minimum a ``uid`` column.
+
+        Returns
+        -------
+        int
+            Number of newly registered features.
+        """
+        if feature_space not in self._registry_tables:
+            raise ValueError(
+                f"No registry table for feature space '{feature_space.value}'. "
+                f"Ensure a registry schema was provided at create() time."
+            )
+        registry_table = self._registry_tables[feature_space]
+
+        if isinstance(features, pl.DataFrame):
+            if "uid" not in features.columns:
+                raise ValueError("features DataFrame must have a 'uid' column")
+            features_df = features
+        else:
+            features_df = pl.DataFrame([f.model_dump() for f in features])
+
+        uids = features_df["uid"].to_list()
+
+        # Load existing registry
+        existing_df = registry_table.search().select(["uid", "global_index"]).to_polars()
+        if existing_df.is_empty():
+            existing_uids: set[str] = set()
+            next_index = 0
+        else:
+            existing_uids = set(existing_df["uid"].to_list())
+            indexed = existing_df.filter(pl.col("global_index").is_not_null())
+            next_index = int(indexed["global_index"].max()) + 1 if not indexed.is_empty() else 0
+
+        new_uids = [u for u in uids if u not in existing_uids]
+        if not new_uids:
+            return 0
+
+        # Deduplicate preserving first occurrence
+        seen: set[str] = set()
+        unique_new: list[str] = []
+        for u in new_uids:
+            if u not in seen:
+                unique_new.append(u)
+                seen.add(u)
+
+        # Filter input to new unique uids, assign global_index
+        new_records = features_df.filter(pl.col("uid").is_in(unique_new)).unique(
+            subset=["uid"], keep="first"
+        )
+        # Sort to match unique_new order for index assignment
+        uid_order = {uid: i for i, uid in enumerate(unique_new)}
+        new_records = new_records.with_columns(
+            pl.col("uid").replace_strict(uid_order, return_dtype=pl.Int64).alias("_order")
+        ).sort("_order").drop("_order")
+        new_records = new_records.with_columns(
+            pl.Series("global_index", list(range(next_index, next_index + len(unique_new))))
+        )
+
+        (
+            registry_table.merge_insert(on="uid")
+            .when_not_matched_insert_all()
+            .execute(new_records)
+        )
+        return len(unique_new)
+
     # -- Writing: add_from_anndata ------------------------------------------
 
-    # TODO: I think we should have a separate `align_anndata_to_schema` method that
-    # handles the obs_to_schema work, adds null columns if there are things missing
-    # and has the option for doing the change inplace or return a new aligned adata.
-    # We assert in this function that the obs for that new anndata exactly matches the schema (except for
-    # uid and pointers). The makes adding a dataset a two-step process but means that
-    # we don't fail after writing array metadata.
     def add_from_anndata(
         self,
         adata: ad.AnnData,
         *,
         feature_space: FeatureSpace,
         zarr_group: str,
-        var_uid_column: str = "uid",
-        layer_name: str = "counts",
-        obs_to_schema: Callable[[pd.Series], dict] | None = None,
+        # TODO: layer_name should apply to dense data as well
+        layer_name: str | None = None,
         chunk_size: int = 4096,
         shard_size: int = 65536,
     ) -> int:
         """Ingest an AnnData into the atlas.
 
-        Writes zarr arrays, var_df sidecar, remap, registers features, and
-        inserts cell records into the cell table.
+        Writes zarr arrays, var_df sidecar, remap, and inserts cell records
+        into the cell table. Features must already be registered via
+        :meth:`register_features`, and ``adata.var`` must contain a
+        ``global_feature_uid`` column.
 
         Parameters
         ----------
@@ -308,13 +508,9 @@ class RaggedAtlas:
         zarr_group:
             Zarr group path (relative to atlas store) for this ingestion.
             Must be unique per ingestion call.
-        var_uid_column:
-            Column in ``adata.var`` containing stable feature UIDs.
         layer_name:
-            For sparse feature spaces, which layer name to write (e.g. "counts").
-        obs_to_schema:
-            Callable that maps an obs row (pd.Series) to extra schema fields.
-            If None, only uid and pointer fields are populated.
+            Required for sparse feature spaces — name of the layer to write
+            (e.g. "counts"). Unused for dense feature spaces.
         chunk_size:
             Zarr chunk size for 1D arrays.
         shard_size:
@@ -326,6 +522,19 @@ class RaggedAtlas:
             Number of cells ingested.
         """
         spec = ZARR_SPECS[feature_space]
+
+        if spec.pointer_kind is PointerKind.SPARSE and layer_name is None:
+            raise ValueError(
+                "layer_name is required for sparse feature spaces "
+                f"(feature_space='{feature_space.value}')"
+            )
+
+        # Pre-flight: validate obs columns match schema before any writes
+        obs_errors = validate_obs_columns(adata.obs, self._cell_schema)
+        if obs_errors:
+            raise ValueError(
+                f"obs columns do not match cell schema: {obs_errors}"
+            )
 
         # Find the pointer field for this feature space
         pointer_field = None
@@ -339,6 +548,20 @@ class RaggedAtlas:
                 f"for feature space '{feature_space.value}'"
             )
 
+        n_cells = adata.n_obs
+
+        # Create dataset record first (FK for cells)
+        dataset_record = DatasetRecord(
+            zarr_group=zarr_group,
+            feature_space=feature_space.value,
+            n_cells=n_cells,
+        )
+        dataset_arrow = pa.Table.from_pylist(
+            [dataset_record.model_dump()],
+            schema=DatasetRecord.to_arrow_schema(),
+        )
+        self._dataset_table.add(dataset_arrow)
+
         # Write zarr arrays
         if spec.pointer_kind is PointerKind.SPARSE:
             starts, ends = self._write_sparse_zarr(
@@ -347,17 +570,14 @@ class RaggedAtlas:
         else:
             self._write_dense_zarr(adata, zarr_group, chunk_size, shard_size)
 
-        # Write var_df sidecar and register features
+        # Write var_df sidecar
         if spec.has_var_df:
-            self._write_var_sidecar(adata, feature_space, zarr_group, var_uid_column)
+            self._write_var_sidecar(adata, feature_space, zarr_group)
 
-        # Build cell records
+        # Build cell records from obs columns
+        obs_field_names = list(_schema_obs_fields(self._cell_schema).keys())
         records = []
-        n_cells = adata.n_obs
         for i in range(n_cells):
-            row = adata.obs.iloc[i]
-            extra = obs_to_schema(row) if obs_to_schema else {}
-
             if spec.pointer_kind is PointerKind.SPARSE:
                 pointer = SparseZarrPointer(
                     feature_space=feature_space,
@@ -372,7 +592,16 @@ class RaggedAtlas:
                     position=i,
                 )
 
-            record_kwargs = {pointer_field.field_name: pointer, **extra}
+            extra = {
+                col: adata.obs.iloc[i][col]
+                for col in obs_field_names
+                if col in adata.obs.columns
+            }
+            record_kwargs = {
+                pointer_field.field_name: pointer,
+                "dataset_uid": dataset_record.uid,
+                **extra,
+            }
             records.append(self._cell_schema(**record_kwargs))
 
         arrow_schema = self._cell_schema.to_arrow_schema()
@@ -382,11 +611,6 @@ class RaggedAtlas:
         self.cell_table.add(arrow_table)
         return n_cells
 
-    # TODO: The pattern here with layer_name is correct for gene expression where
-    # we often store derived features like logcounts. The current group_specs aren't
-    # organized this way for things like peaks or even dense features. But they probably
-    # should be. E.g., we might store normalized peak counts or normalized image features, etc.
-    # so the subgroup + layers pattern is general.
     def _write_sparse_zarr(
         self,
         adata: ad.AnnData,
@@ -403,16 +627,16 @@ class RaggedAtlas:
         starts = csr.indptr[:-1].astype(np.int64)
         ends = csr.indptr[1:].astype(np.int64)
 
-        root = zarr.open_group(self._zarr_store, mode="w", path=zarr_group)
+        group = self._root.create_group(zarr_group)
 
-        root.create_array(
+        group.create_array(
             "indices",
             data=flat_indices,
             chunks=(chunk_size,),
             shards=(shard_size,),
         )
 
-        layers = root.create_group("layers")
+        layers = group.create_group("layers")
         layers.create_array(
             layer_name,
             data=flat_values,
@@ -432,92 +656,40 @@ class RaggedAtlas:
         """Write dense data to a 2D zarr array."""
         data = np.asarray(adata.X, dtype=np.float32)
 
-        root = zarr.open_group(self._zarr_store, mode="w", path=zarr_group)
+        group = self._root.create_group(zarr_group)
 
         n_cells, n_features = data.shape
-        root.create_array(
+        group.create_array(
             "data",
             data=data,
             chunks=(chunk_size, n_features),
             shards=(shard_size, n_features),
         )
 
-    # TODO: We should require that `global_feature_uid` is already in the
-    # anndata. The user might need to manually lookup the right global_feature_uid
-    # to harmonize their data. We can provide helper functions for that later.
     def _write_var_sidecar(
         self,
         adata: ad.AnnData,
         feature_space: FeatureSpace,
         zarr_group: str,
-        var_uid_column: str,
     ) -> None:
-        """Write var.parquet, register features, and write remap."""
+        """Write var.parquet and remap.parquet for a dataset.
+
+        Requires ``global_feature_uid`` in ``adata.var`` and features to
+        already be registered via :meth:`register_features`.
+        """
         var_df = pl.from_pandas(adata.var.reset_index())
-        if var_uid_column not in var_df.columns:
+        if "global_feature_uid" not in var_df.columns:
             raise ValueError(
-                f"adata.var must have column '{var_uid_column}' for feature UIDs"
+                "adata.var must have a 'global_feature_uid' column. "
+                "Set it before calling add_from_anndata()."
             )
-        # Rename to the canonical column name
-        if var_uid_column != "global_feature_uid":
-            var_df = var_df.rename({var_uid_column: "global_feature_uid"})
 
         write_var_df(self._store, zarr_group, var_df)
 
-        # Register features in the registry then build remap
         if feature_space in self._registry_tables:
             registry_table = self._registry_tables[feature_space]
-            self._register_features(feature_space, var_df, registry_table)
-
-            # Build and write remap
             remap = build_remap(var_df, registry_table)
             write_remap(self._store, zarr_group, remap)
-
-    # TODO: I would make this a public method and require the user to provide a list
-    # of new records only with the correct schema to register to the feature table. It will be
-    # the users responsibility to register new features, get their global_feature_uids,
-    # and add them to the var_df of the AnnData before trying to write.
-    def _register_features(
-        self,
-        feature_space: FeatureSpace,
-        var_df: pl.DataFrame,
-        registry_table: lancedb.table.Table,
-    ) -> None:
-        """Register new features, assigning incremental global_index values."""
-        uids = var_df["global_feature_uid"].to_list()
-
-        # Load existing registry
-        existing_df = registry_table.search().select(["uid", "global_index"]).to_polars()
-        if existing_df.is_empty():
-            existing_uids: set[str] = set()
-            next_index = 0
-        else:
-            existing_uids = set(existing_df["uid"].to_list())
-            indexed = existing_df.filter(pl.col("global_index").is_not_null())
-            next_index = int(indexed["global_index"].max()) + 1 if not indexed.is_empty() else 0
-
-        new_uids = [u for u in uids if u not in existing_uids]
-        if not new_uids:
-            return
-
-        # Deduplicate (a var_df might have repeated uids, though validation should catch that)
-        seen: set[str] = set()
-        unique_new: list[str] = []
-        for u in new_uids:
-            if u not in seen:
-                unique_new.append(u)
-                seen.add(u)
-
-        # Assign incremental global indices to new features
-        new_records = pl.DataFrame({
-            "uid": unique_new,
-            "global_index": list(range(next_index, next_index + len(unique_new))),
-        })
-        (
-            registry_table.merge_insert(on="uid")
-            .when_not_matched_insert_all()
-            .execute(new_records)
-        )
 
     # -- Validation ---------------------------------------------------------
 
@@ -564,26 +736,20 @@ class RaggedAtlas:
 
         return errors
 
-    # TODO: It's problematic if we have to load the whole cell
-    # table into memory to collect a list of unique zarr groups (this could 
-    # easily be billions of rows). This probably suggests the need for a 
-    # `DatasetBaseSchema` tables that stores the
-    # a zarr group path for each feature space.
     def _collect_zarr_groups(self) -> dict[FeatureSpace, set[str]]:
-        """Scan cell table for unique zarr_group values per feature space."""
+        """Collect unique zarr groups per feature space from the dataset table."""
         result: dict[FeatureSpace, set[str]] = defaultdict(set)
-        all_cells = self.cell_table.search().to_polars()
-
-        for pf in self._pointer_fields.values():
-            col = pf.field_name
-            if col not in all_cells.columns:
-                continue
-            zg_series = all_cells[col].struct.field("zarr_group")
-            # Filter out empty strings (LanceDB stores None structs as zero-valued)
-            groups = zg_series.filter(zg_series != "").unique().to_list()
-            result[pf.feature_space].update(groups)
-
+        datasets_df = self._dataset_table.search().to_polars()
+        if datasets_df.is_empty():
+            return result
+        for row in datasets_df.iter_rows(named=True):
+            fs = FeatureSpace(row["feature_space"])
+            result[fs].add(row["zarr_group"])
         return result
+
+    def list_datasets(self) -> pl.DataFrame:
+        """Return a Polars DataFrame of all ingested datasets."""
+        return self._dataset_table.search().to_polars()
 
     def _validate_registries(self) -> list[str]:
         errors: list[str] = []
@@ -610,7 +776,7 @@ class RaggedAtlas:
         for fs, groups in zarr_groups_by_space.items():
             spec = ZARR_SPECS[fs]
             for zg in groups:
-                group = self._open_zarr_group(zg)
+                group = self._root[zg]
                 group_errors = spec.validate_group(group)
                 for e in group_errors:
                     errors.append(f"zarr group '{zg}': {e}")
@@ -631,7 +797,7 @@ class RaggedAtlas:
             for zg in groups:
                 # Validate var_df
                 var_df = read_var_df(self._store, zg)
-                group = self._open_zarr_group(zg)
+                group = self._root[zg]
                 vd_errors = validate_var_df(var_df, spec=spec, group=group, registry_table=registry)
                 for e in vd_errors:
                     errors.append(f"var_df '{zg}': {e}")
@@ -790,44 +956,40 @@ class AtlasQuery:
         spec: ZarrGroupSpec,
     ) -> ad.AnnData:
         """Reconstruct sparse data (e.g. gene expression) across zarr groups."""
-        col = pf.field_name
+        # Determine index array name from spec's required_arrays
+        if len(spec.required_arrays) != 1:
+            raise NotImplementedError(
+                f"Sparse reconstruction for feature space '{pf.feature_space.value}' "
+                f"is not yet supported (requires {len(spec.required_arrays)} "
+                f"primary arrays: {[a.array_name for a in spec.required_arrays]})"
+            )
+        index_array_name = spec.required_arrays[0].array_name
 
-        # Unnest struct and filter to rows with non-empty zarr_group
-        struct_df = cells_pl[col].struct.unnest()
-        cells_pl = cells_pl.with_columns(
-            struct_df["zarr_group"].alias("_zg"),
-            struct_df["start"].alias("_start"),
-            struct_df["end"].alias("_end"),
-        )
-        cells_pl = cells_pl.filter(pl.col("_zg") != "")
-        if cells_pl.is_empty():
+        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
+        if not groups:
             return ad.AnnData()
 
-        groups = cells_pl["_zg"].unique().to_list()
+        _, union_globals, group_remap_to_union, n_features = _load_remaps_and_union(
+            self._atlas, groups, spec
+        )
 
-        # Load remaps for union feature space
-        group_remaps: dict[str, np.ndarray] = {}
-        if spec.has_var_df:
-            for zg in groups:
-                group_remaps[zg] = self._atlas._get_remap(zg)
-
-        # Build union feature space
-        if group_remaps:
-            union_globals, group_remap_to_union = _build_union_feature_space(group_remaps)
-            n_features = len(union_globals)
-        else:
-            union_globals = np.array([], dtype=np.int32)
-            group_remap_to_union = {}
-            n_features = 0
-
-        # Determine which layers to read
-        # TODO: When we generalize layers, defaulting to `counts` won't make sense
-        layers_to_read = self._layer_overrides.get(pf.feature_space, ["counts"])
+        # Determine which layers to read (explicit opt-in only)
+        layers_to_read = self._layer_overrides.get(pf.feature_space)
+        if layers_to_read is None:
+            # Default: read required layers from spec's subgroup
+            layers_to_read = []
+            for sg in spec.required_subgroups:
+                if sg.required_arrays:
+                    layers_to_read.extend(a.array_name for a in sg.required_arrays)
+            if not layers_to_read:
+                raise ValueError(
+                    f"No layers specified and spec for '{pf.feature_space.value}' "
+                    f"has no required subgroup arrays"
+                )
 
         # Process each zarr group
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
         obs_parts: list[pl.DataFrame] = []
-        row_order: list[int] = []
 
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
@@ -835,22 +997,9 @@ class AtlasQuery:
             ends = group_cells["_end"].to_numpy().astype(np.int64)
             n_cells_group = len(starts)
 
-            zarr_group = self._atlas._get_zarr_group_cached(zg)
-            # TODO: as currently defined, chromosome accessibility measurements
-            # don't have indices, this will work for gene expression but not for peaks or
-            # fragments.
-            indices_arr = zarr_group["indices"]
-
-            # Read each cell's slice and concatenate
-            # TODO: No, need to wrap arrays in `BatchAsyncArray` and call `read_ranges`
-            # all in 1 go. See for example `scripts/sparse_storage_benchmark_s3.py`
-            all_cell_indices = []
-            lengths = np.empty(n_cells_group, dtype=np.int64)
-            for i in range(n_cells_group):
-                cell_indices = indices_arr[starts[i] : ends[i]]
-                all_cell_indices.append(cell_indices)
-                lengths[i] = len(cell_indices)
-            flat_indices = np.concatenate(all_cell_indices) if all_cell_indices else np.array([], dtype=np.uint32)
+            # Batch-read index array via Rust reader
+            indices_reader = self._atlas._get_batch_reader(zg, index_array_name)
+            flat_indices, lengths = indices_reader.read_ranges(starts, ends)
 
             # Remap local indices -> union positions
             if zg in group_remap_to_union:
@@ -863,19 +1012,12 @@ class AtlasQuery:
             indptr = np.zeros(n_cells_group + 1, dtype=np.int64)
             np.cumsum(lengths, out=indptr[1:])
 
-            # Read each layer
-            # TODO: See comment above about wrapping in `BatchAsyncArray`
-            # TODO: I wouldn't read all layers by default. User should have to
-            # provide layer_name which has no default. If None, only then do we load
-            # all layers. Even that's somewhat risky because there's no guarantee that
-            # all layers are present in every zarr group.
-            layers_group = zarr_group["layers"]
+            # Batch-read each layer
             for ln in layers_to_read:
-                layer_arr = layers_group[ln]
-                all_cell_values = []
-                for i in range(n_cells_group):
-                    all_cell_values.append(layer_arr[starts[i] : ends[i]])
-                flat_values = np.concatenate(all_cell_values) if all_cell_values else np.array([], dtype=np.float32)
+                layer_reader = self._atlas._get_batch_reader(
+                    zg, f"{spec.required_subgroups[0].subgroup_name}/{ln}"
+                )
+                flat_values, _ = layer_reader.read_ranges(starts, ends)
 
                 csr = sp.csr_matrix(
                     (flat_values, union_indices, indptr),
@@ -906,7 +1048,6 @@ class AtlasQuery:
         adata = ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
         return adata
 
-    # TODO: Feel like there's a lot of duplicated code between this and `_reconstruct_sparse`
     def _reconstruct_dense(
         self,
         cells_pl: pl.DataFrame,
@@ -914,33 +1055,13 @@ class AtlasQuery:
         spec: ZarrGroupSpec,
     ) -> ad.AnnData:
         """Reconstruct dense data (e.g. protein abundance) across zarr groups."""
-        col = pf.field_name
-
-        # Unnest struct and filter to rows with non-empty zarr_group
-        struct_df = cells_pl[col].struct.unnest()
-        cells_pl = cells_pl.with_columns(
-            struct_df["zarr_group"].alias("_zg"),
-            struct_df["position"].alias("_pos"),
-        )
-        cells_pl = cells_pl.filter(pl.col("_zg") != "")
-        if cells_pl.is_empty():
+        cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
+        if not groups:
             return ad.AnnData()
 
-        groups = cells_pl["_zg"].unique().to_list()
-
-        # Load remaps for union feature space
-        group_remaps: dict[str, np.ndarray] = {}
-        if spec.has_var_df:
-            for zg in groups:
-                group_remaps[zg] = self._atlas._get_remap(zg)
-
-        if group_remaps:
-            union_globals, group_remap_to_union = _build_union_feature_space(group_remaps)
-            n_union_features = len(union_globals)
-        else:
-            union_globals = np.array([], dtype=np.int32)
-            group_remap_to_union = {}
-            n_union_features = 0
+        _, union_globals, group_remap_to_union, n_union_features = _load_remaps_and_union(
+            self._atlas, groups, spec
+        )
 
         n_total_cells = cells_pl.height
         out = np.zeros((n_total_cells, n_union_features), dtype=np.float32)
@@ -952,7 +1073,7 @@ class AtlasQuery:
             positions = group_cells["_pos"].to_numpy().astype(np.intp)
             n_cells_group = len(positions)
 
-            group = self._atlas._open_zarr_group(zg)
+            group = self._atlas._root[zg]
             data_arr = group["data"]
             local_data = data_arr[positions, :]
 
@@ -991,6 +1112,75 @@ class AtlasQuery:
         if "uid" in var.columns:
             var = var.set_index("uid")
         return var
+
+
+# ---------------------------------------------------------------------------
+# Reconstruction helpers
+# ---------------------------------------------------------------------------
+
+
+def _prepare_sparse_cells(
+    cells_pl: pl.DataFrame,
+    pf: PointerFieldInfo,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Unnest sparse pointer struct, filter empty, return (filtered_df, unique_groups).
+
+    Adds internal columns ``_zg``, ``_start``, ``_end``.
+    """
+    col = pf.field_name
+    struct_df = cells_pl[col].struct.unnest()
+    cells_pl = cells_pl.with_columns(
+        struct_df["zarr_group"].alias("_zg"),
+        struct_df["start"].alias("_start"),
+        struct_df["end"].alias("_end"),
+    )
+    cells_pl = cells_pl.filter(pl.col("_zg") != "")
+    groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
+    return cells_pl, groups
+
+
+def _prepare_dense_cells(
+    cells_pl: pl.DataFrame,
+    pf: PointerFieldInfo,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Unnest dense pointer struct, filter empty, return (filtered_df, unique_groups).
+
+    Adds internal columns ``_zg``, ``_pos``.
+    """
+    col = pf.field_name
+    struct_df = cells_pl[col].struct.unnest()
+    cells_pl = cells_pl.with_columns(
+        struct_df["zarr_group"].alias("_zg"),
+        struct_df["position"].alias("_pos"),
+    )
+    cells_pl = cells_pl.filter(pl.col("_zg") != "")
+    groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
+    return cells_pl, groups
+
+
+def _load_remaps_and_union(
+    atlas: "RaggedAtlas",
+    groups: list[str],
+    spec: ZarrGroupSpec,
+) -> tuple[dict[str, np.ndarray], np.ndarray, dict[str, np.ndarray], int]:
+    """Load remaps for groups, build union feature space.
+
+    Returns (group_remaps, union_globals, group_remap_to_union, n_features).
+    """
+    group_remaps: dict[str, np.ndarray] = {}
+    if spec.has_var_df:
+        for zg in groups:
+            group_remaps[zg] = atlas._get_remap(zg)
+
+    if group_remaps:
+        union_globals, group_remap_to_union = _build_union_feature_space(group_remaps)
+        n_features = len(union_globals)
+    else:
+        union_globals = np.array([], dtype=np.int32)
+        group_remap_to_union = {}
+        n_features = 0
+
+    return group_remaps, union_globals, group_remap_to_union, n_features
 
 
 # ---------------------------------------------------------------------------

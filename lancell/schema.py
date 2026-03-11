@@ -1,3 +1,4 @@
+import datetime
 import uuid
 from types import UnionType
 from typing import Union, get_args, get_origin
@@ -62,18 +63,21 @@ class LancellBaseSchema(LanceModel):
     """
 
     uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    dataset_uid: str = ""
 
     def __init_subclass__(cls, **kwargs):
         """Class-definition-time: subclass must declare at least one pointer field."""
         super().__init_subclass__(**kwargs)
         for name, annotation in cls.__annotations__.items():
-            if name == "uid":
+            if name in ("uid", "dataset_uid"):
                 continue
             origin = get_origin(annotation)
             if origin is Union or isinstance(annotation, UnionType):
                 inner_types = get_args(annotation)
             else:
                 inner_types = (annotation,)
+            # TODO: The name of the field must be a value in `FeatureSpace`, because we
+            # need this when parsing the schema to know which registry to look up in.
             if any(
                 t is SparseZarrPointer or t is DenseZarrPointer
                 for t in inner_types
@@ -111,3 +115,15 @@ class FeatureBaseSchema(LanceModel):
 
     uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
     global_index: int | None = None
+
+
+class DatasetRecord(LanceModel):
+    """Metadata for a single ingested dataset."""
+
+    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    zarr_group: str
+    feature_space: str  # FeatureSpace value
+    n_cells: int
+    created_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )

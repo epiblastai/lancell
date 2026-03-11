@@ -353,17 +353,33 @@ impl RustBatchReader {
         let any_store: AnyObjectStore = obstore.extract()?;
         let store: Arc<dyn ObjectStore> = any_store.into_dyn();
 
-        // 2. Build zarrs Array for metadata extraction
+        // 2. Extract the array's path within the store.
+        //    zarr AsyncArray.store_path is a StorePath object; .path gives the
+        //    relative path string within the store.
+        let raw_path: String = py_zarr_array
+            .getattr("store_path")
+            .and_then(|sp| sp.getattr("path"))
+            .and_then(|s| s.extract())
+            .unwrap_or_else(|_| String::new());
+        let store_path = if raw_path.is_empty() {
+            "/".to_string()
+        } else if raw_path.starts_with('/') {
+            raw_path
+        } else {
+            format!("/{raw_path}")
+        };
+
+        // 3. Build zarrs Array for metadata extraction
         let zarrs_store = Arc::new(AsyncObjectStore::new(Arc::clone(&store)));
         let runtime = Arc::new(
             Runtime::new()
                 .map_err(|e| PyRuntimeError::new_err(format!("tokio runtime: {e}")))?,
         );
         let array = runtime
-            .block_on(Array::async_open(zarrs_store, "/"))
+            .block_on(Array::async_open(zarrs_store, &store_path))
             .map_err(|e| PyRuntimeError::new_err(format!("failed to open zarr array: {e}")))?;
 
-        // 3. Extract metadata
+        // 4. Extract metadata
         let dtype_size = array
             .data_type()
             .fixed_size()
@@ -392,7 +408,7 @@ impl RustBatchReader {
             .product::<usize>()
             * dtype_size;
 
-        // 4. Extract inner codec chain from sharding configuration
+        // 5. Extract inner codec chain from sharding configuration
         let codec_chain = array.codecs();
         let a2b_codec = codec_chain.array_to_bytes_codec();
         let configuration = a2b_codec
@@ -416,7 +432,7 @@ impl RustBatchReader {
                 .map_err(|e| PyRuntimeError::new_err(format!("index codecs: {e}")))?,
         );
 
-        // 5. Compute index encoded size
+        // 6. Compute index encoded size
         let index_shape: Vec<NonZeroU64> = vec![
             NonZeroU64::new(chunks_per_shard as u64).unwrap(),
             NonZeroU64::new(2).unwrap(),
