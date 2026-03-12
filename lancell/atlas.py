@@ -1326,11 +1326,9 @@ def _build_union_feature_space(
     """
     union_globals = functools.reduce(np.union1d, remaps.values()).astype(np.int32)
 
-    global_to_union = np.empty(union_globals.max() + 1, dtype=np.int32)
-    global_to_union[union_globals] = np.arange(len(union_globals), dtype=np.int32)
-
     group_remap_to_union = {
-        group: global_to_union[remap] for group, remap in remaps.items()
+        group: np.searchsorted(union_globals, remap).astype(np.int32)
+        for group, remap in remaps.items()
     }
     return union_globals, group_remap_to_union
 
