@@ -53,6 +53,11 @@ class DenseZarrPointer(LanceModel):
 ZarrPointer = SparseZarrPointer | DenseZarrPointer
 
 
+def make_uid() -> str:
+    """Generate a random 16-character hex uid."""
+    return uuid.uuid4().hex[:16]
+
+
 class LancellBaseSchema(LanceModel):
     """
     Base schema for all lancell datasets. The only requirements are a uid string
@@ -60,7 +65,7 @@ class LancellBaseSchema(LanceModel):
     into a feature space.
     """
 
-    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    uid: str = Field(default_factory=make_uid)
     dataset_uid: str = ""
 
     def __init_subclass__(cls, **kwargs):
@@ -117,14 +122,14 @@ class FeatureBaseSchema(LanceModel):
             reassigned on registry rebuild — use uid for durable references.
     """
 
-    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    uid: str = Field(default_factory=make_uid)
     global_index: int | None = None
 
 
 class DatasetRecord(LanceModel):
     """Metadata for a single ingested dataset."""
 
-    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    uid: str = Field(default_factory=make_uid)
     zarr_group: str
     feature_space: str  # FeatureSpace value
     n_cells: int
