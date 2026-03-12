@@ -245,6 +245,8 @@ class RaggedAtlas:
         root: zarr.Group,
         registry_tables: dict[FeatureSpace, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
+        *,
+        update_feature_registries: bool = True,
     ) -> None:
         self.db = db
         self.cell_table = cell_table
@@ -259,11 +261,14 @@ class RaggedAtlas:
         self._remap_cache: dict[tuple[str, FeatureSpace], tuple[int, np.ndarray]] = {}
         self._batch_reader_cache: dict[tuple[str, str], BatchArray] = {}
 
-        # Eagerly validate that global_index is contiguous 0..N-1 within each
+        # Validate that global_index is contiguous 0..N-1 within each
         # registry table. A broken index silently corrupts every remap and
-        # every reconstructed AnnData — worth catching on open even though
-        # the tables are small.
+        # every reconstructed AnnData.
         registry_errors = self._validate_registries()
+        if registry_errors and update_feature_registries:
+            for table in self._registry_tables.values():
+                reindex_registry(table)
+            registry_errors = self._validate_registries()
         if registry_errors:
             raise ValueError(
                 f"Registry validation failed at init: {registry_errors}"
@@ -282,6 +287,7 @@ class RaggedAtlas:
         *,
         store: obstore.store.ObjectStore,
         registry_schemas: dict[FeatureSpace, type[FeatureBaseSchema]],
+        update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Create a new atlas, initialising the LanceDB tables.
 
@@ -302,6 +308,11 @@ class RaggedAtlas:
         registry_schemas:
             Mapping of feature spaces to their registry schema classes.
             Table names default to ``"{feature_space.value}_registry"``.
+        update_feature_registries:
+            If ``True`` (default), automatically run
+            :func:`~lancell.var_df.reindex_registry` on any registry whose
+            ``global_index`` is not contiguous.  If ``False``, raise on
+            broken registries instead.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
@@ -321,6 +332,7 @@ class RaggedAtlas:
             root=root,
             registry_tables=registry_tables,
             dataset_table=dataset_table,
+            update_feature_registries=update_feature_registries,
         )
 
     @classmethod
@@ -333,6 +345,7 @@ class RaggedAtlas:
         *,
         store: obstore.store.ObjectStore,
         registry_tables: dict[FeatureSpace, str],
+        update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Open an existing atlas.
 
@@ -350,6 +363,11 @@ class RaggedAtlas:
             An obstore ObjectStore for zarr I/O.
         registry_tables:
             Mapping of feature spaces to LanceDB table names.
+        update_feature_registries:
+            If ``True`` (default), automatically run
+            :func:`~lancell.var_df.reindex_registry` on any registry whose
+            ``global_index`` is not contiguous.  If ``False``, raise on
+            broken registries instead.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.open_table(cell_table_name)
@@ -368,6 +386,7 @@ class RaggedAtlas:
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
+            update_feature_registries=update_feature_registries,
         )
 
     # -- Store helpers ------------------------------------------------------
