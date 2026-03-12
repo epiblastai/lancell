@@ -254,6 +254,10 @@ class RaggedAtlas:
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
 
+        # Instance-level caches (version-aware for remaps)
+        self._remap_cache: dict[tuple[str, FeatureSpace], tuple[int, np.ndarray]] = {}
+        self._batch_reader_cache: dict[tuple[str, str], BatchArray] = {}
+
         # Eagerly validate that global_index is contiguous 0..N-1 within each
         # registry table. A broken index silently corrupts every remap and
         # every reconstructed AnnData — worth catching on open even though
@@ -367,26 +371,45 @@ class RaggedAtlas:
 
     # -- Store helpers ------------------------------------------------------
 
-    @functools.lru_cache(maxsize=256)
     def _get_remap(self, zarr_group: str, feature_space: FeatureSpace) -> np.ndarray:
-        """Load remap, recomputing and saving if the registry version has changed."""
+        """Load remap, recomputing and saving if the registry version has changed.
+
+        Checks the registry table version on every call.  If the cached remap
+        was built against the current version it is returned immediately;
+        otherwise the remap is rebuilt from the var_df sidecar and persisted.
+        """
         registry_table = self._registry_tables[feature_space]
         current_version = registry_table.version
+        cache_key = (zarr_group, feature_space)
 
+        cached_entry = self._remap_cache.get(cache_key)
+        if cached_entry is not None:
+            cached_version, cached_remap = cached_entry
+            if cached_version == current_version:
+                return cached_remap
+
+        # In-memory cache miss or stale — try the on-disk remap
         group = self._root[zarr_group]
-        cached = read_remap_if_fresh(self._store, group, current_version)
-        if cached is not None:
-            return cached
+        disk_remap = read_remap_if_fresh(self._store, group, current_version)
+        if disk_remap is not None:
+            self._remap_cache[cache_key] = (current_version, disk_remap)
+            return disk_remap
 
+        # Rebuild from var_df + registry
         var_df = read_var_df(self._store, zarr_group)
         remap = build_remap(var_df, registry_table)
         write_remap(self._store, group, remap, registry_version=current_version)
+        self._remap_cache[cache_key] = (current_version, remap)
         return remap
 
-    @functools.lru_cache(maxsize=64)
     def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchArray:
         """Get a cached BatchArray reader for a zarr array."""
-        return BatchArray.from_array(self._root[f"{zarr_group}/{array_name}"])
+        cache_key = (zarr_group, array_name)
+        reader = self._batch_reader_cache.get(cache_key)
+        if reader is None:
+            reader = BatchArray.from_array(self._root[f"{zarr_group}/{array_name}"])
+            self._batch_reader_cache[cache_key] = reader
+        return reader
 
     # -- Query entry point --------------------------------------------------
 
@@ -1120,47 +1143,39 @@ class AtlasQuery:
             layer_names = list(spec.required_layers)
         layers_to_read = [ln.value for ln in layer_names] if layer_names else []
 
+        # Resolve array names: "layers/{ln}" for layered specs, "data" for plain
+        array_names = [f"layers/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
+        output_keys = layers_to_read if layers_to_read else ["data"]
+
         n_total_cells = cells_pl.height
-
-        # Dense arrays: one output matrix per layer
-        all_layers: dict[str, np.ndarray] = {}
-        for ln in layers_to_read:
-            all_layers[ln] = np.zeros((n_total_cells, n_union_features), dtype=np.float32)
-
-        # Fallback for specs without layers (e.g. IMAGE_TILES)
-        if not layers_to_read:
-            all_layers["data"] = np.zeros((n_total_cells, n_union_features), dtype=np.float32)
+        all_layers: dict[str, np.ndarray] = {
+            k: np.zeros((n_total_cells, n_union_features), dtype=np.float32)
+            for k in output_keys
+        }
 
         obs_parts: list[pl.DataFrame] = []
         offset = 0
 
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
-            positions = group_cells["_pos"].to_numpy().astype(np.intp)
+            positions = group_cells["_pos"].to_numpy().astype(np.int64)
             n_cells_group = len(positions)
 
-            group = self._atlas._root[zg]
+            # Build axis-0 ranges: each position is a single row [pos, pos+1)
+            starts = positions
+            ends = positions + 1
 
-            if layers_to_read:
-                layers_group = group["layers"]
-                for ln in layers_to_read:
-                    data_arr = layers_group[ln]
-                    local_data = data_arr[positions, :]
-                    if zg in group_remap_to_union:
-                        union_cols = group_remap_to_union[zg]
-                        all_layers[ln][offset : offset + n_cells_group][:, union_cols] = local_data
-                    else:
-                        n_local_features = local_data.shape[1]
-                        all_layers[ln][offset : offset + n_cells_group, :n_local_features] = local_data
-            else:
-                data_arr = group["data"]
-                local_data = data_arr[positions, :]
+            for array_name, out_key in zip(array_names, output_keys):
+                reader = self._atlas._get_batch_reader(zg, array_name)
+                flat_data, _ = reader.read_ranges(starts, ends)
+                n_local_features = flat_data.shape[0] // n_cells_group
+                local_data = flat_data.reshape(n_cells_group, n_local_features)
+
                 if zg in group_remap_to_union:
                     union_cols = group_remap_to_union[zg]
-                    all_layers["data"][offset : offset + n_cells_group][:, union_cols] = local_data
+                    all_layers[out_key][offset : offset + n_cells_group][:, union_cols] = local_data
                 else:
-                    n_local_features = local_data.shape[1]
-                    all_layers["data"][offset : offset + n_cells_group, :n_local_features] = local_data
+                    all_layers[out_key][offset : offset + n_cells_group, :n_local_features] = local_data
 
             obs_parts.append(group_cells)
             offset += n_cells_group
@@ -1169,10 +1184,10 @@ class AtlasQuery:
         obs = _build_obs_df(obs_pl)
         var = self._build_var(pf.feature_space, union_globals)
 
-        # First layer/array → X, rest → adata.layers
-        layer_keys = list(all_layers.keys())
-        X = all_layers[layer_keys[0]]
-        extra_layers = {k: all_layers[k] for k in layer_keys[1:]}
+        # First layer/array -> X, rest -> adata.layers
+        first_key = output_keys[0]
+        X = all_layers[first_key]
+        extra_layers = {k: all_layers[k] for k in output_keys[1:]}
 
         return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
 

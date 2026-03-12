@@ -272,6 +272,7 @@ def test_layer_name_required_for_sparse():
                 adata,
                 feature_space=FeatureSpace.GENE_EXPRESSION,
                 zarr_group="test_group",
+                layer_name=None,
             )
             assert False, "Should have raised ValueError for missing layer_name"
         except ValueError as e:
