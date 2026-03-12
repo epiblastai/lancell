@@ -788,15 +788,14 @@ class RaggedAtlas:
             df = table.search().select(["uid", "global_index"]).to_polars()
             if df.is_empty():
                 continue
-            # TODO: Actually we should be asserting that no rows have a null global_index
-            indexed = df.filter(pl.col("global_index").is_not_null())
-            if indexed.is_empty():
+            null_count = df["global_index"].null_count()
+            if null_count > 0:
                 errors.append(
-                    f"Registry '{fs.value}': no rows have global_index assigned. "
+                    f"Registry '{fs.value}': {null_count} row(s) have no global_index. "
                     f"Run reindex_registry(table) to fix."
                 )
                 continue
-            indices = sorted(indexed["global_index"].to_list())
+            indices = sorted(df["global_index"].to_list())
             expected = list(range(len(indices)))
             if indices != expected:
                 errors.append(
@@ -846,14 +845,44 @@ class AtlasQuery:
 
     def __init__(self, atlas: RaggedAtlas) -> None:
         self._atlas = atlas
+        self._search_query: np.ndarray | list[float] | str | None = None
+        self._search_kwargs: dict = {}
         self._where_clause: str | None = None
         self._limit_n: int | None = None
         self._feature_spaces: list[FeatureSpace] | None = None
         self._layer_overrides: dict[FeatureSpace, list[LayerName]] = {}
 
-    # TODO: We definitely want `search()` as a method because
-    # we want to make use of lance's powerful FTS and vector search
-    # capabilities.
+    def search(
+        self,
+        query: "np.ndarray | list[float] | str | None" = None,
+        *,
+        vector_column_name: str | None = None,
+        query_type: str = "auto",
+        fts_columns: str | list[str] | None = None,
+    ) -> "AtlasQuery":
+        """Add a vector or full-text search to the query.
+
+        Parameters are forwarded to ``lancedb.Table.search()``.
+
+        Parameters
+        ----------
+        query:
+            A vector (ndarray / list), full-text search string, or ``None``
+            for a full scan.
+        vector_column_name:
+            Which vector column to search against.
+        query_type:
+            One of ``"auto"``, ``"vector"``, ``"fts"``, or ``"hybrid"``.
+        fts_columns:
+            Column(s) to search for full-text queries.
+        """
+        self._search_query = query
+        self._search_kwargs = {
+            "vector_column_name": vector_column_name,
+            "query_type": query_type,
+            "fts_columns": fts_columns,
+        }
+        return self
 
     def where(self, condition: str) -> "AtlasQuery":
         """Add a SQL WHERE filter (LanceDB syntax)."""
@@ -879,7 +908,7 @@ class AtlasQuery:
 
     def _build_scanner(self) -> lancedb.table.Table:
         """Build a LanceDB query from the current state."""
-        q = self._atlas.cell_table.search()
+        q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._limit_n is not None:
