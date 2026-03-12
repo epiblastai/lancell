@@ -27,6 +27,16 @@ class PointerKind(str, Enum):
     DENSE = "dense"
 
 
+class LayerName(str, Enum):
+    RAW = "raw"
+    COUNTS = "counts"
+    LOG_NORMALIZED = "log_normalized"
+    TPM = "tpm"
+    CLR = "clr"
+    DSB = "dsb"
+    CTRL_STANDARDIZED = "ctrl_standardized"
+
+
 class ArraySpec(BaseModel):
     """Expected properties of a single zarr array."""
 
@@ -57,6 +67,8 @@ class ZarrGroupSpec(BaseModel):
     has_var_df: bool = False
     required_arrays: list[ArraySpec] = []
     required_subgroups: list[SubgroupSpec] = []
+    required_layers: list[LayerName] = []
+    allowed_layers: list[LayerName] = []
 
     def validate_group(self, group: zarr.Group) -> list[str]:
         """Validate a zarr group against this spec. Returns a list of errors."""
@@ -124,6 +136,29 @@ class ZarrGroupSpec(BaseModel):
                             f"shape {expected}"
                         )
 
+        # Check required layers
+        if self.required_layers:
+            if "layers" not in group or not isinstance(group["layers"], zarr.Group):
+                errors.append(
+                    f"Missing required 'layers' subgroup "
+                    f"(required layers: {[l.value for l in self.required_layers]})"
+                )
+            else:
+                layers_group = group["layers"]
+                for layer_name in self.required_layers:
+                    if layer_name.value not in layers_group:
+                        errors.append(f"Missing required layer '{layer_name.value}'")
+
+        # Check allowed layers (flag unknown arrays in layers/)
+        if self.allowed_layers and "layers" in group and isinstance(group["layers"], zarr.Group):
+            allowed_values = {l.value for l in self.allowed_layers}
+            for name, _ in group["layers"].arrays():
+                if name not in allowed_values:
+                    errors.append(
+                        f"Unknown layer '{name}' in layers/ subgroup. "
+                        f"Allowed: {sorted(allowed_values)}"
+                    )
+
         return errors
 
 
@@ -137,18 +172,18 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     required_subgroups=[
         SubgroupSpec(
             subgroup_name="layers",
-            required_arrays=[
-                ArraySpec(array_name="counts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-            ],
             uniform_shape=True,
             match_shape_of="indices",
         ),
     ],
+    required_layers=[LayerName.COUNTS],
+    allowed_layers=[LayerName.COUNTS, LayerName.LOG_NORMALIZED, LayerName.TPM],
 )
 
 CHROMATIN_FRAGMENT_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.CHROMATIN_FRAGMENT,
     pointer_kind=PointerKind.SPARSE,
+    has_var_df=False,
     required_arrays=[
         ArraySpec(array_name="fragment_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
         ArraySpec(array_name="fragment_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
@@ -170,18 +205,28 @@ PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.PROTEIN_ABUNDANCE,
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
-    required_arrays=[
-        ArraySpec(array_name="data", ndim=2, dtype_kind=DTypeKind.FLOAT),
+    required_subgroups=[
+        SubgroupSpec(
+            subgroup_name="layers",
+            uniform_shape=True,
+        ),
     ],
+    required_layers=[LayerName.COUNTS],
+    allowed_layers=[LayerName.COUNTS, LayerName.CLR, LayerName.DSB, LayerName.LOG_NORMALIZED],
 )
 
 IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.IMAGE_FEATURES,
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
-    required_arrays=[
-        ArraySpec(array_name="data", ndim=2, dtype_kind=DTypeKind.FLOAT),
+    required_subgroups=[
+        SubgroupSpec(
+            subgroup_name="layers",
+            uniform_shape=True,
+        ),
     ],
+    required_layers=[LayerName.RAW],
+    allowed_layers=[LayerName.RAW, LayerName.LOG_NORMALIZED, LayerName.CTRL_STANDARDIZED],
 )
 
 IMAGE_TILES_SPEC = ZarrGroupSpec(

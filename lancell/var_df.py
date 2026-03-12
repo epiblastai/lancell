@@ -259,6 +259,9 @@ def _get_local_feature_count(
     from lancell.group_specs import PointerKind
 
     if spec.pointer_kind is PointerKind.DENSE:
+        if "layers" in group and isinstance(group["layers"], zarr.Group):
+            for _, arr in group["layers"].arrays():
+                return arr.shape[1]
         if "data" in group and isinstance(group["data"], zarr.Array):
             return group["data"].shape[1]
     return None

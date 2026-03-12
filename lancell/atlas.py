@@ -24,7 +24,7 @@ import scipy.sparse as sp
 import zarr
 
 from lancell.batch_array import BatchArray
-from lancell.group_specs import ZARR_SPECS, FeatureSpace, PointerKind, ZarrGroupSpec
+from lancell.group_specs import ZARR_SPECS, FeatureSpace, LayerName, PointerKind, ZarrGroupSpec
 from lancell.schema import (
     DatasetRecord,
     DenseZarrPointer,
@@ -475,8 +475,7 @@ class RaggedAtlas:
         *,
         feature_space: FeatureSpace,
         zarr_group: str,
-        # TODO: layer_name should apply to dense data as well
-        layer_name: str | None = None,
+        layer_name: LayerName | None = None,
         chunk_size: int = 4096,
         shard_size: int = 65536,
     ) -> int:
@@ -497,8 +496,9 @@ class RaggedAtlas:
             Zarr group path (relative to atlas store) for this ingestion.
             Must be unique per ingestion call.
         layer_name:
-            Required for sparse feature spaces — name of the layer to write
-            (e.g. "counts"). Unused for dense feature spaces.
+            Required for feature spaces with allowed_layers — the layer to
+            write (e.g. ``LayerName.COUNTS``). Unused for feature spaces
+            without layers (e.g. IMAGE_TILES).
         chunk_size:
             Zarr chunk size for 1D arrays.
         shard_size:
@@ -511,10 +511,15 @@ class RaggedAtlas:
         """
         spec = ZARR_SPECS[feature_space]
 
-        if spec.pointer_kind is PointerKind.SPARSE and layer_name is None:
+        if spec.allowed_layers and layer_name is None:
             raise ValueError(
-                "layer_name is required for sparse feature spaces "
-                f"(feature_space='{feature_space.value}')"
+                f"layer_name is required for feature space '{feature_space.value}'. "
+                f"Allowed values: {[l.value for l in spec.allowed_layers]}"
+            )
+        if layer_name is not None and spec.allowed_layers and layer_name not in spec.allowed_layers:
+            raise ValueError(
+                f"layer_name '{layer_name.value}' is not allowed for feature space "
+                f"'{feature_space.value}'. Allowed: {[l.value for l in spec.allowed_layers]}"
             )
 
         # Pre-flight: validate obs columns match schema before any writes
@@ -556,7 +561,7 @@ class RaggedAtlas:
                 adata, zarr_group, layer_name, chunk_size, shard_size
             )
         else:
-            self._write_dense_zarr(adata, zarr_group, chunk_size, shard_size)
+            self._write_dense_zarr(adata, zarr_group, layer_name, chunk_size, shard_size)
 
         # Write var_df sidecar
         if spec.has_var_df:
@@ -638,6 +643,7 @@ class RaggedAtlas:
         self,
         adata: ad.AnnData,
         zarr_group: str,
+        layer_name: LayerName | None,
         chunk_size: int,
         shard_size: int,
     ) -> None:
@@ -647,12 +653,22 @@ class RaggedAtlas:
         group = self._root.create_group(zarr_group)
 
         n_cells, n_features = data.shape
-        group.create_array(
-            "data",
-            data=data,
-            chunks=(chunk_size, n_features),
-            shards=(shard_size, n_features),
-        )
+
+        if layer_name is not None:
+            layers_group = group.create_group("layers")
+            layers_group.create_array(
+                layer_name.value,
+                data=data,
+                chunks=(chunk_size, n_features),
+                shards=(shard_size, n_features),
+            )
+        else:
+            group.create_array(
+                "data",
+                data=data,
+                chunks=(chunk_size, n_features),
+                shards=(shard_size, n_features),
+            )
 
     def _write_var_sidecar(
         self,
@@ -815,7 +831,7 @@ class AtlasQuery:
         self._where_clause: str | None = None
         self._limit_n: int | None = None
         self._feature_spaces: list[FeatureSpace] | None = None
-        self._layer_overrides: dict[FeatureSpace, list[str]] = {}
+        self._layer_overrides: dict[FeatureSpace, list[LayerName]] = {}
 
     # TODO: We definitely want `search()` as a method because
     # we want to make use of lance's powerful FTS and vector search
@@ -836,9 +852,8 @@ class AtlasQuery:
         self._feature_spaces = list(spaces)
         return self
 
-    # TODO: Again, can generalize this for sparse and dense arrays
-    def layers(self, feature_space: FeatureSpace, names: list[str]) -> "AtlasQuery":
-        """Specify which layers to read for a sparse feature space."""
+    def layers(self, feature_space: FeatureSpace, names: list[LayerName]) -> "AtlasQuery":
+        """Specify which layers to read for a given feature space."""
         self._layer_overrides[feature_space] = names
         return self
 
@@ -965,19 +980,16 @@ class AtlasQuery:
             self._atlas, groups, spec
         )
 
-        # Determine which layers to read (explicit opt-in only)
-        layers_to_read = self._layer_overrides.get(pf.feature_space)
-        if layers_to_read is None:
-            # Default: read required layers from spec's subgroup
-            layers_to_read = []
-            for sg in spec.required_subgroups:
-                if sg.required_arrays:
-                    layers_to_read.extend(a.array_name for a in sg.required_arrays)
-            if not layers_to_read:
+        # Determine which layers to read
+        layer_names = self._layer_overrides.get(pf.feature_space)
+        if layer_names is None:
+            layer_names = list(spec.required_layers)
+            if not layer_names:
                 raise ValueError(
                     f"No layers specified and spec for '{pf.feature_space.value}' "
-                    f"has no required subgroup arrays"
+                    f"has no required layers"
                 )
+        layers_to_read = [ln.value for ln in layer_names]
 
         # Process each zarr group
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
@@ -1007,7 +1019,7 @@ class AtlasQuery:
             # Batch-read each layer
             for ln in layers_to_read:
                 layer_reader = self._atlas._get_batch_reader(
-                    zg, f"{spec.required_subgroups[0].subgroup_name}/{ln}"
+                    zg, f"layers/{ln}"
                 )
                 flat_values, _ = layer_reader.read_ranges(starts, ends)
 
@@ -1055,8 +1067,23 @@ class AtlasQuery:
             self._atlas, groups, spec
         )
 
+        # Determine which layers to read
+        layer_names = self._layer_overrides.get(pf.feature_space)
+        if layer_names is None:
+            layer_names = list(spec.required_layers)
+        layers_to_read = [ln.value for ln in layer_names] if layer_names else []
+
         n_total_cells = cells_pl.height
-        out = np.zeros((n_total_cells, n_union_features), dtype=np.float32)
+
+        # Dense arrays: one output matrix per layer
+        all_layers: dict[str, np.ndarray] = {}
+        for ln in layers_to_read:
+            all_layers[ln] = np.zeros((n_total_cells, n_union_features), dtype=np.float32)
+
+        # Fallback for specs without layers (e.g. IMAGE_TILES)
+        if not layers_to_read:
+            all_layers["data"] = np.zeros((n_total_cells, n_union_features), dtype=np.float32)
+
         obs_parts: list[pl.DataFrame] = []
         offset = 0
 
@@ -1066,15 +1093,27 @@ class AtlasQuery:
             n_cells_group = len(positions)
 
             group = self._atlas._root[zg]
-            data_arr = group["data"]
-            local_data = data_arr[positions, :]
 
-            if zg in group_remap_to_union:
-                union_cols = group_remap_to_union[zg]
-                out[offset : offset + n_cells_group][:, union_cols] = local_data
+            if layers_to_read:
+                layers_group = group["layers"]
+                for ln in layers_to_read:
+                    data_arr = layers_group[ln]
+                    local_data = data_arr[positions, :]
+                    if zg in group_remap_to_union:
+                        union_cols = group_remap_to_union[zg]
+                        all_layers[ln][offset : offset + n_cells_group][:, union_cols] = local_data
+                    else:
+                        n_local_features = local_data.shape[1]
+                        all_layers[ln][offset : offset + n_cells_group, :n_local_features] = local_data
             else:
-                n_local_features = local_data.shape[1]
-                out[offset : offset + n_cells_group, :n_local_features] = local_data
+                data_arr = group["data"]
+                local_data = data_arr[positions, :]
+                if zg in group_remap_to_union:
+                    union_cols = group_remap_to_union[zg]
+                    all_layers["data"][offset : offset + n_cells_group][:, union_cols] = local_data
+                else:
+                    n_local_features = local_data.shape[1]
+                    all_layers["data"][offset : offset + n_cells_group, :n_local_features] = local_data
 
             obs_parts.append(group_cells)
             offset += n_cells_group
@@ -1083,7 +1122,12 @@ class AtlasQuery:
         obs = _build_obs_df(obs_pl)
         var = self._build_var(pf.feature_space, union_globals)
 
-        return ad.AnnData(X=out, obs=obs, var=var)
+        # First layer/array → X, rest → adata.layers
+        layer_keys = list(all_layers.keys())
+        X = all_layers[layer_keys[0]]
+        extra_layers = {k: all_layers[k] for k in layer_keys[1:]}
+
+        return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
 
     def _build_var(
         self, feature_space: FeatureSpace, union_globals: np.ndarray

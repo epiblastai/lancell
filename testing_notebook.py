@@ -18,7 +18,7 @@ from lancell.atlas import (
     align_obs_to_schema,
     validate_obs_columns,
 )
-from lancell.group_specs import FeatureSpace
+from lancell.group_specs import FeatureSpace, LayerName
 from lancell.schema import (
     DatasetRecord,
     DenseZarrPointer,
@@ -176,7 +176,7 @@ def test_full_workflow():
             adata1,
             feature_space=FeatureSpace.GENE_EXPRESSION,
             zarr_group="dataset_1/gene_expression",
-            layer_name="counts",
+            layer_name=LayerName.COUNTS,
         )
         assert n1 == 20
         print(f"  Ingested dataset_1: {n1} cells")
@@ -185,7 +185,7 @@ def test_full_workflow():
             adata2,
             feature_space=FeatureSpace.GENE_EXPRESSION,
             zarr_group="dataset_2/gene_expression",
-            layer_name="counts",
+            layer_name=LayerName.COUNTS,
         )
         assert n2 == 15
         print(f"  Ingested dataset_2: {n2} cells")
@@ -197,6 +197,7 @@ def test_full_workflow():
             adata_dense,
             feature_space=FeatureSpace.PROTEIN_ABUNDANCE,
             zarr_group="dataset_3/protein_abundance",
+            layer_name=LayerName.COUNTS,
         )
         assert n3 == 10
         print(f"  Ingested dataset_3 (dense): {n3} cells")
@@ -317,7 +318,7 @@ def test_obs_validation_before_write():
                 adata,
                 feature_space=FeatureSpace.GENE_EXPRESSION,
                 zarr_group="test_group",
-                layer_name="counts",
+                layer_name=LayerName.COUNTS,
             )
             assert False, "Should have raised ValueError for missing required_field"
         except ValueError as e:
