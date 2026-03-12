@@ -274,12 +274,8 @@ def ingest_backed(
 
     arrow_table = pa.table(columns, schema=arrow_schema)
 
-    # Write in batches
-    batch_size = 50_000
-    for batch_start in range(0, n_cells, batch_size):
-        batch_end = min(batch_start + batch_size, n_cells)
-        atlas.cell_table.add(arrow_table.slice(batch_start, batch_end - batch_start))
-        print(f"    Inserted {batch_end:,}/{n_cells:,} cell records")
+    atlas.cell_table.add(arrow_table)
+    print(f"    Inserted {n_cells:,} cell records")
 
     return n_cells
 
