@@ -5,19 +5,11 @@ from collections.abc import Iterator
 import anndata as ad
 import lancedb
 import numpy as np
-import pandas as pd
 import polars as pl
-import scipy.sparse as sp
 
 from lancell.atlas import PointerFieldInfo, RaggedAtlas
-from lancell.group_specs import PointerKind, ZarrGroupSpec, get_spec
-from lancell.reconstruction import (
-    _build_obs_df,
-    _build_obs_only_anndata,
-    _load_remaps_and_union,
-    _prepare_dense_cells,
-    _prepare_sparse_cells,
-)
+from lancell.group_specs import get_spec
+from lancell.reconstruction import _build_obs_only_anndata
 
 
 class AtlasQuery:
@@ -178,197 +170,14 @@ class AtlasQuery:
     ) -> ad.AnnData:
         """Reconstruct an AnnData for a single feature space."""
         spec = get_spec(pf.feature_space)
-        if pf.pointer_kind is PointerKind.SPARSE:
-            return self._reconstruct_sparse(cells_pl, pf, spec)
-        else:
-            return self._reconstruct_dense(cells_pl, pf, spec)
-
-    def _reconstruct_sparse(
-        self,
-        cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
-        spec: ZarrGroupSpec,
-    ) -> ad.AnnData:
-        """Reconstruct sparse data (e.g. gene expression) across zarr groups."""
-        # Determine index array name from spec's required_arrays
-        if len(spec.required_arrays) != 1:
-            raise NotImplementedError(
-                f"Sparse reconstruction for feature space '{pf.feature_space}' "
-                f"is not yet supported (requires {len(spec.required_arrays)} "
-                f"primary arrays: {[a.array_name for a in spec.required_arrays]})"
-            )
-        index_array_name = spec.required_arrays[0].array_name
-
-        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
-        if not groups:
-            return ad.AnnData()
-
-        _, union_globals, group_remap_to_union, n_features = _load_remaps_and_union(
-            self._atlas, groups, spec
-        )
-
-        # Determine which layers to read
-        layer_names = self._layer_overrides.get(pf.feature_space)
-        if layer_names is None:
-            layer_names = list(spec.required_layers)
-            if not layer_names:
-                raise ValueError(
-                    f"No layers specified and spec for '{pf.feature_space}' "
-                    f"has no required layers"
-                )
-        layers_to_read = layer_names
-
-        # Process each zarr group
-        all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
-        obs_parts: list[pl.DataFrame] = []
-
-        for zg in groups:
-            group_cells = cells_pl.filter(pl.col("_zg") == zg)
-            starts = group_cells["_start"].to_numpy().astype(np.int64)
-            ends = group_cells["_end"].to_numpy().astype(np.int64)
-            n_cells_group = len(starts)
-
-            # Batch-read index array via Rust reader
-            indices_reader = self._atlas._get_batch_reader(zg, index_array_name)
-            flat_indices, lengths = indices_reader.read_ranges(starts, ends)
-
-            # Remap local indices -> union positions
-            if zg in group_remap_to_union:
-                union_remap = group_remap_to_union[zg]
-                union_indices = union_remap[flat_indices.astype(np.intp)]
-            else:
-                union_indices = flat_indices.astype(np.int32)
-
-            # Build indptr from lengths
-            indptr = np.zeros(n_cells_group + 1, dtype=np.int64)
-            np.cumsum(lengths, out=indptr[1:])
-
-            # Batch-read each layer
-            for ln in layers_to_read:
-                layer_reader = self._atlas._get_batch_reader(
-                    zg, f"layers/{ln}"
-                )
-                flat_values, _ = layer_reader.read_ranges(starts, ends)
-
-                csr = sp.csr_matrix(
-                    (flat_values, union_indices, indptr),
-                    shape=(n_cells_group, n_features),
-                )
-                all_csrs[ln].append(csr)
-
-            obs_parts.append(group_cells)
-
-        # Stack CSRs
-        stacked: dict[str, sp.csr_matrix] = {}
-        for ln, csr_list in all_csrs.items():
-            if csr_list:
-                stacked[ln] = sp.vstack(csr_list, format="csr")
-
-        # Build obs
-        obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl)
-
-        # Build var from registry
-        var = self._build_var(pf.feature_space, union_globals)
-
-        # First layer becomes X, rest go to layers
-        first_layer = layers_to_read[0]
-        X = stacked.get(first_layer)
-        extra_layers = {ln: stacked[ln] for ln in layers_to_read[1:] if ln in stacked}
-
-        adata = ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
-        return adata
-
-    def _reconstruct_dense(
-        self,
-        cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
-        spec: ZarrGroupSpec,
-    ) -> ad.AnnData:
-        """Reconstruct dense data (e.g. protein abundance) across zarr groups."""
-        cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
-        if not groups:
-            return ad.AnnData()
-
-        _, union_globals, group_remap_to_union, n_union_features = _load_remaps_and_union(
-            self._atlas, groups, spec
-        )
-
-        # Determine which layers to read
-        layer_names = self._layer_overrides.get(pf.feature_space)
-        if layer_names is None:
-            layer_names = list(spec.required_layers)
-        layers_to_read = layer_names if layer_names else []
-
-        # Resolve array names: "layers/{ln}" for layered specs, "data" for plain
-        array_names = [f"layers/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
-        output_keys = layers_to_read if layers_to_read else ["data"]
-
-        n_total_cells = cells_pl.height
-        all_layers: dict[str, np.ndarray] = {
-            k: np.zeros((n_total_cells, n_union_features), dtype=np.float32)
-            for k in output_keys
-        }
-
-        obs_parts: list[pl.DataFrame] = []
-        offset = 0
-
-        for zg in groups:
-            group_cells = cells_pl.filter(pl.col("_zg") == zg)
-            positions = group_cells["_pos"].to_numpy().astype(np.int64)
-            n_cells_group = len(positions)
-
-            # Build axis-0 ranges: each position is a single row [pos, pos+1)
-            starts = positions
-            ends = positions + 1
-
-            for array_name, out_key in zip(array_names, output_keys):
-                reader = self._atlas._get_batch_reader(zg, array_name)
-                flat_data, _ = reader.read_ranges(starts, ends)
-                n_local_features = flat_data.shape[0] // n_cells_group
-                local_data = flat_data.reshape(n_cells_group, n_local_features)
-
-                if zg in group_remap_to_union:
-                    union_cols = group_remap_to_union[zg]
-                    all_layers[out_key][offset : offset + n_cells_group][:, union_cols] = local_data
-                else:
-                    all_layers[out_key][offset : offset + n_cells_group, :n_local_features] = local_data
-
-            obs_parts.append(group_cells)
-            offset += n_cells_group
-
-        obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl)
-        var = self._build_var(pf.feature_space, union_globals)
-
-        # First layer/array -> X, rest -> adata.layers
-        first_key = output_keys[0]
-        X = all_layers[first_key]
-        extra_layers = {k: all_layers[k] for k in output_keys[1:]}
-
-        return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
-
-    def _build_var(
-        self, feature_space: str, union_globals: np.ndarray
-    ) -> pd.DataFrame:
-        """Build a var DataFrame from the feature registry."""
-        if feature_space not in self._atlas._registry_tables:
+        if spec.reconstructor is None:
             raise ValueError(
-                f"No registry table for feature space '{feature_space}'. "
-                f"Available: {sorted(self._atlas._registry_tables.keys())}"
+                f"No reconstructor registered for feature space '{pf.feature_space}'"
             )
-        if len(union_globals) == 0:
-            return pd.DataFrame(index=pd.RangeIndex(0))
-
-        registry_table = self._atlas._registry_tables[feature_space]
-        registry_df = registry_table.search().to_polars()
-
-        # Filter to union globals
-        registry_df = registry_df.filter(
-            pl.col("global_index").is_in(union_globals.tolist())
-        ).sort("global_index")
-
-        var = registry_df.to_pandas()
-        if "uid" in var.columns:
-            var = var.set_index("uid")
-        return var
+        return spec.reconstructor.as_anndata(
+            self._atlas,
+            cells_pl,
+            pf,
+            spec,
+            layer_overrides=self._layer_overrides.get(pf.feature_space),
+        )

@@ -1,7 +1,14 @@
 from enum import Enum
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import zarr
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    import anndata as ad
+    import polars as pl
+
+    from lancell.atlas import PointerFieldInfo, RaggedAtlas
 
 
 class DTypeKind(str, Enum):
@@ -43,8 +50,12 @@ class SubgroupSpec(BaseModel):
 class ZarrGroupSpec(BaseModel):
     """Declarative spec for the expected layout of a zarr group."""
 
+    # Needed so Pydantic accepts the Reconstructor protocol type.
+    model_config = {"arbitrary_types_allowed": True}
+
     feature_space: str
     pointer_kind: PointerKind
+    reconstructor: "Reconstructor"
     has_var_df: bool = False
     required_arrays: list[ArraySpec] = []
     required_subgroups: list[SubgroupSpec] = []
@@ -144,6 +155,33 @@ class ZarrGroupSpec(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Reconstructor protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class Reconstructor(Protocol):
+    """Protocol for feature-space reconstruction strategies.
+
+    Implementations must provide an ``as_anndata`` method that reads zarr data
+    for a single feature space and assembles an AnnData object.
+    """
+
+    def as_anndata(
+        self,
+        atlas: "RaggedAtlas",
+        cells_pl: "pl.DataFrame",
+        pf: "PointerFieldInfo",
+        spec: ZarrGroupSpec,
+        layer_overrides: "list[str] | None" = None,
+    ) -> "ad.AnnData": ...
+
+
+# Resolve the "Reconstructor" forward reference used in ZarrGroupSpec.
+ZarrGroupSpec.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
 # Spec registry
 # ---------------------------------------------------------------------------
 
@@ -172,95 +210,3 @@ def get_spec(feature_space: str) -> ZarrGroupSpec:
 def registered_feature_spaces() -> set[str]:
     """Return the set of all registered feature space names."""
     return set(_SPEC_REGISTRY.keys())
-
-
-# ---------------------------------------------------------------------------
-# Built-in specs
-# ---------------------------------------------------------------------------
-
-GENE_EXPRESSION_SPEC = ZarrGroupSpec(
-    feature_space="gene_expression",
-    pointer_kind=PointerKind.SPARSE,
-    has_var_df=True,
-    required_arrays=[
-        ArraySpec(array_name="indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-    ],
-    required_subgroups=[
-        SubgroupSpec(
-            subgroup_name="layers",
-            uniform_shape=True,
-            match_shape_of="indices",
-        ),
-    ],
-    required_layers=["counts"],
-    allowed_layers=["counts", "log_normalized", "tpm"],
-)
-
-CHROMATIN_FRAGMENT_SPEC = ZarrGroupSpec(
-    feature_space="chromatin_fragment",
-    pointer_kind=PointerKind.SPARSE,
-    has_var_df=False,
-    required_arrays=[
-        ArraySpec(array_name="fragment_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-        ArraySpec(array_name="fragment_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-    ],
-)
-
-
-CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
-    feature_space="chromatin_peak",
-    pointer_kind=PointerKind.SPARSE,
-    has_var_df=True,
-    required_arrays=[
-        ArraySpec(array_name="peak_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-        ArraySpec(array_name="peak_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-    ],
-)
-
-PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
-    feature_space="protein_abundance",
-    pointer_kind=PointerKind.DENSE,
-    has_var_df=True,
-    required_subgroups=[
-        SubgroupSpec(
-            subgroup_name="layers",
-            uniform_shape=True,
-        ),
-    ],
-    required_layers=["counts"],
-    allowed_layers=["counts", "clr", "dsb", "log_normalized"],
-)
-
-IMAGE_FEATURES_SPEC = ZarrGroupSpec(
-    feature_space="image_features",
-    pointer_kind=PointerKind.DENSE,
-    has_var_df=True,
-    required_subgroups=[
-        SubgroupSpec(
-            subgroup_name="layers",
-            uniform_shape=True,
-        ),
-    ],
-    required_layers=["raw"],
-    allowed_layers=["raw", "log_normalized", "ctrl_standardized"],
-)
-
-IMAGE_TILES_SPEC = ZarrGroupSpec(
-    feature_space="image_tiles",
-    pointer_kind=PointerKind.DENSE,
-    required_arrays=[
-        # Tile can be any dtype
-        ArraySpec(array_name="data", ndim=4),  # (N, C, H, W)
-    ],
-)
-
-# Register all built-in specs
-for _spec in [
-    GENE_EXPRESSION_SPEC,
-    CHROMATIN_FRAGMENT_SPEC,
-    CHROMATIN_PEAK_SPEC,
-    PROTEIN_ABUNDANCE_SPEC,
-    IMAGE_FEATURES_SPEC,
-    IMAGE_TILES_SPEC,
-]:
-    register_spec(_spec)
