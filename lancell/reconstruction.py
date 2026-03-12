@@ -10,7 +10,8 @@ import polars as pl
 import scipy.sparse as sp
 
 from lancell.atlas import PointerFieldInfo
-from lancell.group_specs import Reconstructor, ZarrGroupSpec
+from lancell.group_specs import ZarrGroupSpec
+from lancell.protocols import Reconstructor
 
 if TYPE_CHECKING:
     from lancell.atlas import RaggedAtlas

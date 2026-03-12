@@ -115,7 +115,7 @@ class AtlasQuery:
 
         # Use first pointer field
         pf = next(iter(active_pfs.values()))
-        return self._reconstruct_single_space(cells_pl, pf)
+        return self._reconstruct_single_space_anndata(cells_pl, pf)
 
     def to_mudata(self) -> "mu.MuData":
         """Execute the query and return a MuData with one modality per feature space."""
@@ -128,7 +128,7 @@ class AtlasQuery:
         active_pfs = self._active_pointer_fields()
         modalities: dict[str, ad.AnnData] = {}
         for pf in active_pfs.values():
-            adata = self._reconstruct_single_space(cells_pl, pf)
+            adata = self._reconstruct_single_space_anndata(cells_pl, pf)
             if adata.n_obs > 0:
                 modalities[pf.feature_space] = adata
 
@@ -159,11 +159,11 @@ class AtlasQuery:
         for start in range(0, n_total, batch_size):
             batch_arrow = arrow_table.slice(start, batch_size)
             batch_pl = pl.from_arrow(batch_arrow)
-            yield self._reconstruct_single_space(batch_pl, pf)
+            yield self._reconstruct_single_space_anndata(batch_pl, pf)
 
     # -- Reconstruction internals -------------------------------------------
 
-    def _reconstruct_single_space(
+    def _reconstruct_single_space_anndata(
         self,
         cells_pl: pl.DataFrame,
         pf: PointerFieldInfo,

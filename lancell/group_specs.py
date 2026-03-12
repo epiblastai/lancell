@@ -1,14 +1,9 @@
 from enum import Enum
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import zarr
 from pydantic import BaseModel
 
-if TYPE_CHECKING:
-    import anndata as ad
-    import polars as pl
-
-    from lancell.atlas import PointerFieldInfo, RaggedAtlas
+from lancell.protocols import Reconstructor
 
 
 class DTypeKind(str, Enum):
@@ -55,7 +50,7 @@ class ZarrGroupSpec(BaseModel):
 
     feature_space: str
     pointer_kind: PointerKind
-    reconstructor: "Reconstructor"
+    reconstructor: Reconstructor
     has_var_df: bool = False
     required_arrays: list[ArraySpec] = []
     required_subgroups: list[SubgroupSpec] = []
@@ -152,33 +147,6 @@ class ZarrGroupSpec(BaseModel):
                     )
 
         return errors
-
-
-# ---------------------------------------------------------------------------
-# Reconstructor protocol
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class Reconstructor(Protocol):
-    """Protocol for feature-space reconstruction strategies.
-
-    Implementations must provide an ``as_anndata`` method that reads zarr data
-    for a single feature space and assembles an AnnData object.
-    """
-
-    def as_anndata(
-        self,
-        atlas: "RaggedAtlas",
-        cells_pl: "pl.DataFrame",
-        pf: "PointerFieldInfo",
-        spec: ZarrGroupSpec,
-        layer_overrides: "list[str] | None" = None,
-    ) -> "ad.AnnData": ...
-
-
-# Resolve the "Reconstructor" forward reference used in ZarrGroupSpec.
-ZarrGroupSpec.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
