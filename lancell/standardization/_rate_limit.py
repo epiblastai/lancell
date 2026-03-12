@@ -22,6 +22,7 @@ DEFAULT_LIMITS: dict[str, float] = {
     "ols4": 10,
     "cellosaurus": 5,
     "chembl": 10,
+    "ncbi": 3,
 }
 
 

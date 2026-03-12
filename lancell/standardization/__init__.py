@@ -28,6 +28,19 @@ from lancell.standardization.ontologies import (
     resolve_organisms,
     resolve_tissues,
 )
+from lancell.standardization.ncbi import (
+    BioProjectMetadata,
+    BioSampleMetadata,
+    GeoSampleMetadata,
+    GeoSeriesMetadata,
+    fetch_bioproject,
+    fetch_biosample,
+    fetch_geo_biosample_attrs,
+    fetch_geo_metadata,
+    fetch_geo_sample,
+    fetch_geo_series,
+    link_accessions,
+)
 from lancell.standardization.perturbations import (
     classify_perturbation_method,
     detect_control_labels,
@@ -82,4 +95,16 @@ __all__ = [
     "detect_negative_control_type",
     "parse_combinatorial_perturbations",
     "classify_perturbation_method",
+    # NCBI metadata
+    "GeoSeriesMetadata",
+    "GeoSampleMetadata",
+    "BioSampleMetadata",
+    "BioProjectMetadata",
+    "fetch_geo_metadata",
+    "fetch_geo_series",
+    "fetch_geo_sample",
+    "fetch_biosample",
+    "fetch_bioproject",
+    "link_accessions",
+    "fetch_geo_biosample_attrs",
 ]
