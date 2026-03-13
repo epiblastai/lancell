@@ -182,6 +182,88 @@ class AtlasQuery:
                 continue
             yield self._reconstruct_single_space_anndata(pl.from_arrow(batch), pf)
 
+    def to_cell_dataset(
+        self,
+        feature_space: str = "gene_expression",
+        layer: str = "counts",
+        batch_size: int = 1024,
+        shuffle: bool = True,
+        seed: int | None = None,
+        drop_last: bool = False,
+        metadata_columns: list[str] | None = None,
+    ) -> "CellDataset":
+        """Create a CellDataset for fast ML training iteration.
+
+        Unlike :meth:`to_batches` (which reconstructs full AnnData per batch),
+        this returns a :class:`~lancell.dataloader.CellDataset` that yields
+        lightweight :class:`~lancell.dataloader.SparseBatch` objects.
+
+        Parameters
+        ----------
+        feature_space:
+            Which feature space to read.
+        layer:
+            Which layer to read within the feature space.
+        batch_size:
+            Number of cells per batch.
+        shuffle:
+            Whether to shuffle cells each epoch.
+        seed:
+            Random seed for reproducibility.
+        drop_last:
+            Whether to drop the last incomplete batch.
+        metadata_columns:
+            Obs column names to include as metadata on each SparseBatch.
+        """
+        from lancell.dataloader import CellDataset
+
+        cells_pl = self._build_scanner().to_polars()
+        return CellDataset(
+            atlas=self._atlas,
+            cells_pl=cells_pl,
+            feature_space=feature_space,
+            layer=layer,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            seed=seed,
+            drop_last=drop_last,
+            metadata_columns=metadata_columns,
+        )
+
+    def to_dataloader(
+        self,
+        collate_fn=None,
+        **cell_dataset_kwargs,
+    ) -> "torch.utils.data.DataLoader":
+        """Create a torch DataLoader for fast ML training.
+
+        Wraps :meth:`to_cell_dataset` in a
+        ``torch.utils.data.IterableDataset``, configured for single-process
+        iteration (``num_workers=0``, ``batch_size=None``).
+
+        Parameters
+        ----------
+        collate_fn:
+            Optional function to transform each :class:`SparseBatch`.
+            See :func:`~lancell.dataloader.sparse_to_dense_collate` and
+            :func:`~lancell.dataloader.sparse_to_csr_collate`.
+        **cell_dataset_kwargs:
+            Forwarded to :meth:`to_cell_dataset`.
+        """
+        from torch.utils.data import DataLoader
+
+        from lancell.dataloader import TorchCellDataset
+
+        dataset = self.to_cell_dataset(**cell_dataset_kwargs)
+        torch_dataset = TorchCellDataset(dataset)
+
+        return DataLoader(
+            torch_dataset,
+            batch_size=None,
+            collate_fn=collate_fn,
+            num_workers=0,
+        )
+
     # -- Reconstruction internals -------------------------------------------
 
     def _reconstruct_single_space_anndata(
