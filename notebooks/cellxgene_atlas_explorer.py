@@ -23,12 +23,13 @@ def _():
     import sys
 
     import marimo as mo
+    from tqdm.auto import tqdm
 
     # Allow imports from the repo root (lancell + examples)
     _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if _repo_root not in sys.path:
         sys.path.insert(0, _repo_root)
-    return mo, os
+    return mo, os, tqdm
 
 
 @app.cell
@@ -45,7 +46,7 @@ def _(mo):
 @app.cell
 def _(mo):
     atlas_dir_input = mo.ui.text(
-        value="s3://epiblast/ragged_atlases/cellxgene_mini/",
+        value="s3://epiblast/ragged_atlases/cellxgene_mini_bp/",
         label="Atlas directory",
         full_width=True,
     )
@@ -250,7 +251,7 @@ def _(adata):
         "mean_expression": mean_expr,
     }).sort("mean_expression", descending=True).head(20)
     top_genes
-    return (pl,)
+    return np, pl
 
 
 @app.cell
@@ -302,13 +303,14 @@ def _(mo):
 
 
 @app.cell
-def _(atlas, where_input):
+def _(atlas, tqdm):
     import time
 
     q = (
         atlas.query()
-        .where(where_input.value)
-        .limit(10_000)
+        # .where(where_input.value)
+        .where("sex == 'male'")
+        # .limit(10_000)
     )
 
     cell_dataset = q.to_cell_dataset(
@@ -325,7 +327,7 @@ def _(atlas, where_input):
           f"{len(cell_dataset)} batches")
 
     t0 = time.perf_counter()
-    for batch in cell_dataset:
+    for batch in tqdm(cell_dataset):
         pass  # consume one epoch
     elapsed = time.perf_counter() - t0
 
@@ -358,19 +360,15 @@ def _(cell_dataset, mo):
 
 
 @app.cell
-def _(first_batch, mo):
-    import numpy as np
-    import polars as pl
-
-    n_cells = len(first_batch.offsets) - 1
+def _(first_batch, mo, np, pl):
     lengths = np.diff(first_batch.offsets)
     nnz_stats = pl.DataFrame({
         "stat": ["min", "median", "mean", "max"],
         "nnz_per_cell": [
-            int(lengths.min()),
-            int(np.median(lengths)),
+            float(lengths.min()),
+            float(np.median(lengths)),
             round(float(lengths.mean()), 1),
-            int(lengths.max()),
+            float(lengths.max()),
         ],
     })
 
@@ -382,7 +380,7 @@ def _(first_batch, mo):
     Average density: **{lengths.mean() / first_batch.n_features * 100:.1f}%**
     ({lengths.mean():.0f} / {first_batch.n_features:,} features)
     """)
-    return (pl,)
+    return
 
 
 @app.cell
@@ -428,20 +426,20 @@ def _(mo):
 
 @app.cell
 def _(q):
-    import time
+    import time as _time
 
     # AnnData path
-    t0 = time.perf_counter()
-    for adata_batch in q.to_batches(batch_size=256):
+    _t0 = _time.perf_counter()
+    for _adata_batch in q.to_batches(batch_size=256):
         pass
-    anndata_time = time.perf_counter() - t0
+    anndata_time = _time.perf_counter() - _t0
 
     # CellDataset path
-    ds = q.to_cell_dataset(batch_size=256, shuffle=False)
-    t0 = time.perf_counter()
-    for batch in ds:
+    _ds = q.to_cell_dataset(batch_size=256, shuffle=False)
+    _t0 = _time.perf_counter()
+    for _batch in _ds:
         pass
-    dataset_time = time.perf_counter() - t0
+    dataset_time = _time.perf_counter() - _t0
 
     speedup = anndata_time / max(dataset_time, 1e-9)
     print(f"to_batches() (AnnData):    {anndata_time:.3f}s")

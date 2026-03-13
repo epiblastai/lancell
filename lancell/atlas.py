@@ -9,7 +9,10 @@ the full API — no manifest file to maintain.
 import dataclasses
 from collections import defaultdict
 from types import UnionType
-from typing import Union, get_args, get_origin
+from typing import TYPE_CHECKING, Union, get_args, get_origin
+
+if TYPE_CHECKING:
+    from lancell.query import AtlasQuery
 
 import anndata as ad
 import lancedb
@@ -17,10 +20,9 @@ import numpy as np
 import obstore
 import pandas as pd
 import polars as pl
-import pyarrow as pa
 import zarr
 
-from lancell.batch_array import BatchArray
+from lancell.batch_array import BatchAsyncArray
 from lancell.group_specs import PointerKind, get_spec
 from lancell.schema import (
     DatasetRecord,
@@ -38,7 +40,6 @@ from lancell.var_df import (
     validate_var_df,
     write_remap,
 )
-
 
 # ---------------------------------------------------------------------------
 # PointerFieldInfo — metadata about a schema's pointer fields
@@ -193,9 +194,7 @@ def align_obs_to_schema(
     """
     errors = validate_obs_columns(adata.obs, cell_schema, obs_to_schema)
     if errors:
-        raise ValueError(
-            f"Cannot align obs to schema: {errors}"
-        )
+        raise ValueError(f"Cannot align obs to schema: {errors}")
 
     if not inplace:
         adata = adata.copy()
@@ -253,7 +252,7 @@ class RaggedAtlas:
 
         # Instance-level caches (version-aware for remaps)
         self._remap_cache: dict[tuple[str, str], tuple[int, np.ndarray]] = {}
-        self._batch_reader_cache: dict[tuple[str, str], BatchArray] = {}
+        self._batch_reader_cache: dict[tuple[str, str], BatchAsyncArray] = {}
 
         # Validate that global_index is contiguous 0..N-1 within each
         # registry table. A broken index silently corrupts every remap and
@@ -264,9 +263,7 @@ class RaggedAtlas:
                 reindex_registry(table)
             registry_errors = self._validate_registries()
         if registry_errors:
-            raise ValueError(
-                f"Registry validation failed at init: {registry_errors}"
-            )
+            raise ValueError(f"Registry validation failed at init: {registry_errors}")
 
     # -- Construction -------------------------------------------------------
 
@@ -412,16 +409,17 @@ class RaggedAtlas:
         # Rebuild from var_df + registry
         var_df = read_var_df(self._store, zarr_group)
         remap = build_remap(var_df, registry_table)
-        write_remap(self._store, group, remap, registry_version=current_version)
+        if not self._root.store.read_only:
+            write_remap(self._store, group, remap, registry_version=current_version)
         self._remap_cache[cache_key] = (current_version, remap)
         return remap
 
-    def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchArray:
-        """Get a cached BatchArray reader for a zarr array."""
+    def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchAsyncArray:
+        """Get a cached BatchAsyncArray reader for a zarr array."""
         cache_key = (zarr_group, array_name)
         reader = self._batch_reader_cache.get(cache_key)
         if reader is None:
-            reader = BatchArray.from_array(self._root[f"{zarr_group}/{array_name}"])
+            reader = BatchAsyncArray.from_array(self._root[f"{zarr_group}/{array_name}"])
             self._batch_reader_cache[cache_key] = reader
         return reader
 
@@ -486,11 +484,7 @@ class RaggedAtlas:
         new_records = features_df.unique(subset=["uid"], keep="first")
 
         n_before = registry_table.count_rows()
-        (
-            registry_table.merge_insert(on="uid")
-            .when_not_matched_insert_all()
-            .execute(new_records)
-        )
+        (registry_table.merge_insert(on="uid").when_not_matched_insert_all().execute(new_records))
         return registry_table.count_rows() - n_before
 
     # -- Maintenance --------------------------------------------------------
@@ -557,9 +551,9 @@ class RaggedAtlas:
     def _collect_zarr_groups(self) -> dict[str, set[str]]:
         """Collect unique zarr groups per feature space from the dataset table."""
         result: dict[str, set[str]] = defaultdict(set)
-        datasets_df = self._dataset_table.search().select(
-            ["feature_space", "zarr_group"]
-        ).to_polars()
+        datasets_df = (
+            self._dataset_table.search().select(["feature_space", "zarr_group"]).to_polars()
+        )
         if datasets_df.is_empty():
             return result
         for row in datasets_df.iter_rows(named=True):
@@ -614,14 +608,12 @@ class RaggedAtlas:
             expected = list(range(len(indices)))
             if indices != expected:
                 errors.append(
-                    f"Registry '{fs}': global_index is not contiguous 0..{len(indices)-1}. "
+                    f"Registry '{fs}': global_index is not contiguous 0..{len(indices) - 1}. "
                     f"Run reindex_registry(table) to fix."
                 )
         return errors
 
-    def _validate_zarr_groups(
-        self, zarr_groups_by_space: dict[str, set[str]]
-    ) -> list[str]:
+    def _validate_zarr_groups(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
         errors: list[str] = []
         for fs, groups in zarr_groups_by_space.items():
             spec = get_spec(fs)
@@ -632,9 +624,7 @@ class RaggedAtlas:
                     errors.append(f"zarr group '{zg}': {e}")
         return errors
 
-    def _validate_var_dfs(
-        self, zarr_groups_by_space: dict[str, set[str]]
-    ) -> list[str]:
+    def _validate_var_dfs(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
         errors: list[str] = []
         for fs, groups in zarr_groups_by_space.items():
             spec = get_spec(fs)

@@ -1,6 +1,13 @@
 """AtlasQuery: fluent query builder for reading cells from a RaggedAtlas."""
 
 from collections.abc import Iterator
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    import mudata as mu
+    import torch
+
+    from lancell.dataloader import CellDataset
 
 import anndata as ad
 import lancedb
@@ -24,6 +31,7 @@ class AtlasQuery:
         self._select_columns: list[str] | None = None
         self._feature_spaces: list[str] | None = None
         self._layer_overrides: dict[str, list[str]] = {}
+        self._feature_join: Literal["union", "intersection"] = "union"
 
     def search(
         self,
@@ -90,6 +98,15 @@ class AtlasQuery:
     def layers(self, feature_space: str, names: list[str]) -> "AtlasQuery":
         """Specify which layers to read for a given feature space."""
         self._layer_overrides[feature_space] = names
+        return self
+
+    def feature_join(self, join: Literal["union", "intersection"]) -> "AtlasQuery":
+        """Set how features are joined across zarr groups.
+
+        ``"union"`` (default) includes all features from any group.
+        ``"intersection"`` includes only features present in every group.
+        """
+        self._feature_join = join
         return self
 
     # -- Execution ----------------------------------------------------------
@@ -274,13 +291,12 @@ class AtlasQuery:
         """Reconstruct an AnnData for a single feature space."""
         spec = get_spec(pf.feature_space)
         if spec.reconstructor is None:
-            raise ValueError(
-                f"No reconstructor registered for feature space '{pf.feature_space}'"
-            )
+            raise ValueError(f"No reconstructor registered for feature space '{pf.feature_space}'")
         return spec.reconstructor.as_anndata(
             self._atlas,
             cells_pl,
             pf,
             spec,
             layer_overrides=self._layer_overrides.get(pf.feature_space),
+            feature_join=self._feature_join,
         )

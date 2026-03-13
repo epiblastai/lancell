@@ -19,14 +19,15 @@ import polars as pl
 import pyarrow as pa
 import zarr
 
-from lancell.atlas import RaggedAtlas, _schema_obs_fields
-from lancell.schema import SparseZarrPointer, make_uid
-from lancell.var_df import reindex_registry, write_var_df, build_remap, write_remap
 from examples.cellxgene_census.schema import (
     CellObs,
     CensusDatasetRecord,
     GeneFeatureSpace,
 )
+from lancell.atlas import RaggedAtlas, _schema_obs_fields
+from lancell.codecs.bitpacking import BitpackingCodec
+from lancell.schema import make_uid
+from lancell.var_df import build_remap, reindex_registry, write_remap, write_var_df
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"
@@ -39,6 +40,7 @@ def make_store(atlas_dir: str) -> obstore.store.ObjectStore:
     if atlas_dir.startswith("s3://"):
         # e.g. "s3://bucket/prefix/atlas"
         from urllib.parse import urlparse
+
         parsed = urlparse(atlas_dir)
         bucket = parsed.netloc
         prefix = os.path.join(parsed.path.strip("/"), "zarr_store")
@@ -63,8 +65,9 @@ def atlas_exists(atlas_dir: str) -> bool:
     """Check whether an atlas already exists at the given path."""
     if atlas_dir.startswith("s3://"):
         import lancedb
+
         db = lancedb.connect(db_uri_for(atlas_dir))
-        return "cells" in db.table_names()
+        return "cells" in db.list_tables().tables
     return (Path(atlas_dir) / "lance_db").exists()
 
 
@@ -195,14 +198,16 @@ def ingest_backed(
         dtype=np.uint32,
         chunks=(CHUNK_SIZE,),
         shards=(SHARD_SIZE,),
+        compressors=BitpackingCodec(transform="delta"),
     )
     layers = group.create_group("layers")
     layers.create_array(
         LAYER_NAME,
         shape=(nnz,),
-        dtype=np.float32,
+        dtype=np.uint32,
         chunks=(CHUNK_SIZE,),
         shards=(SHARD_SIZE,),
+        compressors=BitpackingCodec(transform="none"),
     )
 
     # Read indptr fully (small: n_cells+1 int64 values)
@@ -218,7 +223,7 @@ def ingest_backed(
     while written < nnz:
         batch_end = min(written + SHARD_SIZE, nnz)
         chunk_indices = h5_indices[written:batch_end].astype(np.uint32)
-        chunk_values = h5_data[written:batch_end].astype(np.float32)
+        chunk_values = h5_data[written:batch_end].astype(np.uint32)
         zarr_indices[written:batch_end] = chunk_indices
         zarr_counts[written:batch_end] = chunk_values
         written = batch_end

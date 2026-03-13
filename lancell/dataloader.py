@@ -230,9 +230,7 @@ class CellDataset:
             self._n_features = 0
             self._metadata_arrays: dict[str, np.ndarray] | None = None
             self._loop = asyncio.new_event_loop()
-            self._loop_thread = threading.Thread(
-                target=self._loop.run_forever, daemon=True
-            )
+            self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
             self._loop_thread.start()
             return
 
@@ -253,11 +251,8 @@ class CellDataset:
         for zg in groups:
             # REVIEW: Should we save these as memmaps to avoid taking up too much RAM?
             self._remaps[zg] = atlas._get_remap(zg, feature_space)
-            # Reuse atlas's cached BatchArray, extract underlying async array
-            idx_reader = atlas._get_batch_reader(zg, index_array_name)
-            layer_reader = atlas._get_batch_reader(zg, f"layers/{layer}")
-            self._index_readers[zg] = idx_reader._async_array
-            self._layer_readers[zg] = layer_reader._async_array
+            self._index_readers[zg] = atlas._get_batch_reader(zg, index_array_name)
+            self._layer_readers[zg] = atlas._get_batch_reader(zg, f"layers/{layer}")
 
         # Global feature count from registry (stable across batches/epochs)
         registry_table = atlas._registry_tables[feature_space]
@@ -275,9 +270,7 @@ class CellDataset:
         # Background event loop for async dispatch — works even when the
         # caller is already inside a running loop (marimo, Jupyter, etc.)
         self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(
-            target=self._loop.run_forever, daemon=True
-        )
+        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._loop_thread.start()
 
     @property
@@ -365,9 +358,7 @@ def sparse_to_dense_collate(batch: SparseBatch) -> dict:
     lengths = np.diff(batch.offsets)
     row_indices = np.repeat(np.arange(n_cells), lengths)
 
-    X[row_indices, batch.indices] = torch.from_numpy(
-        batch.values.astype(np.float32)
-    )
+    X[row_indices, batch.indices] = torch.from_numpy(batch.values.astype(np.float32))
 
     result: dict = {"X": X}
     if batch.metadata:
