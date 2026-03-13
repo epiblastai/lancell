@@ -21,7 +21,7 @@ import pyarrow as pa
 import zarr
 
 from lancell.batch_array import BatchArray
-from lancell.group_specs import PointerKind, get_spec
+from lancell.group_specs import FeatureAxisMode, PointerKind, get_spec
 from lancell.schema import (
     DatasetRecord,
     DenseZarrPointer,
@@ -597,6 +597,15 @@ class RaggedAtlas:
             self._store, self._dataset_table, feature_uids, feature_space
         )
 
+    def n_features(self, feature_space: str) -> int:
+        """Return the number of features in a feature registry."""
+        if feature_space not in self._registry_tables:
+            raise ValueError(
+                f"No registry table for feature space '{feature_space}'. "
+                f"Available: {sorted(self._registry_tables.keys())}"
+            )
+        return self._registry_tables[feature_space].count_rows()
+
     def _validate_registries(self) -> list[str]:
         errors: list[str] = []
         for fs, table in self._registry_tables.items():
@@ -619,6 +628,35 @@ class RaggedAtlas:
                 )
         return errors
 
+    def _validate_uniform_width(
+        self,
+        group: zarr.Group,
+        feature_space: str,
+        zarr_group: str,
+    ) -> list[str]:
+        """Check that dense arrays in a uniform group have the correct column count."""
+        errors: list[str] = []
+        expected = self.n_features(feature_space)
+
+        # Look for arrays in layers/ or a top-level "data" array
+        candidates: list[zarr.Array] = []
+        if "layers" in group and isinstance(group["layers"], zarr.Group):
+            for _, arr in group["layers"].arrays():
+                candidates.append(arr)
+        elif "data" in group and isinstance(group["data"], zarr.Array):
+            candidates.append(group["data"])
+
+        for arr in candidates:
+            if arr.ndim == 2:
+                actual = arr.shape[1]
+                if actual != expected:
+                    errors.append(
+                        f"zarr group '{zarr_group}': uniform dense array "
+                        f"'{arr.name}' has width {actual}, expected {expected}"
+                    )
+
+        return errors
+
     def _validate_zarr_groups(
         self, zarr_groups_by_space: dict[str, set[str]]
     ) -> list[str]:
@@ -630,6 +668,10 @@ class RaggedAtlas:
                 group_errors = spec.validate_group(group)
                 for e in group_errors:
                     errors.append(f"zarr group '{zg}': {e}")
+                if spec.feature_axis_mode is FeatureAxisMode.UNIFORM:
+                    errors.extend(
+                        self._validate_uniform_width(group, fs, zg)
+                    )
         return errors
 
     def _validate_var_dfs(

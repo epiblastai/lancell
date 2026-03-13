@@ -10,7 +10,7 @@ import polars as pl
 import scipy.sparse as sp
 
 from lancell.atlas import PointerFieldInfo
-from lancell.group_specs import ZarrGroupSpec
+from lancell.group_specs import FeatureAxisMode, ZarrGroupSpec
 from lancell.protocols import Reconstructor
 
 if TYPE_CHECKING:
@@ -213,9 +213,14 @@ class SparseCSRReconstructor:
         if not groups:
             return ad.AnnData()
 
-        _, union_globals, group_remap_to_union, n_features = _load_remaps_and_union(
-            atlas, groups, spec
-        )
+        if spec.feature_axis_mode is FeatureAxisMode.UNIFORM:
+            n_features = atlas.n_features(spec.feature_space)
+            union_globals = np.arange(n_features, dtype=np.int32)
+            group_remap_to_union = {}  # empty → identity branch in per-group loop
+        else:
+            _, union_globals, group_remap_to_union, n_features = _load_remaps_and_union(
+                atlas, groups, spec
+            )
 
         # Determine which layers to read
         if layer_overrides is not None:
@@ -304,9 +309,14 @@ class DenseReconstructor:
         if not groups:
             return ad.AnnData()
 
-        _, union_globals, group_remap_to_union, n_union_features = _load_remaps_and_union(
-            atlas, groups, spec
-        )
+        if spec.feature_axis_mode is FeatureAxisMode.UNIFORM:
+            n_union_features = atlas.n_features(spec.feature_space)
+            union_globals = np.arange(n_union_features, dtype=np.int32)
+            group_remap_to_union = {}  # empty → identity branch in per-group loop
+        else:
+            _, union_globals, group_remap_to_union, n_union_features = _load_remaps_and_union(
+                atlas, groups, spec
+            )
 
         # Determine which layers to read
         if layer_overrides is not None:

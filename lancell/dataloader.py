@@ -15,7 +15,7 @@ import polars as pl
 
 from lancell.atlas import RaggedAtlas
 from lancell.batch_array import BatchAsyncArray
-from lancell.group_specs import PointerKind, get_spec
+from lancell.group_specs import FeatureAxisMode, PointerKind, get_spec
 from lancell.reconstruction import _prepare_sparse_cells
 
 
@@ -112,8 +112,6 @@ async def _take_sparse(
     results = await asyncio.gather(*tasks)
 
     # Assemble: concatenate in group order
-    # REVIEW: In principle, we have all the lengths, right?
-    # Can't we pre-allocate and write into the right spots instead of concat?
     all_indices = []
     all_values = []
     all_lengths = []
@@ -250,9 +248,16 @@ class CellDataset:
         self._index_readers: dict[str, BatchAsyncArray] = {}
         self._layer_readers: dict[str, BatchAsyncArray] = {}
 
+        identity_remap = (
+            np.arange(atlas.n_features(feature_space), dtype=np.int32)
+            if spec.feature_axis_mode is FeatureAxisMode.UNIFORM
+            else None
+        )
         for zg in groups:
-            # REVIEW: Should we save these as memmaps to avoid taking up too much RAM?
-            self._remaps[zg] = atlas._get_remap(zg, feature_space)
+            self._remaps[zg] = (
+                identity_remap if identity_remap is not None
+                else atlas._get_remap(zg, feature_space)
+            )
             # Reuse atlas's cached BatchArray, extract underlying async array
             idx_reader = atlas._get_batch_reader(zg, index_array_name)
             layer_reader = atlas._get_batch_reader(zg, f"layers/{layer}")
@@ -264,7 +269,6 @@ class CellDataset:
         self._n_features = registry_table.count_rows()
 
         # Extract metadata as numpy arrays
-        # REVIEW: Ditto about memmaps, either as numpy arrays or as pyarrow
         self._metadata_arrays: dict[str, np.ndarray] | None = None
         if metadata_columns:
             self._metadata_arrays = {}

@@ -1,7 +1,7 @@
 from enum import Enum
 
 import zarr
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from lancell.protocols import Reconstructor
 
@@ -13,6 +13,11 @@ class DTypeKind(str, Enum):
     SIGNED_INTEGER = "i"
     UNSIGNED_INTEGER = "u"
     FLOAT = "f"
+
+
+class FeatureAxisMode(str, Enum):
+    RAGGED = "ragged"   # default: per-dataset var_df, remap at read time
+    UNIFORM = "uniform" # all datasets share global feature order; no remap
 
 
 class PointerKind(str, Enum):
@@ -52,10 +57,20 @@ class ZarrGroupSpec(BaseModel):
     pointer_kind: PointerKind
     reconstructor: Reconstructor
     has_var_df: bool = False
+    feature_axis_mode: FeatureAxisMode = FeatureAxisMode.RAGGED
     required_arrays: list[ArraySpec] = []
     required_subgroups: list[SubgroupSpec] = []
     required_layers: list[str] = []
     allowed_layers: list[str] = []
+
+    @model_validator(mode="after")
+    def _check_uniform_no_var_df(self) -> "ZarrGroupSpec":
+        if self.feature_axis_mode is FeatureAxisMode.UNIFORM and self.has_var_df:
+            raise ValueError(
+                "feature_axis_mode=UNIFORM is incompatible with has_var_df=True. "
+                "Uniform specs never write a var_df sidecar."
+            )
+        return self
 
     def validate_group(self, group: zarr.Group) -> list[str]:
         """Validate a zarr group against this spec. Returns a list of errors."""

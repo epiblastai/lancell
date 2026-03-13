@@ -17,13 +17,42 @@ from lancell.atlas import (
     _schema_obs_fields,
     validate_obs_columns,
 )
-from lancell.group_specs import PointerKind, get_spec
+from lancell.group_specs import FeatureAxisMode, PointerKind, get_spec
 from lancell.schema import (
     DatasetRecord,
     DenseZarrPointer,
     SparseZarrPointer,
 )
 from lancell.var_df import build_remap, write_remap, write_var_df
+
+
+def _validate_uniform_var(
+    atlas: "RaggedAtlas",
+    adata: ad.AnnData,
+    feature_space: str,
+) -> None:
+    """Verify that adata.var matches the registry in exact global_index order.
+
+    Raises ValueError with "exactly match registry order" if mismatched.
+    """
+    registry_table = atlas._registry_tables[feature_space]
+    registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
+    registry_uids = (
+        registry_df.sort("global_index")["uid"].to_list()
+    )
+
+    if "global_feature_uid" not in adata.var.columns:
+        raise ValueError(
+            "adata.var must have a 'global_feature_uid' column for uniform feature spaces."
+        )
+    adata_uids = adata.var["global_feature_uid"].tolist()
+
+    if adata_uids != registry_uids:
+        raise ValueError(
+            f"For uniform feature space '{feature_space}', adata.var['global_feature_uid'] "
+            f"must exactly match registry order. "
+            f"Expected {registry_uids}, got {adata_uids}."
+        )
 
 
 def add_from_anndata(
@@ -112,6 +141,10 @@ def add_from_anndata(
         )
 
     n_cells = adata.n_obs
+
+    # Validate uniform var order before any writes
+    if spec.feature_axis_mode is FeatureAxisMode.UNIFORM:
+        _validate_uniform_var(atlas, adata, feature_space)
 
     # Create dataset record (FK for cells)
     if dataset_record is None:
