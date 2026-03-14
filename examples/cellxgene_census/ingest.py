@@ -298,6 +298,7 @@ def main():
     )
     parser.add_argument("--h5ad", required=True, help="Path to .h5ad file")
     parser.add_argument("--atlas-dir", required=True, help="Path to atlas directory")
+    parser.add_argument("--no-csc", action="store_true", help="Skip adding CSC layout")
     args = parser.parse_args()
 
     h5ad_path = args.h5ad
@@ -319,9 +320,10 @@ def main():
     print("Ingesting data...")
     n_cells, zarr_group = ingest_backed(atlas, adata, h5ad_path, ensembl_to_uid)
 
-    print("Adding CSC layout...")
-    add_csc(atlas, zarr_group=zarr_group, feature_space=FEATURE_SPACE, layer_name=LAYER_NAME,
-            chunk_size=CHUNK_SIZE, shard_size=SHARD_SIZE)
+    if not args.no_csc:
+        print("Adding CSC layout...")
+        add_csc(atlas, zarr_group=zarr_group, feature_space=FEATURE_SPACE, layer_name=LAYER_NAME,
+                chunk_size=CHUNK_SIZE, shard_size=SHARD_SIZE)
 
     print(f"Done! Ingested {n_cells:,} cells from {Path(h5ad_path).name}")
 

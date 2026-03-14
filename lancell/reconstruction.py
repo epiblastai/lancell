@@ -143,7 +143,10 @@ def _build_feature_space(
     else:
         raise ValueError(f"feature_join must be 'union' or 'intersection', got '{join}'")
 
-    joined_globals = functools.reduce(reduce_fn, remaps.values()).astype(np.int32)
+    # functools.reduce with a single-element iterable returns that element unchanged
+    # (reduce_fn is never called), so the result may be unsorted. np.unique ensures
+    # sorted unique output in all cases, which searchsorted requires.
+    joined_globals = np.unique(functools.reduce(reduce_fn, remaps.values())).astype(np.int32)
 
     group_remap_to_joined: dict[str, np.ndarray] = {}
     for group, remap in remaps.items():
@@ -619,7 +622,12 @@ class FeatureCSCReconstructor:
                         offset += length
                         continue
                     zr_seg = flat_indices[offset:offset + length].astype(np.int64)
-                    valid_mask = (zr_seg < len(zr_to_rank)) & (zr_to_rank[zr_seg] >= 0)
+                    # Two-step: numpy & doesn't short-circuit, so indexing zr_to_rank
+                    # with out-of-bounds zr_seg values would raise even if the bounds
+                    # mask would have excluded them.
+                    in_bounds = zr_seg < len(zr_to_rank)
+                    valid_mask = in_bounds.copy()
+                    valid_mask[in_bounds] = zr_to_rank[zr_seg[in_bounds]] >= 0
                     kept_zr = zr_seg[valid_mask]
                     if len(kept_zr) > 0:
                         ranks = zr_to_rank[kept_zr]
