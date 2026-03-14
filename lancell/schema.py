@@ -14,6 +14,7 @@ class SparseZarrPointer(LanceModel):
     zarr_group: str
     start: int
     end: int
+    zarr_row: int = 0  # cell's 0-indexed position within this zarr group (for CSC lookup)
 
     @model_validator(mode="after")
     def _require_sparse_feature_space(self):

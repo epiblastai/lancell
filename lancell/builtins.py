@@ -23,13 +23,13 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[
-        ArraySpec(array_name="indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
+        ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
     ],
     required_subgroups=[
         SubgroupSpec(
-            subgroup_name="layers",
+            subgroup_name="csr/layers",
             uniform_shape=True,
-            match_shape_of="indices",
+            match_shape_of="csr/indices",
         ),
     ],
     required_layers=["counts"],
@@ -42,9 +42,9 @@ CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[
-        ArraySpec(array_name="indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-        ArraySpec(array_name="peak_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-        ArraySpec(array_name="peak_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
+        ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
+        ArraySpec(array_name="csr/peak_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
+        ArraySpec(array_name="csr/peak_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
     ],
     required_layers=["counts"],
     allowed_layers=["counts", "log_normalized", "tpm"],

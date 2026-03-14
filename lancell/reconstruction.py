@@ -24,6 +24,7 @@ __all__ = [
     "Reconstructor",
     "SparseCSRReconstructor",
     "DenseReconstructor",
+    "FeatureCSCReconstructor",
     "_get_pointer_columns",
 ]
 
@@ -39,7 +40,7 @@ def _prepare_sparse_cells(
 ) -> tuple[pl.DataFrame, list[str]]:
     """Unnest sparse pointer struct, filter empty, return (filtered_df, unique_groups).
 
-    Adds internal columns ``_zg``, ``_start``, ``_end``.
+    Adds internal columns ``_zg``, ``_start``, ``_end``, ``_zarr_row``.
     """
     col = pf.field_name
     struct_df = cells_pl[col].struct.unnest()
@@ -47,6 +48,7 @@ def _prepare_sparse_cells(
         struct_df["zarr_group"].alias("_zg"),
         struct_df["start"].alias("_start"),
         struct_df["end"].alias("_end"),
+        struct_df["zarr_row"].alias("_zarr_row"),
     )
     cells_pl = cells_pl.filter(pl.col("_zg") != "")
     groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
@@ -300,7 +302,7 @@ class SparseCSRReconstructor:
             starts = group_cells["_start"].to_numpy().astype(np.int64)
             ends = group_cells["_end"].to_numpy().astype(np.int64)
             idx_reader = atlas._get_batch_reader(zg, index_array_name)
-            lyr_readers = [atlas._get_batch_reader(zg, f"layers/{ln}") for ln in layers_to_read]
+            lyr_readers = [atlas._get_batch_reader(zg, f"csr/layers/{ln}") for ln in layers_to_read]
             group_data.append((zg, group_cells, starts, ends, idx_reader, lyr_readers))
 
         # Dispatch all groups concurrently
@@ -477,5 +479,206 @@ class DenseReconstructor:
         first_key = output_keys[0]
         X = all_layers[first_key]
         extra_layers = {k: all_layers[k] for k in output_keys[1:]}
+
+        return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
+
+
+class FeatureCSCReconstructor:
+    """Reconstruct sparse data using CSC for groups that have it, CSR otherwise.
+
+    Intended for feature-filtered queries (few features, many cells).
+    When a group has CSC data (populated ``csc_start``/``csc_end`` in var.parquet),
+    reads O(nnz for wanted features) instead of O(nnz per cell × n_cells).
+    Falls back to CSR for groups that have not been post-processed by ``add_csc``.
+    """
+
+    def as_anndata(
+        self,
+        atlas: "RaggedAtlas",
+        cells_pl: pl.DataFrame,
+        pf: PointerFieldInfo,
+        spec: ZarrGroupSpec,
+        layer_overrides: list[str] | None = None,
+        feature_join: Literal["union", "intersection"] = "union",
+        wanted_globals: np.ndarray | None = None,
+    ) -> ad.AnnData:
+        if wanted_globals is None:
+            return SparseCSRReconstructor().as_anndata(
+                atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
+            )
+
+        if len(spec.required_arrays) != 1:
+            raise NotImplementedError(
+                f"CSC reconstruction for '{pf.feature_space}' requires exactly one primary array"
+            )
+        csr_index_name = spec.required_arrays[0].array_name  # e.g. "csr/indices"
+
+        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
+        if not groups:
+            return ad.AnnData()
+
+        n_features = len(wanted_globals)
+        layers_to_read = layer_overrides if layer_overrides is not None else list(spec.required_layers)
+        if not layers_to_read:
+            raise ValueError(f"No layers specified for feature space '{pf.feature_space}'")
+
+        _, _, group_remap_to_joined, _ = _load_remaps_and_features(
+            atlas, groups, spec, "intersection", wanted_globals
+        )
+
+        # Per-group preparation: one read coroutine per group (CSC or CSR)
+        group_info: list[dict] = []
+        read_coroutines = []
+
+        for zg in groups:
+            group_cells = cells_pl.filter(pl.col("_zg") == zg)
+
+            if atlas._has_csc(zg):
+                var_df = atlas._get_var_df(zg)
+                remap = atlas._get_remap(zg, spec.feature_space)
+
+                # Build global_index -> local_index inverse map
+                remap_inv = np.full(int(remap.max()) + 1 if len(remap) > 0 else 0, -1, dtype=np.int64)
+                for local_i, global_i in enumerate(remap):
+                    remap_inv[int(global_i)] = local_i
+
+                # Find CSC ranges for each wanted global feature present in this group
+                csc_starts_list: list[int] = []
+                csc_ends_list: list[int] = []
+                feat_col_indices: list[int] = []
+
+                for col_idx, global_f in enumerate(wanted_globals):
+                    gf = int(global_f)
+                    if gf >= len(remap_inv) or remap_inv[gf] == -1:
+                        continue
+                    local_f = int(remap_inv[gf])
+                    row = var_df.row(local_f, named=True)
+                    cs = row.get("csc_start")
+                    ce = row.get("csc_end")
+                    if cs is None or ce is None:
+                        continue
+                    csc_starts_list.append(int(cs))
+                    csc_ends_list.append(int(ce))
+                    feat_col_indices.append(col_idx)
+
+                # Build zarr_row -> rank-within-group lookup (vectorized)
+                zarr_rows_arr = group_cells["_zarr_row"].to_numpy().astype(np.int64)
+                max_zr = int(zarr_rows_arr.max()) + 1 if len(zarr_rows_arr) > 0 else 0
+                zr_to_rank = np.full(max_zr, -1, dtype=np.int64)
+                for rank, zr in enumerate(zarr_rows_arr):
+                    zr_to_rank[int(zr)] = rank
+
+                starts = np.array(csc_starts_list, dtype=np.int64)
+                ends = np.array(csc_ends_list, dtype=np.int64)
+                idx_reader = atlas._get_batch_reader(zg, "csc/indices")
+                lyr_readers = [atlas._get_batch_reader(zg, f"csc/layers/{ln}") for ln in layers_to_read]
+                read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
+                group_info.append({
+                    "mode": "csc",
+                    "group_cells": group_cells,
+                    "feat_col_indices": feat_col_indices,
+                    "zr_to_rank": zr_to_rank,
+                })
+
+            else:
+                starts = group_cells["_start"].to_numpy().astype(np.int64)
+                ends = group_cells["_end"].to_numpy().astype(np.int64)
+                idx_reader = atlas._get_batch_reader(zg, csr_index_name)
+                lyr_readers = [atlas._get_batch_reader(zg, f"csr/layers/{ln}") for ln in layers_to_read]
+                read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
+                group_info.append({
+                    "mode": "csr",
+                    "group_cells": group_cells,
+                    "zg": zg,
+                })
+
+        async def _read_all():
+            return await asyncio.gather(*read_coroutines)
+
+        all_results = sync(_read_all())
+
+        # Assemble COO entries across all groups
+        rows_parts: list[np.ndarray] = []
+        cols_parts: list[np.ndarray] = []
+        layer_vals_parts: dict[str, list[np.ndarray]] = {ln: [] for ln in layers_to_read}
+        obs_parts: list[pl.DataFrame] = []
+        cell_offset = 0
+
+        for info, (idx_result, layer_results) in zip(group_info, all_results):
+            group_cells = info["group_cells"]
+            n_cells_group = group_cells.height
+            flat_indices, lengths = idx_result
+
+            if info["mode"] == "csc":
+                feat_col_indices = info["feat_col_indices"]
+                zr_to_rank = info["zr_to_rank"]
+
+                offset = 0
+                for length, col_idx in zip(lengths, feat_col_indices):
+                    if length == 0:
+                        offset += length
+                        continue
+                    zr_seg = flat_indices[offset:offset + length].astype(np.int64)
+                    valid_mask = (zr_seg < len(zr_to_rank)) & (zr_to_rank[zr_seg] >= 0)
+                    kept_zr = zr_seg[valid_mask]
+                    if len(kept_zr) > 0:
+                        ranks = zr_to_rank[kept_zr]
+                        rows_parts.append((cell_offset + ranks).astype(np.int64))
+                        cols_parts.append(np.full(len(kept_zr), col_idx, dtype=np.int64))
+                        for ln_i, ln in enumerate(layers_to_read):
+                            flat_vals, _ = layer_results[ln_i]
+                            val_seg = flat_vals[offset:offset + length]
+                            layer_vals_parts[ln].append(val_seg[valid_mask])
+                    offset += length
+
+            else:
+                zg = info["zg"]
+                joined_remap = group_remap_to_joined.get(zg)
+                if joined_remap is not None:
+                    joined_indices = joined_remap[flat_indices.astype(np.intp)]
+                    keep_mask = joined_indices >= 0
+                    joined_indices_kept = joined_indices[keep_mask]
+                else:
+                    keep_mask = None
+                    joined_indices_kept = flat_indices.astype(np.int64)
+
+                if keep_mask is not None:
+                    cell_ids = np.repeat(np.arange(n_cells_group, dtype=np.int64), lengths)
+                    lengths_filtered = np.bincount(
+                        cell_ids[keep_mask], minlength=n_cells_group
+                    ).astype(np.int64)
+                else:
+                    lengths_filtered = lengths
+
+                cell_local_ids = np.repeat(np.arange(n_cells_group, dtype=np.int64), lengths_filtered)
+                rows_parts.append(cell_offset + cell_local_ids)
+                cols_parts.append(joined_indices_kept.astype(np.int64))
+                for ln_i, ln in enumerate(layers_to_read):
+                    flat_vals, _ = layer_results[ln_i]
+                    layer_vals_parts[ln].append(flat_vals[keep_mask] if keep_mask is not None else flat_vals)
+
+            obs_parts.append(group_cells)
+            cell_offset += n_cells_group
+
+        n_total_cells = cell_offset
+
+        rows = np.concatenate(rows_parts) if rows_parts else np.array([], dtype=np.int64)
+        cols = np.concatenate(cols_parts) if cols_parts else np.array([], dtype=np.int64)
+
+        stacked: dict[str, sp.csr_matrix] = {}
+        for ln in layers_to_read:
+            vals_list = layer_vals_parts[ln]
+            vals = np.concatenate(vals_list) if vals_list else np.array([], dtype=np.float32)
+            stacked[ln] = sp.coo_matrix(
+                (vals, (rows, cols)), shape=(n_total_cells, n_features)
+            ).tocsr()
+
+        obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
+        obs = _build_obs_df(obs_pl)
+        var = _build_var(atlas, pf.feature_space, wanted_globals)
+
+        first_layer = layers_to_read[0]
+        X = stacked.get(first_layer)
+        extra_layers = {ln: stacked[ln] for ln in layers_to_read[1:] if ln in stacked}
 
         return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)

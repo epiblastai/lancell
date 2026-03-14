@@ -44,6 +44,8 @@ class VarDfColumnSchema(BaseModel):
     """
 
     global_feature_uid: str
+    csc_start: int | None = None  # offset into csc/indices where this feature's cells begin
+    csc_end: int | None = None    # exclusive end offset (populated by add_csc)
 
     @classmethod
     def required_columns(cls) -> set[str]:
@@ -77,6 +79,16 @@ def var_df_path(zarr_group: str) -> str:
 
 def remap_path(zarr_group: str) -> str:
     return f"{zarr_group.rstrip('/')}/{REMAP_FILENAME}"
+
+
+def has_csc(var_df: pl.DataFrame) -> bool:
+    """Return True if *var_df* has fully populated ``csc_start`` and ``csc_end`` columns."""
+    return (
+        "csc_start" in var_df.columns
+        and "csc_end" in var_df.columns
+        and var_df["csc_start"].null_count() == 0
+        and var_df["csc_end"].null_count() == 0
+    )
 
 
 # ---------------------------------------------------------------------------

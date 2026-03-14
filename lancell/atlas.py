@@ -36,6 +36,7 @@ from lancell.schema import (
 from lancell.var_df import (
     build_remap,
     find_datasets_with_features,
+    has_csc,
     read_remap_if_fresh,
     read_var_df,
     reindex_registry,
@@ -257,6 +258,7 @@ class RaggedAtlas:
         # Instance-level caches (version-aware for remaps)
         self._remap_cache: dict[tuple[str, str], tuple[int, np.ndarray]] = {}
         self._batch_reader_cache: dict[tuple[str, str], BatchAsyncArray] = {}
+        self._var_df_cache: dict[str, pl.DataFrame] = {}
 
         # Validate that global_index is contiguous 0..N-1 within each
         # registry table. A broken index silently corrupts every remap and
@@ -426,12 +428,22 @@ class RaggedAtlas:
             return disk_remap
 
         # Rebuild from var_df + registry
-        var_df = read_var_df(self._store, zarr_group)
+        var_df = self._get_var_df(zarr_group)
         remap = build_remap(var_df, registry_table)
         if not self._root.store.read_only:
             write_remap(self._store, group, remap, registry_version=current_version)
         self._remap_cache[cache_key] = (current_version, remap)
         return remap
+
+    def _get_var_df(self, zarr_group: str) -> pl.DataFrame:
+        """Load and cache var_df for a zarr group."""
+        if zarr_group not in self._var_df_cache:
+            self._var_df_cache[zarr_group] = read_var_df(self._store, zarr_group)
+        return self._var_df_cache[zarr_group]
+
+    def _has_csc(self, zarr_group: str) -> bool:
+        """Return True if this zarr group has CSC data (csc_start/csc_end in var.parquet)."""
+        return has_csc(self._get_var_df(zarr_group))
 
     def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchAsyncArray:
         """Get a cached BatchAsyncArray reader for a zarr array."""

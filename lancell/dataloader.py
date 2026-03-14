@@ -138,7 +138,7 @@ async def _take_sparse(
         if zg not in local_readers:
             local_readers[zg] = (
                 BatchAsyncArray.from_array(zarr_root[f"{zg}/{index_array_name}"]),
-                BatchAsyncArray.from_array(zarr_root[f"{zg}/layers/{layer}"]),
+                BatchAsyncArray.from_array(zarr_root[f"{zg}/csr/layers/{layer}"]),
             )
         index_reader, layer_reader = local_readers[zg]
         tasks.append(

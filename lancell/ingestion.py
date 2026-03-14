@@ -155,6 +155,7 @@ def add_from_anndata(
                 zarr_group=zarr_group,
                 start=int(starts[i]),
                 end=int(ends[i]),
+                zarr_row=i,
             )
         else:
             pointer = DenseZarrPointer(
@@ -219,7 +220,8 @@ def write_sparse_zarr(
         if np.issubdtype(flat_values.dtype, np.integer):
             layer_kwargs["compressors"] = BitpackingCodec(transform="none")
 
-    group.create_array(
+    csr_group = group.create_group("csr")
+    csr_group.create_array(
         "indices",
         data=flat_indices,
         chunks=(chunk_size,),
@@ -227,7 +229,7 @@ def write_sparse_zarr(
         **indices_kwargs,
     )
 
-    layers = group.create_group("layers")
+    layers = csr_group.create_group("layers")
     layers.create_array(
         layer_name,
         data=flat_values,
