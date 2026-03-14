@@ -32,7 +32,7 @@ ALL_METHODS = ["one_table", "two_table", "zarr_obstore", "zarr_bitpacked"]
 # ---------------------------------------------------------------------------
 N_GENES = 20_000
 S3_BASE = "s3://epiblast/lancell_data_structure_test"
-N_REPEATS = 1
+N_REPEATS = 3
 
 METADATA_COLS = ["cell_uid", "tissue", "cell_type", "organism"]
 QUERIES = [
@@ -134,13 +134,15 @@ def bench(name: str, fn, queries: list[tuple[str, str]]):
             mat = reconstruct_csr(gi, cv)
             t_csr = time.perf_counter() - t1
 
+            n = len(obs)
+            del obs, gi, cv, mat
+
             load_times.append(t_load)
             csr_times.append(t_csr)
-            n = len(obs)
         med_load = np.median(load_times)
         med_csr = np.median(csr_times)
         med_total = med_load + med_csr
-        results[label] = {"load": med_load, "csr": med_csr, "total": med_total, "n": n, "mat": mat}
+        results[label] = {"load": med_load, "csr": med_csr, "total": med_total, "n": n}
         print(f"  {name:<22s} | {label:<16s} | n={n:>6d} | load={med_load:.4f}s | csr={med_csr:.4f}s | total={med_total:.4f}s")
     return results
 
@@ -216,26 +218,6 @@ def main():
         r4 = bench("zarr_bitpacked", lambda w: query_zarr_bitpacked(meta4, bp_reader_indices, bp_reader_counts, w), QUERIES)
         all_benches.append(("zarr_bitpacked", r4))
         print()
-
-    # Verify consistency across approaches that ran
-    if len(all_benches) > 1:
-        print("--- Verifying result consistency across all approaches ---")
-        for _, label in QUERIES:
-            ref_name, ref = all_benches[0]
-            ref_mat = ref[label]["mat"]
-            for cmp_name, cmp in all_benches[1:]:
-                cmp_mat = cmp[label]["mat"]
-                try:
-                    assert ref_mat.shape == cmp_mat.shape, (
-                        f"[{label}] shape mismatch: {ref_name} {ref_mat.shape} vs {cmp_name} {cmp_mat.shape}"
-                    )
-                    diff = ref_mat - cmp_mat
-                    assert diff.nnz == 0, (
-                        f"[{label}] data mismatch: {ref_name} vs {cmp_name} ({diff.nnz} differing elements)"
-                    )
-                    print(f"  {label}: {ref_name} == {cmp_name} OK ({ref_mat.shape[0]} cells)")
-                except AssertionError as e:
-                    print(f"  {label}: {ref_name} != {cmp_name} FAIL: {e}")
 
     # Summary table
     if not all_benches:

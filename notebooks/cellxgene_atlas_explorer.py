@@ -25,6 +25,7 @@ def _():
 
     import marimo as mo
     from tqdm.auto import tqdm
+    from lancell.schema import AtlasVersionRecord
 
     # Allow imports from the repo root (lancell + examples)
     _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

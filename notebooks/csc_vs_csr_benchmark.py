@@ -92,7 +92,7 @@ def _(os):
         )
 
     atlas_csc = _open("s3://epiblast/ragged_atlases/cellxgene_mini_csc/")
-    atlas_csr = _open("s3://epiblast/ragged_atlases/cellxgene_mini_csr/")
+    atlas_csr = _open("s3://epiblast/ragged_atlases/cellxgene_mini_feature_index/")
     return atlas_csc, atlas_csr
 
 
