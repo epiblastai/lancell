@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
     "h5py",
-    "torch",
     "boto3",
     "pylance>=2.0.0",
     "lancedb",
@@ -51,6 +50,9 @@ torchvision = [
 ]
 
 [project.optional-dependencies]
+ml = [
+    "torch",
+]
 dev = [
     "pytest",
     "ruff",

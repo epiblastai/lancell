@@ -323,8 +323,14 @@ def main():
 
     if not args.no_csc:
         print("Adding CSC layout...")
-        add_csc(atlas, zarr_group=zarr_group, feature_space=FEATURE_SPACE, layer_name=LAYER_NAME,
-                chunk_size=CHUNK_SIZE, shard_size=SHARD_SIZE)
+        add_csc(
+            atlas,
+            zarr_group=zarr_group,
+            feature_space=FEATURE_SPACE,
+            layer_name=LAYER_NAME,
+            chunk_size=CHUNK_SIZE,
+            shard_size=SHARD_SIZE,
+        )
 
     print(f"Done! Ingested {n_cells:,} cells from {Path(h5ad_path).name}")
 

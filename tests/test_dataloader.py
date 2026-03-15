@@ -419,6 +419,7 @@ def test_no_metadata(two_group_atlas):
 
 def test_sparse_to_dense_collate(single_group_atlas):
     """sparse_to_dense_collate produces correct dense tensor."""
+    pytest.importorskip("torch")
     ds = single_group_atlas.query().feature_spaces("gene_expression").to_cell_dataset()
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
     batch = ds.__getitems__(next(iter(sampler)))
@@ -438,6 +439,7 @@ def test_sparse_to_dense_collate(single_group_atlas):
 
 def test_collate_with_metadata(two_group_atlas):
     """Collate functions pass through metadata as tensors."""
+    pytest.importorskip("torch")
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")

@@ -90,9 +90,13 @@ def main():
         default=[0, 2, 4],
         help="Worker counts to benchmark (default: 0 2 4)",
     )
-    parser.add_argument("--batch-size", type=int, default=256, help="Cells per batch (default: 256)")
+    parser.add_argument(
+        "--batch-size", type=int, default=256, help="Cells per batch (default: 256)"
+    )
     parser.add_argument("--seed", type=int, default=42, help="RNG seed (default: 42)")
-    parser.add_argument("--repeats", type=int, default=1, help="Timed epochs per worker count (default: 1)")
+    parser.add_argument(
+        "--repeats", type=int, default=1, help="Timed epochs per worker count (default: 1)"
+    )
     parser.add_argument("--warmup", type=int, default=1, help="Warmup epochs (default: 1)")
     args = parser.parse_args()
 
@@ -106,7 +110,6 @@ def main():
     print("Opening atlas...", flush=True)
     atlas = open_atlas(args.atlas)
 
-    import polars as pl
     cells_pl = atlas.query().where(args.query).to_polars()
     print(f"Query returned {cells_pl.height:,} cells")
     print()
@@ -130,8 +133,10 @@ def main():
             num_workers=max(1, n_workers),  # planning always uses >=1
         )
         n_batches = len(dataset)
-        print(f"  {n_batches} batches x {args.batch_size} cells = {dataset.n_cells:,} cells, "
-              f"{dataset.n_features:,} features")
+        print(
+            f"  {n_batches} batches x {args.batch_size} cells = {dataset.n_cells:,} cells, "
+            f"{dataset.n_features:,} features"
+        )
 
         # Warmup
         for ep in range(args.warmup):
@@ -148,29 +153,36 @@ def main():
             epoch_times.append(t)
             all_batch_ms.extend(batch_ms)
             cells_sec = n_cells / t if t > 0 else 0
-            print(f"  rep {rep + 1}: {t:.3f}s total | "
-                  f"{t / n_batches * 1000:.1f} ms/batch | "
-                  f"{cells_sec:,.0f} cells/s", flush=True)
+            print(
+                f"  rep {rep + 1}: {t:.3f}s total | "
+                f"{t / n_batches * 1000:.1f} ms/batch | "
+                f"{cells_sec:,.0f} cells/s",
+                flush=True,
+            )
 
         med_epoch = float(np.median(epoch_times))
         med_batch_ms = float(np.median(all_batch_ms))
         p95_batch_ms = float(np.percentile(all_batch_ms, 95))
         med_cells_sec = dataset.n_cells / med_epoch if med_epoch > 0 else 0
 
-        results.append({
-            "n_workers": n_workers,
-            "label": label,
-            "med_epoch_s": med_epoch,
-            "med_batch_ms": med_batch_ms,
-            "p95_batch_ms": p95_batch_ms,
-            "med_cells_sec": med_cells_sec,
-        })
+        results.append(
+            {
+                "n_workers": n_workers,
+                "label": label,
+                "med_epoch_s": med_epoch,
+                "med_batch_ms": med_batch_ms,
+                "p95_batch_ms": p95_batch_ms,
+                "med_cells_sec": med_cells_sec,
+            }
+        )
         print()
 
     # Summary table
     col = 22
     print("=" * (col + 60))
-    print(f"{'workers':<{col}} {'epoch (med)'!s:>12} {'ms/batch (med)'!s:>16} {'ms/batch (p95)'!s:>16} {'cells/s'!s:>12}")
+    print(
+        f"{'workers':<{col}} {'epoch (med)'!s:>12} {'ms/batch (med)'!s:>16} {'ms/batch (p95)'!s:>16} {'cells/s'!s:>12}"
+    )
     print("-" * (col + 60))
     for r in results:
         print(

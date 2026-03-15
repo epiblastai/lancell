@@ -7,13 +7,13 @@ that calls the lower-level ``var_df`` helpers directly.
 
 import anndata as ad
 import numpy as np
-import pyarrow as pa
 import polars as pl
+import pyarrow as pa
 import scipy.sparse as sp
 
 from lancell.atlas import (
-    RaggedAtlas,
     PointerFieldInfo,
+    RaggedAtlas,
     _schema_obs_fields,
     validate_obs_columns,
 )
@@ -95,9 +95,7 @@ def add_from_anndata(
     # Pre-flight: validate obs columns match schema before any writes
     obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
     if obs_errors:
-        raise ValueError(
-            f"obs columns do not match cell schema: {obs_errors}"
-        )
+        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
     # Find the pointer field for this feature space
     pointer_field: PointerFieldInfo | None = None
@@ -135,7 +133,12 @@ def add_from_anndata(
     # Write zarr arrays
     if spec.pointer_kind is PointerKind.SPARSE:
         starts, ends = write_sparse_zarr(
-            atlas, adata, zarr_group, layer_name, chunk_size, shard_size,
+            atlas,
+            adata,
+            zarr_group,
+            layer_name,
+            chunk_size,
+            shard_size,
             use_bitpacking=use_bitpacking,
         )
     else:
@@ -164,11 +167,7 @@ def add_from_anndata(
                 position=i,
             )
 
-        extra = {
-            col: adata.obs.iloc[i][col]
-            for col in obs_field_names
-            if col in adata.obs.columns
-        }
+        extra = {col: adata.obs.iloc[i][col] for col in obs_field_names if col in adata.obs.columns}
         record_kwargs = {
             pointer_field.field_name: pointer,
             "dataset_uid": dataset_record.uid,
@@ -177,9 +176,7 @@ def add_from_anndata(
         records.append(atlas._cell_schema(**record_kwargs))
 
     arrow_schema = atlas._cell_schema.to_arrow_schema()
-    arrow_table = pa.Table.from_pylist(
-        [r.model_dump() for r in records], schema=arrow_schema
-    )
+    arrow_table = pa.Table.from_pylist([r.model_dump() for r in records], schema=arrow_schema)
     atlas.cell_table.add(arrow_table)
     return n_cells
 
@@ -300,6 +297,8 @@ def write_var_sidecar(
         remap = build_remap(var_df, registry_table)
         group = atlas._root[zarr_group]
         write_remap(
-            atlas._store, group, remap,
+            atlas._store,
+            group,
+            remap,
             registry_version=registry_table.version,
         )

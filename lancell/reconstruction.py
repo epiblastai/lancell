@@ -588,9 +588,7 @@ class FeatureCSCReconstructor:
                 starts = np.array(csc_starts_list, dtype=np.int64)
                 ends = np.array(csc_ends_list, dtype=np.int64)
                 idx_reader = gr.get_array_reader("csc/indices")
-                lyr_readers = [
-                    gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read
-                ]
+                lyr_readers = [gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
                 group_info.append(
                     {
@@ -605,9 +603,7 @@ class FeatureCSCReconstructor:
                 starts = group_cells["_start"].to_numpy().astype(np.int64)
                 ends = group_cells["_end"].to_numpy().astype(np.int64)
                 idx_reader = gr.get_array_reader(csr_index_name)
-                lyr_readers = [
-                    gr.get_array_reader(f"csr/layers/{ln}") for ln in layers_to_read
-                ]
+                lyr_readers = [gr.get_array_reader(f"csr/layers/{ln}") for ln in layers_to_read]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
                 group_info.append(
                     {

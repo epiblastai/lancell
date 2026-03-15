@@ -28,7 +28,6 @@ from lancell.schema import (
 )
 from lancell.var_df import reindex_registry
 
-
 # ---------------------------------------------------------------------------
 # Test schemas
 # ---------------------------------------------------------------------------
@@ -147,8 +146,7 @@ def test_full_workflow():
         # 1. Register features
         gene_uids = [f"gene_{i}" for i in range(10)]
         gene_records = [
-            GeneFeatureSchema(uid=uid, gene_name=f"GENE{i}")
-            for i, uid in enumerate(gene_uids)
+            GeneFeatureSchema(uid=uid, gene_name=f"GENE{i}") for i, uid in enumerate(gene_uids)
         ]
         n_registered = atlas.register_features("gene_expression", gene_records)
         assert n_registered == 10, f"Expected 10 registered, got {n_registered}"
@@ -283,7 +281,7 @@ def test_layer_name_required_for_sparse():
                 zarr_group="test_group",
                 layer_name=None,
             )
-            assert False, "Should have raised ValueError for missing layer_name"
+            raise AssertionError("Should have raised ValueError for missing layer_name")
         except ValueError as e:
             assert "layer_name is required" in str(e)
 
@@ -331,7 +329,7 @@ def test_obs_validation_before_write():
                 zarr_group="test_group",
                 layer_name="counts",
             )
-            assert False, "Should have raised ValueError for missing required_field"
+            raise AssertionError("Should have raised ValueError for missing required_field")
         except ValueError as e:
             assert "required_field" in str(e)
 

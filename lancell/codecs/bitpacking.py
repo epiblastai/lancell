@@ -80,9 +80,7 @@ class BitpackingCodec(BytesBytesCodec):
         encoded_array = bitpack_encode(raw, self.transform)
         return chunk_spec.prototype.buffer.from_bytes(bytes(encoded_array))
 
-    def compute_encoded_size(
-        self, input_byte_length: int, _chunk_spec: ArraySpec
-    ) -> int:
+    def compute_encoded_size(self, input_byte_length: int, _chunk_spec: ArraySpec) -> int:
         # Variable output size — cannot compute statically
         raise NotImplementedError
 

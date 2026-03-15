@@ -255,7 +255,7 @@ class RaggedAtlas:
         self._feature_dataset_table = feature_dataset_table
 
         # Instance-level cache: one GroupReader per (zarr_group, feature_space)
-        self._group_readers: dict[tuple[str, str], "GroupReader"] = {}
+        self._group_readers: dict[tuple[str, str], GroupReader] = {}
 
         # Validate that global_index is contiguous 0..N-1 within each
         # registry table. A broken index silently corrupts every remap and
@@ -322,9 +322,7 @@ class RaggedAtlas:
 
         version_table = db.create_table(version_table_name, schema=AtlasVersionRecord)
 
-        feature_dataset_table = db.create_table(
-            "_feature_dataset_pairs", schema=FeatureDatasetPair
-        )
+        feature_dataset_table = db.create_table("_feature_dataset_pairs", schema=FeatureDatasetPair)
         feature_dataset_table.create_fts_index("feature_uid")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
@@ -511,10 +509,12 @@ class RaggedAtlas:
         if self._feature_dataset_table is None:
             return
         feature_uids = var_df["global_feature_uid"].to_list()
-        pairs = pl.DataFrame({
-            "feature_uid": feature_uids,
-            "dataset_uid": [dataset_uid] * len(feature_uids),
-        })
+        pairs = pl.DataFrame(
+            {
+                "feature_uid": feature_uids,
+                "dataset_uid": [dataset_uid] * len(feature_uids),
+            }
+        )
         self._feature_dataset_table.add(pairs)
 
     # -- Maintenance --------------------------------------------------------
@@ -631,10 +631,7 @@ class RaggedAtlas:
         )
 
     def _has_fts_index(self) -> bool:
-        return any(
-            idx.get("type") == "FTS"
-            for idx in self._feature_dataset_table.list_indices()
-        )
+        return any(idx.get("type") == "FTS" for idx in self._feature_dataset_table.list_indices())
 
     def _datasets_with_features_fast(
         self, feature_uids: list[str], feature_space: str
@@ -646,8 +643,7 @@ class RaggedAtlas:
         limit = max(len(feature_uids) * n_datasets, 1)
 
         pairs = (
-            self._feature_dataset_table
-            .search(MatchQuery(query_str), query_type="fts")
+            self._feature_dataset_table.search(MatchQuery(query_str), query_type="fts")
             .limit(limit)
             .to_polars()
         )
@@ -658,8 +654,7 @@ class RaggedAtlas:
         datasets_df = datasets_df.filter(pl.col("feature_space") == feature_space)
 
         return (
-            pairs
-            .rename({"feature_uid": "global_feature_uid"})
+            pairs.rename({"feature_uid": "global_feature_uid"})
             .join(datasets_df, left_on="dataset_uid", right_on="uid", how="inner")
             .drop("dataset_uid")
         )
@@ -796,11 +791,7 @@ class RaggedAtlas:
         db = lancedb.connect(db_uri)
         version_table = db.open_table(version_table_name)
 
-        records = (
-            version_table.search()
-            .where(f"version = {version}", prefilter=True)
-            .to_polars()
-        )
+        records = version_table.search().where(f"version = {version}", prefilter=True).to_polars()
         if records.is_empty():
             raise ValueError(
                 f"Atlas version {version} not found. "

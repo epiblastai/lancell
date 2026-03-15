@@ -27,10 +27,21 @@ Usage::
 
 import numpy as np
 import polars as pl
-from torch.utils.data import Sampler
+
+try:
+    from torch.utils.data import Sampler as _TorchSampler
+except ImportError:
+
+    class _TorchSampler:  # type: ignore[no-redef]
+        """Stub so class definitions succeed when torch is not installed."""
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                "torch is required for lancell samplers. Install it with: pip install lancell[ml]"
+            )
 
 
-class CellSampler(Sampler):
+class CellSampler(_TorchSampler):
     """Batch sampler that groups cells by zarr group for I/O locality.
 
     Groups are bin-packed across workers so each worker warms a small,
@@ -142,7 +153,7 @@ class CellSampler(Sampler):
         return iter(self._batches)
 
 
-class BalancedCellSampler(Sampler):
+class BalancedCellSampler(_TorchSampler):
     """Batch sampler that draws equal cells per category each batch.
 
     Each batch is assembled by drawing ``batch_size // n_cats`` cells from

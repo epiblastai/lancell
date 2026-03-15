@@ -44,6 +44,7 @@ _s3 = s3fs.S3FileSystem()
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def get_s3_size_mb(s3_path: str) -> float:
     """Return total size in MB of all objects under an S3 prefix."""
     prefix = s3_path.replace("s3://", "")
@@ -74,10 +75,13 @@ def _dict_to_arrow_table(data: dict) -> pa.Table:
 # Data generation
 # ---------------------------------------------------------------------------
 
+
 def generate_all_data():
     """Generate synthetic image tile data for all cells."""
-    print(f"Generating {N_IMAGES:,} images of shape {TILE_SHAPE} "
-          f"(~{N_IMAGES * TILE_SIZE / 1024**2:.0f} MB)...")
+    print(
+        f"Generating {N_IMAGES:,} images of shape {TILE_SHAPE} "
+        f"(~{N_IMAGES * TILE_SIZE / 1024**2:.0f} MB)..."
+    )
     rng = np.random.default_rng(SEED)
 
     t0 = time.perf_counter()
@@ -86,8 +90,16 @@ def generate_all_data():
     print(f"  Generated in {t_gen:.1f}s")
 
     tissues = ["brain", "lung", "liver", "heart", "kidney", "spleen", "blood", "skin"]
-    cell_types = ["T cell", "B cell", "macrophage", "fibroblast", "epithelial",
-                  "neuron", "astrocyte", "endothelial"]
+    cell_types = [
+        "T cell",
+        "B cell",
+        "macrophage",
+        "fibroblast",
+        "epithelial",
+        "neuron",
+        "astrocyte",
+        "endothelial",
+    ]
     metadata = {
         "cell_uid": [f"cell_{i:07d}" for i in range(N_IMAGES)],
         "tissue": rng.choice(tissues, size=N_IMAGES).tolist(),
@@ -100,6 +112,7 @@ def generate_all_data():
 # ---------------------------------------------------------------------------
 # Approach 1: Single table with blob columns
 # ---------------------------------------------------------------------------
+
 
 def setup_approach1(images, metadata):
     path = f"{S3_BASE}/approach1_blob"
@@ -121,6 +134,7 @@ def setup_approach1(images, metadata):
 # ---------------------------------------------------------------------------
 # Approach 2: Two tables (metadata + blobs), row offset lookup
 # ---------------------------------------------------------------------------
+
 
 def setup_approach2(images, metadata):
     path = f"{S3_BASE}/approach2_two_tables"
@@ -145,6 +159,7 @@ def setup_approach2(images, metadata):
 # ---------------------------------------------------------------------------
 # Approach 3: Zarr pointer (4D sharded array)
 # ---------------------------------------------------------------------------
+
 
 def setup_approach3(images, metadata):
     lance_path = f"{S3_BASE}/approach3_lance"
@@ -182,14 +197,17 @@ def setup_approach3(images, metadata):
     zarr_size = get_s3_size_mb(zarr_path)
     lance_size = get_s3_size_mb(lance_path)
     total_size = lance_size + zarr_size
-    print(f"  Written in {t_zarr_write + t_lance_write:.1f}s "
-          f"(zarr: {zarr_size:.1f} MB, lance: {lance_size:.1f} MB, "
-          f"total: {total_size:.1f} MB)")
+    print(
+        f"  Written in {t_zarr_write + t_lance_write:.1f}s "
+        f"(zarr: {zarr_size:.1f} MB, lance: {lance_size:.1f} MB, "
+        f"total: {total_size:.1f} MB)"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     print(f"Clearing existing data at {S3_BASE} ...")
@@ -202,13 +220,17 @@ def main():
     setup_approach2(images, metadata)
     setup_approach3(images, metadata)
 
-    print(f"\nStorage sizes:")
+    print("\nStorage sizes:")
     print(f"  Approach 1 (blob column):  {get_s3_size_mb(f'{S3_BASE}/approach1_blob'):.1f} MB")
-    print(f"  Approach 2 (two tables):   {get_s3_size_mb(f'{S3_BASE}/approach2_two_tables'):.1f} MB")
+    print(
+        f"  Approach 2 (two tables):   {get_s3_size_mb(f'{S3_BASE}/approach2_two_tables'):.1f} MB"
+    )
     a3_lance = get_s3_size_mb(f"{S3_BASE}/approach3_lance")
     a3_zarr = get_s3_size_mb(f"{S3_BASE}/approach3_images.zarr")
-    print(f"  Approach 3 (zarr pointer): {a3_lance + a3_zarr:.1f} MB "
-          f"(lance: {a3_lance:.1f}, zarr: {a3_zarr:.1f})")
+    print(
+        f"  Approach 3 (zarr pointer): {a3_lance + a3_zarr:.1f} MB "
+        f"(lance: {a3_lance:.1f}, zarr: {a3_zarr:.1f})"
+    )
     print(f"\nData written to {S3_BASE}")
 
 

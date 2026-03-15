@@ -93,9 +93,7 @@ def add_csc(
     flat_indices, lengths = csr_index_arr.read_ranges(
         starts.astype(np.int64), ends.astype(np.int64)
     )
-    flat_values, _ = csr_layer_arr.read_ranges(
-        starts.astype(np.int64), ends.astype(np.int64)
-    )
+    flat_values, _ = csr_layer_arr.read_ranges(starts.astype(np.int64), ends.astype(np.int64))
 
     # Reconstruct (zarr_row, feature_idx) for every non-zero element
     cell_ids = np.repeat(np.arange(n_cells, dtype=np.int64), lengths)

@@ -142,8 +142,8 @@ class DatasetRecord(LanceModel):
 class FeatureDatasetPair(LanceModel):
     """Inverted index entry mapping a feature UID to the dataset that measured it."""
 
-    feature_uid: str   # from any feature space registry (globally unique)
-    dataset_uid: str   # from DatasetRecord.uid
+    feature_uid: str  # from any feature space registry (globally unique)
+    dataset_uid: str  # from DatasetRecord.uid
 
 
 class AtlasVersionRecord(LanceModel):
@@ -154,7 +154,7 @@ class AtlasVersionRecord(LanceModel):
     cell_table_version: int
     dataset_table_name: str
     dataset_table_version: int
-    registry_table_names: str    # JSON: {"feature_space": "table_name", ...}
+    registry_table_names: str  # JSON: {"feature_space": "table_name", ...}
     registry_table_versions: str  # JSON: {"feature_space": version_int, ...}
     total_cells: int
     created_at: str = Field(
