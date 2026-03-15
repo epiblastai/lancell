@@ -305,6 +305,33 @@ def add_anndata_batch(
         pointer_field.field_name: pointer_struct,
     }
 
+    # Zero-fill any other pointer fields in the schema (multi-modal schemas).
+    # Lance requires non-null values for non-null struct fields; an empty zarr_group
+    # string ("") signals "absent" and is filtered by _prepare_*_cells.
+    for other_pf_name, other_pf in atlas._pointer_fields.items():
+        if other_pf_name == pointer_field.field_name:
+            continue
+        if other_pf.pointer_kind is PointerKind.SPARSE:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+            )
+        else:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "position"],
+            )
+
     for col in schema_fields:
         if col in obs_df.columns:
             columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)

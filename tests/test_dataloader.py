@@ -8,11 +8,20 @@ import pytest
 import scipy.sparse as sp
 
 from lancell.atlas import RaggedAtlas, align_obs_to_schema
-from lancell.dataloader import CellDataset, SparseBatch, sparse_to_dense_collate
+from lancell.dataloader import (
+    CellDataset,
+    DenseBatch,
+    MultimodalBatch,
+    MultimodalCellDataset,
+    SparseBatch,
+    multimodal_to_dense_collate,
+    sparse_to_dense_collate,
+)
 from lancell.ingestion import add_from_anndata
 from lancell.sampler import BalancedCellSampler, CellSampler
 from lancell.schema import (
     DatasetRecord,
+    DenseZarrPointer,
     FeatureBaseSchema,
     LancellBaseSchema,
     SparseZarrPointer,
@@ -28,8 +37,18 @@ class GeneFeatureSchema(FeatureBaseSchema):
     gene_name: str
 
 
+class ProteinFeatureSchema(FeatureBaseSchema):
+    protein_name: str
+
+
 class TestCellSchema(LancellBaseSchema):
     gene_expression: SparseZarrPointer | None = None
+    tissue: str | None = None
+
+
+class MultimodalCellSchema(LancellBaseSchema):
+    gene_expression: SparseZarrPointer | None = None
+    protein_abundance: DenseZarrPointer | None = None
     tissue: str | None = None
 
 
@@ -82,8 +101,12 @@ def two_group_atlas(tmp_path):
         atlas,
         adata1,
         feature_space="gene_expression",
-        zarr_group="ds1/gene_expression",
-        layer_name="counts",
+        zarr_layer="counts",
+        dataset_record=DatasetRecord(
+            zarr_group="ds1/gene_expression",
+            feature_space="gene_expression",
+            n_cells=20,
+        ),
     )
 
     # Dataset 2: 15 cells, first 7 genes
@@ -93,8 +116,12 @@ def two_group_atlas(tmp_path):
         atlas,
         adata2,
         feature_space="gene_expression",
-        zarr_group="ds2/gene_expression",
-        layer_name="counts",
+        zarr_layer="counts",
+        dataset_record=DatasetRecord(
+            zarr_group="ds2/gene_expression",
+            feature_space="gene_expression",
+            n_cells=15,
+        ),
     )
 
     return atlas
@@ -128,8 +155,12 @@ def single_group_atlas(tmp_path):
         atlas,
         adata,
         feature_space="gene_expression",
-        zarr_group="ds/gene_expression",
-        layer_name="counts",
+        zarr_layer="counts",
+        dataset_record=DatasetRecord(
+            zarr_group="ds/gene_expression",
+            feature_space="gene_expression",
+            n_cells=10,
+        ),
     )
 
     return atlas
@@ -491,3 +522,230 @@ def test_to_dataloader_with_collate(single_group_atlas):
     assert len(batches) == 1
     assert "X" in batches[0]
     assert batches[0]["X"].shape == (10, 5)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: multimodal atlas (sparse RNA + dense protein)
+# ---------------------------------------------------------------------------
+
+
+def _make_dense_adata(
+    n_obs: int,
+    n_vars: int,
+    protein_uids: list[str],
+    rng: np.random.Generator,
+) -> ad.AnnData:
+    X = rng.random((n_obs, n_vars)).astype(np.float32)
+    obs = {"tissue": [f"tissue_{i % 3}" for i in range(n_obs)]}
+    var = pl.DataFrame({"global_feature_uid": protein_uids}).to_pandas()
+    return ad.AnnData(X=X, obs=obs, var=var)
+
+
+@pytest.fixture
+def multimodal_atlas(tmp_path):
+    """Atlas with sparse RNA (gene_expression) and dense protein (protein_abundance).
+
+    Each modality is ingested separately, so cell rows have exactly one pointer
+    populated (the other is null).  This naturally exercises the presence-mask
+    logic in MultimodalCellDataset:
+
+    - 30 cells with RNA only  (ds1/gene_expression)
+    - 70 cells with RNA only  (ds2/gene_expression)
+    - 80 cells with protein only  (ds1/protein_abundance)
+
+    Total: 180 rows.  130 have RNA, 80 have protein, 0 have both (by design for
+    simplicity in ingestion; the code path is the same as paired cells — the
+    present_mask correctly reflects which rows have each pointer non-null).
+    """
+    store = obstore.store.LocalStore(prefix=str(tmp_path))
+    atlas = RaggedAtlas.create(
+        db_uri=str(tmp_path / "atlas.lancedb"),
+        cell_table_name="cells",
+        cell_schema=MultimodalCellSchema,
+        store=store,
+        registry_schemas={
+            "gene_expression": GeneFeatureSchema,
+            "protein_abundance": ProteinFeatureSchema,
+        },
+        dataset_table_name="_datasets",
+        dataset_schema=DatasetRecord,
+    )
+
+    gene_uids = [f"gene_{i}" for i in range(8)]
+    protein_uids = [f"protein_{i}" for i in range(5)]
+
+    atlas.register_features(
+        "gene_expression",
+        [GeneFeatureSchema(uid=u, gene_name=f"GENE{i}") for i, u in enumerate(gene_uids)],
+    )
+    atlas.register_features(
+        "protein_abundance",
+        [ProteinFeatureSchema(uid=u, protein_name=f"PROT{i}") for i, u in enumerate(protein_uids)],
+    )
+    reindex_registry(atlas._registry_tables["gene_expression"])
+    reindex_registry(atlas._registry_tables["protein_abundance"])
+
+    rng = np.random.default_rng(7)
+
+    # RNA group 1: 30 cells
+    adata_rna1 = _make_sparse_adata(30, 8, gene_uids, rng)
+    adata_rna1 = align_obs_to_schema(adata_rna1, MultimodalCellSchema)
+    add_from_anndata(
+        atlas,
+        adata_rna1,
+        feature_space="gene_expression",
+        zarr_layer="counts",
+        dataset_record=DatasetRecord(
+            zarr_group="ds1/gene_expression",
+            feature_space="gene_expression",
+            n_cells=30,
+        ),
+    )
+
+    # RNA group 2: 70 cells (first 6 genes)
+    adata_rna2 = _make_sparse_adata(70, 6, gene_uids[:6], rng)
+    adata_rna2 = align_obs_to_schema(adata_rna2, MultimodalCellSchema)
+    add_from_anndata(
+        atlas,
+        adata_rna2,
+        feature_space="gene_expression",
+        zarr_layer="counts",
+        dataset_record=DatasetRecord(
+            zarr_group="ds2/gene_expression",
+            feature_space="gene_expression",
+            n_cells=70,
+        ),
+    )
+
+    # Protein group: 80 cells
+    adata_prot = _make_dense_adata(80, 5, protein_uids, rng)
+    adata_prot = align_obs_to_schema(adata_prot, MultimodalCellSchema)
+    add_from_anndata(
+        atlas,
+        adata_prot,
+        feature_space="protein_abundance",
+        zarr_layer="counts",
+        dataset_record=DatasetRecord(
+            zarr_group="ds1/protein_abundance",
+            feature_space="protein_abundance",
+            n_cells=80,
+        ),
+    )
+
+    return atlas
+
+
+# ---------------------------------------------------------------------------
+# Tests: MultimodalCellDataset
+# ---------------------------------------------------------------------------
+
+
+def test_multimodal_dataset_presence(multimodal_atlas):
+    """present masks reflect which cells have each modality."""
+    atlas = multimodal_atlas
+
+    ds = atlas.query().to_multimodal_dataset(
+        ["gene_expression", "protein_abundance"],
+        metadata_columns=["uid"],
+    )
+
+    # 30 + 70 RNA cells = 100; 80 protein cells; total = 180
+    assert ds.n_cells == 180
+
+    batch = ds.__getitems__(list(range(180)))
+
+    assert isinstance(batch, MultimodalBatch)
+    assert batch.n_cells == 180
+
+    # 100 cells have RNA, 80 have protein
+    assert batch.present["gene_expression"].sum() == 100
+    assert batch.present["protein_abundance"].sum() == 80
+
+    # Row counts of sub-batches must match presence sums
+    rna_batch = batch.modalities["gene_expression"]
+    prot_batch = batch.modalities["protein_abundance"]
+    assert isinstance(rna_batch, SparseBatch)
+    assert isinstance(prot_batch, DenseBatch)
+    assert len(rna_batch.offsets) - 1 == 100
+    assert prot_batch.data.shape == (80, 5)
+
+
+def test_multimodal_query_order_alignment(multimodal_atlas):
+    """Modality row count equals present mask sum for any batch slice."""
+    atlas = multimodal_atlas
+
+    ds = atlas.query().to_multimodal_dataset(
+        ["gene_expression", "protein_abundance"],
+        metadata_columns=["uid"],
+    )
+
+    # Fetch a batch of 40 cells from various positions
+    indices = list(range(0, 40))
+    batch = ds.__getitems__(indices)
+
+    for fs in ["gene_expression", "protein_abundance"]:
+        present_mask = batch.present[fs]
+        n_present = int(present_mask.sum())
+        mod_batch = batch.modalities[fs]
+
+        if isinstance(mod_batch, SparseBatch):
+            assert len(mod_batch.offsets) - 1 == n_present
+        else:
+            assert mod_batch.data.shape[0] == n_present
+
+
+def test_multimodal_collate_shapes(multimodal_atlas):
+    """multimodal_to_dense_collate produces correct tensor shapes."""
+    pytest.importorskip("torch")
+    atlas = multimodal_atlas
+
+    ds = atlas.query().to_multimodal_dataset(
+        ["gene_expression", "protein_abundance"],
+    )
+
+    batch = ds.__getitems__(list(range(60)))
+    result = multimodal_to_dense_collate(batch)
+
+    assert "present" in result
+    assert "gene_expression" in result
+    assert "protein_abundance" in result
+
+    n_rna_present = int(batch.present["gene_expression"].sum())
+    n_prot_present = int(batch.present["protein_abundance"].sum())
+
+    assert result["gene_expression"]["X"].shape == (n_rna_present, 8)
+    assert result["protein_abundance"]["X"].shape == (n_prot_present, 5)
+    assert result["present"]["gene_expression"].shape == (60,)
+    assert result["present"]["protein_abundance"].shape == (60,)
+
+
+def test_multimodal_sampler_compatibility(multimodal_atlas):
+    """CellSampler over groups_np covers all cells exactly once."""
+    atlas = multimodal_atlas
+
+    ds = atlas.query().to_multimodal_dataset(["gene_expression", "protein_abundance"])
+
+    sampler = CellSampler(ds.groups_np, batch_size=32, shuffle=False, num_workers=1)
+    seen = []
+    for indices in sampler:
+        seen.extend(indices)
+
+    assert sorted(seen) == list(range(ds.n_cells))
+
+
+def test_multimodal_pickle_roundtrip(multimodal_atlas):
+    """MultimodalCellDataset survives pickle (simulates DataLoader worker spawn)."""
+    import pickle
+
+    atlas = multimodal_atlas
+    ds = atlas.query().to_multimodal_dataset(
+        ["gene_expression", "protein_abundance"],
+        metadata_columns=["uid"],
+    )
+
+    data = pickle.dumps(ds)
+    ds2 = pickle.loads(data)
+
+    batch = ds2.__getitems__([0, 1, 2])
+    assert isinstance(batch, MultimodalBatch)
+    assert batch.n_cells == 3

@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     import mudata as mu
     import torch
 
-    from lancell.dataloader import CellDataset
+    from lancell.dataloader import CellDataset, MultimodalCellDataset
 
 import anndata as ad
 import lancedb
@@ -290,6 +290,63 @@ class AtlasQuery:
             cells_pl=cells_pl,
             feature_space=feature_space,
             layer=layer,
+            metadata_columns=metadata_columns,
+            wanted_globals=wanted_globals,
+        )
+
+    def to_multimodal_dataset(
+        self,
+        feature_spaces: list[str],
+        layers: dict[str, str] | None = None,
+        metadata_columns: list[str] | None = None,
+    ) -> "MultimodalCellDataset":
+        """Create a MultimodalCellDataset for within-cell multimodal training.
+
+        Each yielded :class:`~lancell.dataloader.MultimodalBatch` contains
+        one sub-batch per modality with only the cells that have that
+        modality present. A ``present`` mask tracks membership. No fill
+        values are added.
+
+        Pair with :class:`~lancell.sampler.CellSampler` (using
+        ``dataset.groups_np``) and :func:`~lancell.dataloader.make_loader`
+        for the standard training loop.
+
+        Parameters
+        ----------
+        feature_spaces:
+            Ordered list of feature spaces to include.  The first is
+            the "primary" space used to derive ``groups_np``.
+        layers:
+            ``{feature_space: layer_name}`` mapping.  Defaults to
+            ``"counts"`` for each space when omitted.
+        metadata_columns:
+            Obs column names to include as metadata on each batch.
+        """
+        from lancell.dataloader import MultimodalCellDataset
+
+        cells_pl = self._build_scanner().to_polars()
+
+        if layers is None:
+            layers = {fs: "counts" for fs in feature_spaces}
+
+        wanted_globals: dict[str, np.ndarray] | None = None
+        for fs in feature_spaces:
+            if fs in self._feature_filter:
+                from lancell.var_df import resolve_feature_uids_to_global_indices
+
+                wg = resolve_feature_uids_to_global_indices(
+                    self._atlas._registry_tables[fs],
+                    self._feature_filter[fs],
+                )
+                if wanted_globals is None:
+                    wanted_globals = {}
+                wanted_globals[fs] = wg
+
+        return MultimodalCellDataset(
+            atlas=self._atlas,
+            cells_pl=cells_pl,
+            feature_spaces=feature_spaces,
+            layers=layers,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
         )
