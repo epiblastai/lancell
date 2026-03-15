@@ -14,7 +14,6 @@ from pathlib import Path
 
 import anndata as ad
 import obstore.store
-import polars as pl
 
 from examples.cellxgene_census.schema import (
     CellObs,
@@ -22,10 +21,10 @@ from examples.cellxgene_census.schema import (
     GeneFeatureSpace,
 )
 from lancell.atlas import RaggedAtlas
+from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_anndata_batch
 from lancell.schema import make_uid
 from lancell.tools.add_csc import add_csc
-from lancell.var_df import reindex_registry
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"
@@ -172,17 +171,14 @@ def ingest_backed(
     )
 
     add_anndata_batch(
-        atlas, adata,
+        atlas,
+        adata,
         feature_space=FEATURE_SPACE,
         zarr_layer=LAYER_NAME,
         dataset_record=dataset_record,
         chunk_shape=(CHUNK_SIZE,),
         shard_shape=(SHARD_SIZE,),
     )
-
-    # Index feature-dataset pairs for FTS queries (census-specific, not part of add_anndata_batch)
-    var_df = pl.from_pandas(adata.var.reset_index())
-    atlas.add_feature_dataset_pairs(var_df, dataset_record.uid)
 
     print(f"    Inserted {n_cells:,} cell records")
     return n_cells, zarr_group
@@ -218,8 +214,14 @@ def main():
 
     if not args.no_csc:
         print("Adding CSC layout...")
-        add_csc(atlas, zarr_group=zarr_group, feature_space=FEATURE_SPACE, layer_name=LAYER_NAME,
-                chunk_size=CHUNK_SIZE, shard_size=SHARD_SIZE)
+        add_csc(
+            atlas,
+            zarr_group=zarr_group,
+            feature_space=FEATURE_SPACE,
+            layer_name=LAYER_NAME,
+            chunk_size=CHUNK_SIZE,
+            shard_size=SHARD_SIZE,
+        )
 
     print(f"Done! Ingested {n_cells:,} cells from {Path(h5ad_path).name}")
 

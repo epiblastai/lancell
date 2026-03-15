@@ -278,7 +278,7 @@ class AtlasQuery:
 
         wanted_globals = None
         if feature_space in self._feature_filter:
-            from lancell.var_df import resolve_feature_uids_to_global_indices
+            from lancell.dataset_vars import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
                 self._atlas._registry_tables[feature_space],
@@ -361,7 +361,7 @@ class AtlasQuery:
 
         wanted_globals = None
         if pf.feature_space in self._feature_filter:
-            from lancell.var_df import resolve_feature_uids_to_global_indices
+            from lancell.dataset_vars import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
                 self._atlas._registry_tables[pf.feature_space],

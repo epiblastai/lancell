@@ -5,7 +5,7 @@ Usage::
     from lancell.tools.add_csc import add_csc
     add_csc(atlas, zarr_group="datasets/my_dataset", feature_space="gene_expression")
 
-After running, ``var.parquet`` gains ``csc_start``/``csc_end`` columns and a new
+After running, ``_dataset_vars`` gains ``csc_start``/``csc_end`` values and a new
 ``{zarr_group}/csc/`` subgroup appears alongside the existing ``{zarr_group}/csr/``.
 Subsequent feature-filtered queries will automatically use the CSC path.
 """
@@ -17,7 +17,7 @@ import polars as pl
 import zarr
 
 from lancell.batch_array import BatchArray
-from lancell.var_df import read_var_df, write_var_df
+from lancell.dataset_vars import read_dataset_vars
 
 if TYPE_CHECKING:
     from lancell.atlas import RaggedAtlas
@@ -35,7 +35,7 @@ def add_csc(
 
     Reads the full CSR flat arrays from ``{zarr_group}/csr/``, transposes
     to CSC order sorted by feature index, writes ``{zarr_group}/csc/``, and
-    updates ``var.parquet`` with ``csc_start``/``csc_end`` columns.
+    updates ``_dataset_vars`` with ``csc_start``/``csc_end`` values.
 
     Parameters
     ----------
@@ -55,10 +55,29 @@ def add_csc(
     Raises
     ------
     ValueError
-        If no cells are found for this group, or if ``zarr_row`` is not
-        sequential (indicating the group was ingested before ``zarr_row``
-        support was added).
+        If no cells or no dataset record are found for this group, or if
+        ``zarr_row`` is not sequential.
     """
+    if atlas._dataset_vars_table is None:
+        raise ValueError(
+            "_dataset_vars table not found. This atlas may have been created "
+            "before _dataset_vars was introduced."
+        )
+
+    # Look up dataset_uid for this zarr_group + feature_space
+    datasets_df = (
+        atlas._dataset_table.search()
+        .to_polars()
+        .filter((pl.col("zarr_group") == zarr_group) & (pl.col("feature_space") == feature_space))
+        .select(["uid"])
+    )
+    if datasets_df.is_empty():
+        raise ValueError(
+            f"No dataset record found for zarr_group='{zarr_group}', "
+            f"feature_space='{feature_space}'"
+        )
+    dataset_uid = datasets_df["uid"][0]
+
     # Query all cells in this zarr group
     cells_df = atlas.cell_table.search().to_polars()
     ptr_struct = cells_df[feature_space].struct.unnest()
@@ -93,9 +112,7 @@ def add_csc(
     flat_indices, lengths = csr_index_arr.read_ranges(
         starts.astype(np.int64), ends.astype(np.int64)
     )
-    flat_values, _ = csr_layer_arr.read_ranges(
-        starts.astype(np.int64), ends.astype(np.int64)
-    )
+    flat_values, _ = csr_layer_arr.read_ranges(starts.astype(np.int64), ends.astype(np.int64))
 
     # Reconstruct (zarr_row, feature_idx) for every non-zero element
     cell_ids = np.repeat(np.arange(n_cells, dtype=np.int64), lengths)
@@ -107,9 +124,9 @@ def add_csc(
     sorted_features = feature_indices[sort_order]
     sorted_values = flat_values[sort_order]
 
-    # Compute csc_start/csc_end for each feature using searchsorted
-    var_df = read_var_df(atlas._store, zarr_group)
-    n_features = len(var_df)
+    # Get n_features from _dataset_vars
+    rows = read_dataset_vars(atlas._dataset_vars_table, dataset_uid)
+    n_features = len(rows)
 
     feature_range = np.arange(n_features, dtype=np.int64)
     csc_start = np.searchsorted(sorted_features, feature_range, side="left").astype(np.int64)
@@ -132,12 +149,16 @@ def add_csc(
         shards=(shard_size,),
     )
 
-    # Update var.parquet with csc_start/csc_end
-    var_df = var_df.with_columns(
+    # Update _dataset_vars with csc_start/csc_end via merge_insert
+    rows = rows.with_columns(
         pl.Series("csc_start", csc_start),
         pl.Series("csc_end", csc_end),
     )
-    write_var_df(atlas._store, zarr_group, var_df)
-
-    # Invalidate cached var_df so _has_csc reflects the new columns
-    atlas._var_df_cache.pop(zarr_group, None)
+    (
+        atlas._dataset_vars_table.merge_insert(on=["feature_uid", "dataset_uid"])
+        .when_matched_update_all()
+        .execute(rows)
+    )
+    # Cache invalidation is automatic: GroupReader checks _dataset_vars_table.version
+    # on next access to var_df or has_csc.
+    atlas._group_readers.pop((zarr_group, feature_space), None)

@@ -9,14 +9,14 @@ from pathlib import Path
 
 import anndata as ad
 import numpy as np
-import pyarrow as pa
 import polars as pl
+import pyarrow as pa
 import scipy.sparse as sp
 import zarr
 
 from lancell.atlas import (
-    RaggedAtlas,
     PointerFieldInfo,
+    RaggedAtlas,
     _schema_obs_fields,
     validate_obs_columns,
 )
@@ -25,8 +25,6 @@ from lancell.schema import (
     DatasetRecord,
     make_uid,
 )
-from lancell.var_df import build_remap, write_remap, write_var_df
-
 
 _INTEGER_DTYPES = {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
 
@@ -37,11 +35,7 @@ _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
 
 def _is_backed_csr(adata: ad.AnnData) -> bool:
     """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
-    return (
-        adata.isbacked
-        and "X" in adata.file._file
-        and "data" in adata.file._file["X"]
-    )
+    return adata.isbacked and "X" in adata.file._file and "data" in adata.file._file["X"]
 
 
 def _write_sparse_batched(
@@ -90,13 +84,21 @@ def _write_sparse_batched(
 
     csr_group = group.create_group("csr")
     zarr_indices = csr_group.create_array(
-        "indices", shape=(nnz,), dtype=np.uint32,
-        chunks=chunk_shape, shards=shard_shape, **indices_kwargs,
+        "indices",
+        shape=(nnz,),
+        dtype=np.uint32,
+        chunks=chunk_shape,
+        shards=shard_shape,
+        **indices_kwargs,
     )
     layers = csr_group.create_group("layers")
     zarr_values = layers.create_array(
-        zarr_layer, shape=(nnz,), dtype=data_dtype,
-        chunks=chunk_shape, shards=shard_shape, **layer_kwargs,
+        zarr_layer,
+        shape=(nnz,),
+        dtype=data_dtype,
+        chunks=chunk_shape,
+        shards=shard_shape,
+        **layer_kwargs,
     )
 
     written = 0
@@ -129,13 +131,19 @@ def _write_dense_batched(
     if zarr_layer is not None:
         layers_group = group.create_group("layers")
         zarr_arr = layers_group.create_array(
-            zarr_layer, shape=(n_cells, n_vars), dtype=np.float32,
-            chunks=chunk_shape, shards=shard_shape,
+            zarr_layer,
+            shape=(n_cells, n_vars),
+            dtype=np.float32,
+            chunks=chunk_shape,
+            shards=shard_shape,
         )
     else:
         zarr_arr = group.create_array(
-            "data", shape=(n_cells, n_vars), dtype=np.float32,
-            chunks=chunk_shape, shards=shard_shape,
+            "data",
+            shape=(n_cells, n_vars),
+            dtype=np.float32,
+            chunks=chunk_shape,
+            shards=shard_shape,
         )
 
     written = 0
@@ -214,9 +222,7 @@ def add_anndata_batch(
 
     obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
     if obs_errors:
-        raise ValueError(
-            f"obs columns do not match cell schema: {obs_errors}"
-        )
+        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
     pointer_field: PointerFieldInfo | None = None
     for pf in atlas._pointer_fields.values():
@@ -266,13 +272,18 @@ def add_anndata_batch(
     group = atlas._root.create_group(zarr_group)
     if spec.pointer_kind is PointerKind.SPARSE:
         starts, ends = _write_sparse_batched(
-            group, adata, zarr_layer, chunk_shape, shard_shape, use_bitpacking,
+            group,
+            adata,
+            zarr_layer,
+            chunk_shape,
+            shard_shape,
+            use_bitpacking,
         )
     else:
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape)
 
     if spec.has_var_df:
-        write_var_sidecar(atlas, adata, feature_space, zarr_group)
+        write_var_sidecar(atlas, adata, feature_space, zarr_group, dataset_record.uid)
 
     arrow_schema = atlas._cell_schema.to_arrow_schema()
     obs_df = adata.obs
@@ -340,7 +351,8 @@ def add_from_anndata(
     if not isinstance(adata, ad.AnnData):
         adata = ad.read_h5ad(adata, backed="r")
     return add_anndata_batch(
-        atlas, adata,
+        atlas,
+        adata,
         feature_space=feature_space,
         zarr_layer=zarr_layer,
         dataset_record=dataset_record,
@@ -354,13 +366,12 @@ def write_var_sidecar(
     adata: ad.AnnData,
     feature_space: str,
     zarr_group: str,
+    dataset_uid: str,
 ) -> None:
-    """Write var.parquet and version-gated remap.parquet for a dataset.
+    """Write feature-level metadata for a dataset into the _dataset_vars Lance table.
 
     Requires ``global_feature_uid`` in ``adata.var`` and features to
-    already be registered via :meth:`RaggedAtlas.register_features`.  The remap
-    is tagged with the current registry table version so readers can detect
-    staleness.
+    already be registered via :meth:`RaggedAtlas.register_features`.
     """
     var_df = pl.from_pandas(adata.var.reset_index())
     if "global_feature_uid" not in var_df.columns:
@@ -369,13 +380,4 @@ def write_var_sidecar(
             "Set it before calling add_anndata_batch()."
         )
 
-    write_var_df(atlas._store, zarr_group, var_df)
-
-    if feature_space in atlas._registry_tables:
-        registry_table = atlas._registry_tables[feature_space]
-        remap = build_remap(var_df, registry_table)
-        group = atlas._root[zarr_group]
-        write_remap(
-            atlas._store, group, remap,
-            registry_version=registry_table.version,
-        )
+    atlas.add_dataset_vars(var_df, dataset_uid, feature_space)

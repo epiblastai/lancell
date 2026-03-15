@@ -1,14 +1,14 @@
 """Tests for atlas versioning: snapshot(), list_versions(), checkout()."""
 
+import anndata as ad
 import numpy as np
 import obstore
+import polars as pl
 import pytest
 import scipy.sparse as sp
-import polars as pl
-
-import anndata as ad
 
 from lancell.atlas import RaggedAtlas, align_obs_to_schema
+from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_from_anndata
 from lancell.schema import (
     DatasetRecord,
@@ -16,8 +16,6 @@ from lancell.schema import (
     LancellBaseSchema,
     SparseZarrPointer,
 )
-from lancell.var_df import reindex_registry
-
 
 # ---------------------------------------------------------------------------
 # Test schemas
@@ -38,7 +36,9 @@ class TestCellSchema(LancellBaseSchema):
 
 
 def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetRecord:
-    return DatasetRecord(zarr_group=zarr_group, feature_space="gene_expression", n_cells=adata.n_obs)
+    return DatasetRecord(
+        zarr_group=zarr_group, feature_space="gene_expression", n_cells=adata.n_obs
+    )
 
 
 def _make_sparse_adata(n_obs: int, n_vars: int, feature_uids: list[str]) -> ad.AnnData:
@@ -77,11 +77,14 @@ class TestSnapshot:
         store = obstore.store.LocalStore(prefix=str(tmp_path))
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
-        adata = align_obs_to_schema(
-            _make_sparse_adata(20, 10, gene_uids), TestCellSchema
+        adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
+        add_from_anndata(
+            atlas,
+            adata,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata, "ds1/gene_expression"),
         )
-        add_from_anndata(atlas, adata, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata, "ds1/gene_expression"))
 
         v = atlas.snapshot()
         assert v == 0
@@ -91,13 +94,23 @@ class TestSnapshot:
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata1, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata1, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata1,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata1, "ds1/gene_expression"),
+        )
         atlas.snapshot()
 
         adata2 = align_obs_to_schema(_make_sparse_adata(15, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata2, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata2, "ds2/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata2,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata2, "ds2/gene_expression"),
+        )
         v1 = atlas.snapshot()
         assert v1 == 1
 
@@ -106,13 +119,23 @@ class TestSnapshot:
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata, "ds1/gene_expression"),
+        )
         atlas.snapshot()
 
         adata2 = align_obs_to_schema(_make_sparse_adata(15, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata2, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata2, "ds2/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata2,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata2, "ds2/gene_expression"),
+        )
         atlas.snapshot()
 
         versions = RaggedAtlas.list_versions(str(tmp_path / "atlas.lancedb"))
@@ -133,13 +156,23 @@ class TestListVersions:
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata1, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata1, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata1,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata1, "ds1/gene_expression"),
+        )
         atlas.snapshot()
 
         adata2 = align_obs_to_schema(_make_sparse_adata(15, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata2, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata2, "ds2/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata2,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata2, "ds2/gene_expression"),
+        )
         atlas.snapshot()
 
         df = RaggedAtlas.list_versions(str(tmp_path / "atlas.lancedb"))
@@ -151,8 +184,13 @@ class TestListVersions:
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata, "ds1/gene_expression"),
+        )
         atlas.snapshot()
 
         df = RaggedAtlas.list_versions(str(tmp_path / "atlas.lancedb"))
@@ -165,13 +203,23 @@ class TestCheckout:
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata1, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata1, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata1,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata1, "ds1/gene_expression"),
+        )
         atlas.snapshot()  # v0: 20 cells
 
         adata2 = align_obs_to_schema(_make_sparse_adata(15, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata2, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata2, "ds2/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata2,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata2, "ds2/gene_expression"),
+        )
         atlas.snapshot()  # v1: 35 cells
 
         old = RaggedAtlas.checkout(
@@ -187,13 +235,23 @@ class TestCheckout:
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata1, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata1, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata1,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata1, "ds1/gene_expression"),
+        )
         atlas.snapshot()
 
         adata2 = align_obs_to_schema(_make_sparse_adata(15, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata2, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata2, "ds2/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata2,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata2, "ds2/gene_expression"),
+        )
         atlas.snapshot()
 
         new = RaggedAtlas.checkout(
@@ -209,8 +267,13 @@ class TestCheckout:
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata, "ds1/gene_expression"),
+        )
         atlas.snapshot()
 
         with pytest.raises(ValueError, match="version 99 not found"):
@@ -230,8 +293,13 @@ class TestBackwardCompat:
 
         # Write data so the tables are persisted on disk
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
-        add_from_anndata(atlas, adata, feature_space="gene_expression",
-                         zarr_layer="counts", dataset_record=_ds(adata, "ds1/gene_expression"))
+        add_from_anndata(
+            atlas,
+            adata,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata, "ds1/gene_expression"),
+        )
 
         # Pass a non-existent version table name to simulate an older atlas
         opened = RaggedAtlas.open(

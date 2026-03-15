@@ -7,13 +7,7 @@ import polars as pl
 import zarr
 
 from lancell.batch_array import BatchAsyncArray
-from lancell.var_df import (
-    build_remap,
-    has_csc,
-    read_remap_if_fresh,
-    read_var_df,
-    write_remap,
-)
+from lancell.dataset_vars import read_dataset_vars
 
 
 class GroupReader:
@@ -33,17 +27,17 @@ class GroupReader:
         zarr_group: str,
         feature_space: str,
         store: obstore.store.ObjectStore,
-        registry_table: lancedb.table.Table | None,
-        read_only: bool,
+        dataset_vars_table: lancedb.table.Table | None,
+        dataset_uid: str | None,
         remap_cache: tuple[int, np.ndarray] | None = None,
-        var_df_cache: pl.DataFrame | None = None,
+        var_df_cache: tuple[int, pl.DataFrame] | None = None,
         zarr_group_handle: zarr.Group | None = None,
     ) -> None:
         self.zarr_group = zarr_group
         self.feature_space = feature_space
         self._store = store
-        self._registry_table = registry_table
-        self._read_only = read_only
+        self._dataset_vars_table = dataset_vars_table
+        self._dataset_uid = dataset_uid
         self._remap_cache = remap_cache
         self._var_df_cache = var_df_cache
         self._zarr_group_handle = zarr_group_handle
@@ -54,25 +48,23 @@ class GroupReader:
         cls,
         zarr_group: str,
         feature_space: str,
-        root: zarr.Group,
         store: obstore.store.ObjectStore,
-        registry_table: lancedb.table.Table | None,
-        read_only: bool,
+        dataset_vars_table: lancedb.table.Table | None,
+        dataset_uid: str | None,
     ) -> "GroupReader":
-        """Create a GroupReader from an open atlas root.
+        """Create a GroupReader for an atlas.
 
-        The zarr group handle is obtained immediately from the root.
+        The zarr group handle is opened lazily on first array access.
         Used by ``RaggedAtlas._get_group_reader``.
-        ``registry_table`` may be ``None`` for feature spaces with
-        ``has_var_df=False``.
+        ``dataset_vars_table`` may be ``None`` for old atlases or feature
+        spaces with ``has_var_df=False``.
         """
         return cls(
             zarr_group=zarr_group,
             feature_space=feature_space,
             store=store,
-            registry_table=registry_table,
-            read_only=read_only,
-            zarr_group_handle=root[zarr_group],
+            dataset_vars_table=dataset_vars_table,
+            dataset_uid=dataset_uid,
         )
 
     @classmethod
@@ -86,63 +78,88 @@ class GroupReader:
         """Create a GroupReader for a DataLoader worker.
 
         Accepts a pre-resolved remap (already version-checked at CellDataset
-        init time). Sets ``_registry_table=None`` — workers never re-check
-        registry version. The zarr group handle is ``None`` until first use.
+        init time). Sets ``_dataset_vars_table=None`` — workers never re-check
+        table version. The zarr group handle is ``None`` until first use.
         """
         return cls(
             zarr_group=zarr_group,
             feature_space=feature_space,
             store=store,
-            registry_table=None,
-            read_only=True,
+            dataset_vars_table=None,
+            dataset_uid=None,
             remap_cache=(0, remap),
         )
 
     def get_remap(self) -> np.ndarray:
         """Return the local-to-global-index remap array.
 
-        If ``_registry_table`` is ``None`` (worker path), returns the frozen
+        If ``_dataset_vars_table`` is ``None`` (worker path), returns the frozen
         remap directly. Otherwise performs a version-aware cache check and
-        rebuilds if stale.
+        rebuilds from the Lance table if stale.
         """
-        if self._registry_table is None:
+        if self._dataset_vars_table is None:
             assert self._remap_cache is not None, (
                 f"GroupReader for {self.zarr_group!r} has no remap. "
                 "The for_worker path requires a remap at construction time."
             )
             return self._remap_cache[1]
 
-        current_version = self._registry_table.version
+        if self._dataset_uid is None:
+            raise ValueError(
+                f"GroupReader for {self.zarr_group!r} has no dataset_uid. "
+                "Cannot load remap from _dataset_vars."
+            )
+
+        current_version = self._dataset_vars_table.version
         if self._remap_cache is not None:
             cached_version, cached_remap = self._remap_cache
             if cached_version == current_version:
                 return cached_remap
 
-        # In-memory cache miss or stale — try the on-disk remap
-        group = self._zarr_group_handle
-        disk_remap = read_remap_if_fresh(self._store, group, current_version)
-        if disk_remap is not None:
-            self._remap_cache = (current_version, disk_remap)
-            return disk_remap
-
-        # Rebuild from var_df + registry
-        remap = build_remap(self.var_df, self._registry_table)
-        if not self._read_only:
-            write_remap(self._store, group, remap, registry_version=current_version)
+        # Cache miss or stale — read from Lance table
+        rows = read_dataset_vars(self._dataset_vars_table, self._dataset_uid)
+        remap = rows["global_index"].to_numpy().astype(np.int32, copy=False)
         self._remap_cache = (current_version, remap)
         return remap
 
     @property
     def var_df(self) -> pl.DataFrame:
-        """Load and cache var_df for this zarr group."""
-        if self._var_df_cache is None:
-            self._var_df_cache = read_var_df(self._store, self.zarr_group)
-        return self._var_df_cache
+        """Load and cache var_df for this zarr group.
+
+        Returns a DataFrame with columns ``global_feature_uid``, ``csc_start``,
+        ``csc_end`` in local feature order (row i = local feature i).
+        """
+        if self._dataset_vars_table is None or self._dataset_uid is None:
+            return pl.DataFrame(
+                schema={
+                    "global_feature_uid": pl.Utf8,
+                    "csc_start": pl.Int64,
+                    "csc_end": pl.Int64,
+                }
+            )
+
+        current_version = self._dataset_vars_table.version
+        if self._var_df_cache is not None:
+            cached_version, cached_df = self._var_df_cache
+            if cached_version == current_version:
+                return cached_df
+
+        rows = read_dataset_vars(self._dataset_vars_table, self._dataset_uid)
+        df = rows.select(
+            [
+                pl.col("feature_uid").alias("global_feature_uid"),
+                pl.col("csc_start"),
+                pl.col("csc_end"),
+            ]
+        )
+        self._var_df_cache = (current_version, df)
+        return df
 
     @property
     def has_csc(self) -> bool:
         """Return True if this zarr group has CSC data."""
-        return has_csc(self.var_df)
+        df = self.var_df
+        return len(df) > 0 and df["csc_start"].null_count() == 0 and df["csc_end"].null_count() == 0
 
     def get_array_reader(self, array_name: str) -> BatchAsyncArray:
         """Return a cached BatchAsyncArray reader for a zarr array."""
