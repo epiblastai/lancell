@@ -18,6 +18,7 @@ from lancell.atlas import (
     align_obs_to_schema,
     validate_obs_columns,
 )
+from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_from_anndata
 from lancell.schema import (
     DatasetRecord,
@@ -26,7 +27,6 @@ from lancell.schema import (
     LancellBaseSchema,
     SparseZarrPointer,
 )
-from lancell.var_df import reindex_registry
 
 # ---------------------------------------------------------------------------
 # Test schemas

@@ -39,13 +39,13 @@ def _(mo):
     mo.md(r"""
     # CSC vs CSR Feature Slicing Benchmark
 
-    Two lancell atlases built from the same two CellxGene Census h5ad files (~26,600 cells,
-    ~20,000 genes). The only difference is the zarr layout:
+    Two lancell atlases built from the same three CellxGene Census h5ad files (~31,600 cells,
+    ~40,000 genes). The only difference is the zarr layout:
 
     | Atlas | Layout | S3 path |
     |-------|--------|---------|
-    | **CSC** | CSR + CSC (feature-contiguous copy) | `s3://…/cellxgene_mini_csc/` |
-    | **CSR** | CSR only (cell-contiguous) | `s3://…/cellxgene_mini_csr/` |
+    | **CSC** | CSR + CSC (feature-contiguous copy) | `s3://…/cellxgene_mini_data_vars/` |
+    | **CSR** | CSR only (cell-contiguous) | `s3://…/cellxgene_mini_data_vars_csr_only/` |
 
     **Key question**: how much faster is `atlas.query().features(uids).to_anndata()` when the
     CSC layout is present?
@@ -91,8 +91,8 @@ def _(os):
             registry_tables={"gene_expression": "gene_expression_registry"},
         )
 
-    atlas_csc = _open("s3://epiblast/ragged_atlases/cellxgene_mini_csc/")
-    atlas_csr = _open("s3://epiblast/ragged_atlases/cellxgene_mini_csr/")
+    atlas_csc = _open("s3://epiblast/ragged_atlases/cellxgene_mini_data_vars/")
+    atlas_csr = _open("s3://epiblast/ragged_atlases/cellxgene_mini_data_vars_csr_only/")
     return atlas_csc, atlas_csr
 
 
@@ -525,29 +525,35 @@ def _(mo):
 
 @app.cell
 def _(atlas_csc, atlas_csr, mo):
-    from lancell.var_df import read_var_df as _read_var_df
+    from lancell.dataset_vars import read_dataset_vars as _read_dataset_vars
 
-    _g_csc = atlas_csc.list_datasets()["zarr_group"][0]
-    _g_csr = atlas_csr.list_datasets()["zarr_group"][0]
-    _var_csc = _read_var_df(atlas_csc._store, _g_csc)
-    _var_csr = _read_var_df(atlas_csr._store, _g_csr)
+    _ds_csc = atlas_csc.list_datasets()
+    _g_csc = _ds_csc["zarr_group"][0]
+    _uid_csc = _ds_csc["uid"][0]
+
+    _ds_csr = atlas_csr.list_datasets()
+    _g_csr = _ds_csr["zarr_group"][0]
+    _uid_csr = _ds_csr["uid"][0]
+
+    _var_csc = _read_dataset_vars(atlas_csc._dataset_vars_table, _uid_csc)
+    _var_csr = _read_dataset_vars(atlas_csr._dataset_vars_table, _uid_csr)
 
     _csc_nnz_total = (_var_csc["csc_end"] - _var_csc["csc_start"]).sum()
     _n_expressed = (_var_csc["csc_end"] > _var_csc["csc_start"]).sum()
 
     mo.md(f"""
-    ### CSC atlas — dataset group `{_g_csc[:16]}…`
+    ### CSC atlas — dataset `{_g_csc[:16]}…`
 
-    `var.parquet` columns: `{_var_csc.columns}`
+    `_dataset_vars` columns: `{_var_csc.columns}`
 
     - Total CSC nnz: **{_csc_nnz_total:,}** *(equals CSR nnz — same non-zeros, different order)*
     - Genes with ≥1 expressing cell: **{_n_expressed:,}** / {len(_var_csc):,}
 
-    ### CSR atlas — dataset group `{_g_csr[:16]}…`
+    ### CSR atlas — dataset `{_g_csr[:16]}…`
 
-    `var.parquet` columns: `{_var_csr.columns}`
+    `_dataset_vars` columns: `{_var_csr.columns}`
 
-    *No `csc_start` / `csc_end` columns — `atlas._has_csc()` returns `False`.*
+    *`csc_start` / `csc_end` are null — `GroupReader.has_csc` returns `False`.*
 
     ---
 
@@ -557,17 +563,18 @@ def _(atlas_csc, atlas_csr, mo):
     │   ├── indices              # feature indices, cell-contiguous (uint32, bitpacked+delta)
     │   └── layers/
     │       └── counts           # expression values, cell-contiguous (uint32)
-    ├── csc/                     # CSC atlas only
-    │   ├── indices              # zarr_row (cell) indices, feature-contiguous (uint32)
-    │   └── layers/
-    │       └── counts           # expression values, feature-contiguous
-    ├── var.parquet              # local feature metadata
-    │                            #   + csc_start / csc_end  (CSC atlas only)
-    └── local_to_global_index.parquet   # local→registry remap
+    └── csc/                     # CSC atlas only
+        ├── indices              # zarr_row (cell) indices, feature-contiguous (uint32)
+        └── layers/
+            └── counts           # expression values, feature-contiguous
+
+    LanceDB: _dataset_vars table (shared across all datasets)
+      feature_uid | dataset_uid | local_index | global_index | csc_start | csc_end
     ```
 
     `csc/indices[csc_start[f] : csc_end[f]]` = zarr_rows of cells expressing gene *f*.
-    `atlas._get_group_reader(zarr_group, "gene_expression").has_csc` checks whether `var.parquet` has non-null `csc_start`/`csc_end`.
+    `atlas._get_group_reader(zarr_group, "gene_expression").has_csc` checks whether `csc_start`/`csc_end`
+    are non-null in `_dataset_vars` for this dataset.
     The feature-filtered reconstructor (`FeatureCSCReconstructor`) checks this per group and
     falls back to the CSR path for any group that lacks CSC data.
     """)

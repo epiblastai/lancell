@@ -24,21 +24,21 @@ import pandas as pd
 import polars as pl
 import zarr
 
+from lancell.dataset_vars import (
+    build_dataset_vars_df,
+    reindex_registry,
+    sync_dataset_vars_global_index,
+    validate_dataset_vars,
+)
 from lancell.group_specs import PointerKind, get_spec
 from lancell.schema import (
     AtlasVersionRecord,
     DatasetRecord,
+    DatasetVar,
     DenseZarrPointer,
     FeatureBaseSchema,
-    FeatureDatasetPair,
     LancellBaseSchema,
     SparseZarrPointer,
-)
-from lancell.var_df import (
-    find_datasets_with_features,
-    read_var_df,
-    reindex_registry,
-    validate_var_df,
 )
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ class RaggedAtlas:
         dataset_table: lancedb.table.Table,
         *,
         version_table: lancedb.table.Table | None = None,
-        feature_dataset_table: lancedb.table.Table | None = None,
+        dataset_vars_table: lancedb.table.Table | None = None,
         update_feature_registries: bool = True,
     ) -> None:
         self.db = db
@@ -252,7 +252,7 @@ class RaggedAtlas:
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
-        self._feature_dataset_table = feature_dataset_table
+        self._dataset_vars_table = dataset_vars_table
 
         # Instance-level cache: one GroupReader per (zarr_group, feature_space)
         self._group_readers: dict[tuple[str, str], GroupReader] = {}
@@ -307,7 +307,7 @@ class RaggedAtlas:
             Name for the version tracking table.
         update_feature_registries:
             If ``True`` (default), automatically run
-            :func:`~lancell.var_df.reindex_registry` on any registry whose
+            :func:`~lancell.dataset_vars.reindex_registry` on any registry whose
             ``global_index`` is not contiguous.  If ``False``, raise on
             broken registries instead.
         """
@@ -322,8 +322,9 @@ class RaggedAtlas:
 
         version_table = db.create_table(version_table_name, schema=AtlasVersionRecord)
 
-        feature_dataset_table = db.create_table("_feature_dataset_pairs", schema=FeatureDatasetPair)
-        feature_dataset_table.create_fts_index("feature_uid")
+        dataset_vars_table = db.create_table("_dataset_vars", schema=DatasetVar)
+        dataset_vars_table.create_fts_index("feature_uid")
+        dataset_vars_table.create_fts_index("dataset_uid")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
 
@@ -335,7 +336,7 @@ class RaggedAtlas:
             registry_tables=registry_tables,
             dataset_table=dataset_table,
             version_table=version_table,
-            feature_dataset_table=feature_dataset_table,
+            dataset_vars_table=dataset_vars_table,
             update_feature_registries=update_feature_registries,
         )
 
@@ -372,7 +373,7 @@ class RaggedAtlas:
             Name of the version tracking table.
         update_feature_registries:
             If ``True`` (default), automatically run
-            :func:`~lancell.var_df.reindex_registry` on any registry whose
+            :func:`~lancell.dataset_vars.reindex_registry` on any registry whose
             ``global_index`` is not contiguous.  If ``False``, raise on
             broken registries instead.
         """
@@ -390,13 +391,11 @@ class RaggedAtlas:
             version_table = None
 
         try:
-            feature_dataset_table: lancedb.table.Table | None = db.open_table(
-                "_feature_dataset_pairs"
-            )
+            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
         except Exception:
-            feature_dataset_table = None
+            dataset_vars_table = None
 
-        root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
+        root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
 
         return cls(
             db=db,
@@ -406,7 +405,7 @@ class RaggedAtlas:
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
             version_table=version_table,
-            feature_dataset_table=feature_dataset_table,
+            dataset_vars_table=dataset_vars_table,
             update_feature_registries=update_feature_registries,
         )
 
@@ -418,13 +417,26 @@ class RaggedAtlas:
 
         key = (zarr_group, feature_space)
         if key not in self._group_readers:
+            dataset_uid: str | None = None
+            if self._dataset_vars_table is not None:
+                datasets_df = (
+                    self._dataset_table.search()
+                    .to_polars()
+                    .filter(
+                        (pl.col("zarr_group") == zarr_group)
+                        & (pl.col("feature_space") == feature_space)
+                    )
+                    .select(["uid"])
+                )
+                if not datasets_df.is_empty():
+                    dataset_uid = datasets_df["uid"][0]
+
             self._group_readers[key] = GroupReader.from_atlas_root(
                 zarr_group=zarr_group,
                 feature_space=feature_space,
-                root=self._root,
                 store=self._store,
-                registry_table=self._registry_tables.get(feature_space),
-                read_only=self._root.store.read_only,
+                dataset_vars_table=self._dataset_vars_table,
+                dataset_uid=dataset_uid,
             )
         return self._group_readers[key]
 
@@ -453,7 +465,7 @@ class RaggedAtlas:
         have a registry (``has_var_df=True``).
 
         This method only inserts new feature rows — it does **not** assign
-        ``global_index``.  Call :func:`~lancell.var_df.reindex_registry`
+        ``global_index``.  Call :func:`~lancell.dataset_vars.reindex_registry`
         on the registry table after all registrations are complete to assign
         contiguous indices.  This two-step approach avoids index races when
         multiple writers register features concurrently.
@@ -496,26 +508,40 @@ class RaggedAtlas:
         (registry_table.merge_insert(on="uid").when_not_matched_insert_all().execute(new_records))
         return registry_table.count_rows() - n_before
 
-    # -- Feature-dataset index ----------------------------------------------
+    # -- Dataset vars -------------------------------------------------------
 
-    def add_feature_dataset_pairs(self, var_df: pl.DataFrame, dataset_uid: str) -> None:
-        """Index all (feature_uid, dataset_uid) pairs for a newly ingested dataset.
+    def add_dataset_vars(
+        self,
+        var_df: pl.DataFrame,
+        dataset_uid: str,
+        feature_space: str,
+    ) -> None:
+        """Index all feature-level metadata for a newly ingested dataset.
 
-        Call once per dataset after write_var_df, before or after write_remap.
+        Call once per dataset after zarr data is written.
         var_df must contain a 'global_feature_uid' column.
-        No-op if this atlas has no _feature_dataset_pairs table (old atlas opened
-        via RaggedAtlas.open() before the table existed).
+        No-op if this atlas has no _dataset_vars table.
+
+        Parameters
+        ----------
+        var_df:
+            One row per local feature in local feature order.
+            Must have a ``global_feature_uid`` column.
+        dataset_uid:
+            The DatasetRecord uid for this dataset.
+        feature_space:
+            Which feature space this dataset belongs to (used to look up registry).
         """
-        if self._feature_dataset_table is None:
+        if self._dataset_vars_table is None:
             return
-        feature_uids = var_df["global_feature_uid"].to_list()
-        pairs = pl.DataFrame(
-            {
-                "feature_uid": feature_uids,
-                "dataset_uid": [dataset_uid] * len(feature_uids),
-            }
-        )
-        self._feature_dataset_table.add(pairs)
+        registry_table = self._registry_tables.get(feature_space)
+        if registry_table is None:
+            raise ValueError(
+                f"No registry table for feature space '{feature_space}'. "
+                f"Ensure a registry schema was provided at create() time."
+            )
+        df = build_dataset_vars_df(var_df, dataset_uid, registry_table)
+        self._dataset_vars_table.add(df)
 
     # -- Maintenance --------------------------------------------------------
 
@@ -525,16 +551,21 @@ class RaggedAtlas:
         Calls ``table.optimize()`` on the cell, dataset, and registry tables
         to compact small Lance fragments, then assigns contiguous
         ``global_index`` values on every registry via
-        :func:`~lancell.var_df.reindex_registry`.
+        :func:`~lancell.dataset_vars.reindex_registry`, and propagates updated
+        indices to ``_dataset_vars`` via
+        :func:`~lancell.dataset_vars.sync_dataset_vars_global_index`.
         """
         self.cell_table.optimize()
         self._dataset_table.optimize()
         for table in self._registry_tables.values():
             table.optimize()
             reindex_registry(table)
-        if self._feature_dataset_table is not None:
-            self._feature_dataset_table.optimize()
-            self._feature_dataset_table.create_fts_index("feature_uid", replace=True)
+            if self._dataset_vars_table is not None:
+                sync_dataset_vars_global_index(self._dataset_vars_table, table)
+        if self._dataset_vars_table is not None:
+            self._dataset_vars_table.optimize()
+            self._dataset_vars_table.create_fts_index("feature_uid", replace=True)
+            self._dataset_vars_table.create_fts_index("dataset_uid", replace=True)
 
     # -- Validation ---------------------------------------------------------
 
@@ -552,7 +583,7 @@ class RaggedAtlas:
         check_zarr:
             Open each unique zarr group and validate against its spec.
         check_var_dfs:
-            For feature spaces with var_df, validate sidecars.
+            For feature spaces with var_df, validate _dataset_vars rows.
         check_registries:
             Check that registry tables exist and global_index is contiguous.
         """
@@ -577,7 +608,7 @@ class RaggedAtlas:
             errors.extend(self._validate_zarr_groups(zarr_groups_by_space))
 
         if check_var_dfs:
-            errors.extend(self._validate_var_dfs(zarr_groups_by_space))
+            errors.extend(self._validate_dataset_vars(zarr_groups_by_space))
 
         return errors
 
@@ -604,9 +635,8 @@ class RaggedAtlas:
     ) -> pl.DataFrame:
         """Find datasets that measured specific features.
 
-        Uses the LanceDB FTS index on ``_feature_dataset_pairs`` when available,
-        falling back to DuckDB var_df scanning for old atlases that pre-date this
-        table. Note: rows added after the last FTS index build are not yet indexed;
+        Uses the LanceDB FTS index on ``_dataset_vars.feature_uid``.
+        Note: rows added after the last FTS index build are not yet indexed;
         call ``optimize()`` after bulk ingestion to refresh.
 
         Parameters
@@ -624,14 +654,12 @@ class RaggedAtlas:
         """
         if isinstance(feature_uids, str):
             feature_uids = [feature_uids]
-        if self._feature_dataset_table is not None and self._has_fts_index():
-            return self._datasets_with_features_fast(feature_uids, feature_space)
-        return find_datasets_with_features(
-            self._store, self._dataset_table, feature_uids, feature_space
-        )
-
-    def _has_fts_index(self) -> bool:
-        return any(idx.get("type") == "FTS" for idx in self._feature_dataset_table.list_indices())
+        if self._dataset_vars_table is None:
+            raise RuntimeError(
+                "_dataset_vars table not found. This atlas may have been created "
+                "before _dataset_vars was introduced. Re-create the atlas to use this feature."
+            )
+        return self._datasets_with_features_fast(feature_uids, feature_space)
 
     def _datasets_with_features_fast(
         self, feature_uids: list[str], feature_space: str
@@ -643,9 +671,17 @@ class RaggedAtlas:
         limit = max(len(feature_uids) * n_datasets, 1)
 
         pairs = (
-            self._feature_dataset_table.search(MatchQuery(query_str), query_type="fts")
+            self._dataset_vars_table.search(MatchQuery(query_str), query_type="fts")
+            .select(["feature_uid", "dataset_uid"])
             .limit(limit)
             .to_polars()
+        )
+        if pairs.is_empty():
+            return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
+
+        # Filter to only exact feature_uid matches (FTS may return partial matches)
+        pairs = pairs.filter(pl.col("feature_uid").is_in(feature_uids)).unique(
+            subset=["feature_uid", "dataset_uid"]
         )
         if pairs.is_empty():
             return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
@@ -692,19 +728,37 @@ class RaggedAtlas:
                     errors.append(f"zarr group '{zg}': {e}")
         return errors
 
-    def _validate_var_dfs(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
+    def _validate_dataset_vars(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
+        if self._dataset_vars_table is None:
+            return []
         errors: list[str] = []
+        # Build a lookup: (zarr_group, feature_space) -> dataset_uid
+        datasets_df = (
+            self._dataset_table.search().select(["uid", "zarr_group", "feature_space"]).to_polars()
+        )
         for fs, groups in zarr_groups_by_space.items():
             spec = get_spec(fs)
             if not spec.has_var_df:
                 continue
             registry = self._registry_tables.get(fs)
             for zg in groups:
-                var_df = read_var_df(self._store, zg)
+                matched = datasets_df.filter(
+                    (pl.col("zarr_group") == zg) & (pl.col("feature_space") == fs)
+                )
+                if matched.is_empty():
+                    errors.append(f"No dataset record for zarr_group='{zg}', feature_space='{fs}'")
+                    continue
+                dataset_uid = matched["uid"][0]
                 group = self._root[zg]
-                vd_errors = validate_var_df(var_df, spec=spec, group=group, registry_table=registry)
-                for e in vd_errors:
-                    errors.append(f"var_df '{zg}': {e}")
+                dv_errors = validate_dataset_vars(
+                    self._dataset_vars_table,
+                    dataset_uid,
+                    spec=spec,
+                    group=group,
+                    registry_table=registry,
+                )
+                for e in dv_errors:
+                    errors.append(f"_dataset_vars '{zg}': {e}")
         return errors
 
     # -- Versioning ---------------------------------------------------------
@@ -813,6 +867,11 @@ class RaggedAtlas:
             t.checkout(registry_versions[fs])
             resolved_registries[fs] = t
 
+        try:
+            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
+        except Exception:
+            dataset_vars_table = None
+
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 
         return cls(
@@ -823,5 +882,6 @@ class RaggedAtlas:
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
             version_table=version_table,
+            dataset_vars_table=dataset_vars_table,
             update_feature_registries=False,
         )

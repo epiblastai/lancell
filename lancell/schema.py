@@ -139,11 +139,19 @@ class DatasetRecord(LanceModel):
     )
 
 
-class FeatureDatasetPair(LanceModel):
-    """Inverted index entry mapping a feature UID to the dataset that measured it."""
+class DatasetVar(LanceModel):
+    """Per-feature-per-dataset index row for the _dataset_vars table.
 
-    feature_uid: str  # from any feature space registry (globally unique)
-    dataset_uid: str  # from DatasetRecord.uid
+    Replaces the sidecar parquet files (var.parquet, local_to_global_index.parquet)
+    and the _feature_dataset_pairs inverted index.
+    """
+
+    feature_uid: str  # global_feature_uid (FTS indexed — feature→datasets lookup)
+    dataset_uid: str  # DatasetRecord.uid (FTS indexed — dataset→features / remap lookup)
+    local_index: int  # 0-based position within the zarr group (sort key for remap)
+    global_index: int  # denormalized from registry; updated by sync_dataset_vars_global_index
+    csc_start: int | None = None  # sparse only; populated by add_csc
+    csc_end: int | None = None  # sparse only; populated by add_csc
 
 
 class AtlasVersionRecord(LanceModel):
