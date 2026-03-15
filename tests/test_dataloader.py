@@ -9,6 +9,7 @@ import scipy.sparse as sp
 
 from lancell.atlas import RaggedAtlas, align_obs_to_schema
 from lancell.dataloader import CellDataset, SparseBatch, sparse_to_dense_collate
+from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_from_anndata
 from lancell.sampler import BalancedCellSampler, CellSampler
 from lancell.schema import (
@@ -17,7 +18,13 @@ from lancell.schema import (
     LancellBaseSchema,
     SparseZarrPointer,
 )
-from lancell.var_df import reindex_registry
+
+
+def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetRecord:
+    return DatasetRecord(
+        zarr_group=zarr_group, feature_space="gene_expression", n_cells=adata.n_obs
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test schemas
@@ -82,8 +89,8 @@ def two_group_atlas(tmp_path):
         atlas,
         adata1,
         feature_space="gene_expression",
-        zarr_group="ds1/gene_expression",
-        layer_name="counts",
+        zarr_layer="counts",
+        dataset_record=_ds(adata1, "ds1/gene_expression"),
     )
 
     # Dataset 2: 15 cells, first 7 genes
@@ -93,8 +100,8 @@ def two_group_atlas(tmp_path):
         atlas,
         adata2,
         feature_space="gene_expression",
-        zarr_group="ds2/gene_expression",
-        layer_name="counts",
+        zarr_layer="counts",
+        dataset_record=_ds(adata2, "ds2/gene_expression"),
     )
 
     return atlas
@@ -128,8 +135,8 @@ def single_group_atlas(tmp_path):
         atlas,
         adata,
         feature_space="gene_expression",
-        zarr_group="ds/gene_expression",
-        layer_name="counts",
+        zarr_layer="counts",
+        dataset_record=_ds(adata, "ds/gene_expression"),
     )
 
     return atlas
