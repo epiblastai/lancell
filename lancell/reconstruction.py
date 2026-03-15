@@ -288,6 +288,11 @@ class SparseCSRReconstructor:
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
         if wanted_globals is not None:
+            if feature_join != "union":
+                raise ValueError(
+                    "feature_join has no effect when wanted_globals is provided; "
+                    "the feature space is pinned to the requested globals."
+                )
             return FeatureCSCReconstructor().as_anndata(
                 atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
             )
@@ -536,6 +541,12 @@ class FeatureCSCReconstructor:
         if wanted_globals is None:
             return SparseCSRReconstructor().as_anndata(
                 atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
+            )
+
+        if feature_join != "union":
+            raise ValueError(
+                "feature_join has no effect when wanted_globals is provided; "
+                "the feature space is pinned to the requested globals."
             )
 
         if len(spec.required_arrays) != 1:

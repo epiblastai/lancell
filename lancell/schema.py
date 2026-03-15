@@ -14,8 +14,7 @@ class SparseZarrPointer(LanceModel):
     zarr_group: str
     start: int
     end: int
-    # REVIEW: Why default this? Should be a required argument.
-    zarr_row: int = 0  # cell's 0-indexed position within this zarr group (for CSC lookup)
+    zarr_row: int  # cell's 0-indexed position within this zarr group (for CSC lookup)
 
     @model_validator(mode="after")
     def _require_sparse_feature_space(self):
