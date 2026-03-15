@@ -36,7 +36,64 @@ if TYPE_CHECKING:
 from lancell.batch_array import BatchAsyncArray
 from lancell.group_reader import GroupReader
 from lancell.group_specs import PointerKind, get_spec
-from lancell.reconstruction import _prepare_dense_cells, _prepare_sparse_cells
+from lancell.reconstruction import (
+    _apply_wanted_globals_remap,
+    _prepare_dense_cells,
+    _prepare_sparse_cells,
+)
+
+# ---------------------------------------------------------------------------
+# Shared helpers / mixin
+# ---------------------------------------------------------------------------
+
+
+def _extract_metadata_arrays(
+    cells_pl: pl.DataFrame,
+    metadata_columns: list[str] | None,
+) -> dict[str, np.ndarray] | None:
+    """Extract obs columns as numpy arrays; returns None when no columns are requested."""
+    if not metadata_columns:
+        return None
+    return {col: cells_pl[col].to_numpy() for col in metadata_columns if col in cells_pl.columns}
+
+
+def _build_groups_np(zg_series: pl.Series, groups: list[str]) -> np.ndarray:
+    """Map group-name strings to contiguous integer IDs (groups must be sorted)."""
+    group_to_id = {g: i for i, g in enumerate(groups)}
+    return np.array([group_to_id[v] for v in zg_series.to_list()], dtype=np.int32)
+
+
+def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
+    """Scatter a SparseBatch into a dense float32 torch tensor (n_cells, n_features)."""
+    import torch
+
+    n_cells = len(batch.offsets) - 1
+    X = torch.zeros(n_cells, batch.n_features, dtype=torch.float32)
+    if n_cells > 0 and len(batch.indices) > 0:
+        lengths = np.diff(batch.offsets)
+        row_indices = np.repeat(np.arange(n_cells), lengths)
+        X[row_indices, batch.indices] = torch.from_numpy(batch.values.astype(np.float32))
+    return X
+
+
+class _AsyncDataset:
+    """Mixin providing shared async event loop lifecycle for dataset classes."""
+
+    def _start_event_loop(self) -> None:
+        """Start the background async event loop thread."""
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._loop_thread.start()
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+
+    def __del__(self) -> None:
+        if hasattr(self, "_loop") and self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._loop_thread is not None:
+                self._loop_thread.join(timeout=5)
+            self._loop.close()
 
 
 def _identity_collate(x):
@@ -127,15 +184,15 @@ class _ModalityData:
     """
 
     kind: PointerKind
-    present_mask: np.ndarray    # bool, (n_total_cells,)
+    present_mask: np.ndarray  # bool, (n_total_cells,)
     cell_positions: np.ndarray  # int64, (n_total_cells,); index into modality arrays; -1 if absent
-    groups_np: np.ndarray       # int32, (n_present_cells,)
-    starts: np.ndarray          # int64, (n_present_cells,)
-    ends: np.ndarray            # int64, (n_present_cells,)
+    groups_np: np.ndarray  # int32, (n_present_cells,)
+    starts: np.ndarray  # int64, (n_present_cells,)
+    ends: np.ndarray  # int64, (n_present_cells,)
     unique_groups: list[str]
     group_readers: dict[str, GroupReader]
     n_features: int
-    index_array_name: str       # sparse only; "" for dense
+    index_array_name: str  # sparse only; "" for dense
     layer: str
 
 
@@ -433,7 +490,7 @@ async def _take_multimodal(
 # ---------------------------------------------------------------------------
 
 
-class CellDataset:
+class CellDataset(_AsyncDataset):
     """Map-style dataset for fast batch access over an atlas query.
 
     Pure data-access object: resolves zarr remaps and exposes
@@ -514,10 +571,7 @@ class CellDataset:
 
         # Map group strings to integer ids for fast numpy operations
         self._unique_groups = groups
-        group_to_id = {g: i for i, g in enumerate(groups)}
-        self._groups_np = np.array(
-            [group_to_id[v] for v in cells_pl["_zg"].to_list()], dtype=np.int32
-        )
+        self._groups_np = _build_groups_np(cells_pl["_zg"], groups)
         self._starts = cells_pl["_start"].to_numpy().astype(np.int64)
         self._ends = cells_pl["_end"].to_numpy().astype(np.int64)
 
@@ -525,13 +579,11 @@ class CellDataset:
         self._group_readers: dict[str, GroupReader] = {}
         for zg in groups:
             raw_remap = atlas._get_remap(zg, feature_space)
-            if wanted_globals is not None:
-                positions = np.searchsorted(wanted_globals, raw_remap).astype(np.int32)
-                mask = np.isin(raw_remap, wanted_globals)
-                positions[~mask] = -1
-                effective_remap = positions
-            else:
-                effective_remap = raw_remap
+            effective_remap = (
+                _apply_wanted_globals_remap(raw_remap, wanted_globals)
+                if wanted_globals is not None
+                else raw_remap
+            )
             self._group_readers[zg] = GroupReader.for_worker(
                 zarr_group=zg,
                 feature_space=feature_space,
@@ -547,12 +599,7 @@ class CellDataset:
             self._n_features = registry_table.count_rows()
 
         # Extract metadata as numpy arrays
-        self._metadata_arrays = None
-        if metadata_columns:
-            self._metadata_arrays = {}
-            for col in metadata_columns:
-                if col in cells_pl.columns:
-                    self._metadata_arrays[col] = cells_pl[col].to_numpy()
+        self._metadata_arrays = _extract_metadata_arrays(cells_pl, metadata_columns)
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._local_readers = None
@@ -615,9 +662,7 @@ class CellDataset:
         """
         if self._local_readers is not None:
             return
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
-        self._loop_thread.start()
+        self._start_event_loop()
         self._local_readers = {}
 
     def __getstate__(self) -> dict:
@@ -630,23 +675,13 @@ class CellDataset:
         state["_loop_thread"] = None
         return state
 
-    def __setstate__(self, state: dict) -> None:
-        self.__dict__.update(state)
-
-    def __del__(self) -> None:
-        if hasattr(self, "_loop") and self._loop is not None and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._loop_thread is not None:
-                self._loop_thread.join(timeout=5)
-            self._loop.close()
-
 
 # ---------------------------------------------------------------------------
 # MultimodalCellDataset
 # ---------------------------------------------------------------------------
 
 
-class MultimodalCellDataset:
+class MultimodalCellDataset(_AsyncDataset):
     """Map-style multimodal dataset for fast batch access over an atlas query.
 
     Supports within-cell multimodal batches where each cell may have data
@@ -720,10 +755,7 @@ class MultimodalCellDataset:
                     cell_positions[present_indices] = np.arange(n_present, dtype=np.int64)
 
                 if n_present > 0 and groups:
-                    group_to_id = {g: i for i, g in enumerate(groups)}
-                    groups_np = np.array(
-                        [group_to_id[v] for v in filtered["_zg"].to_list()], dtype=np.int32
-                    )
+                    groups_np = _build_groups_np(filtered["_zg"], groups)
                     starts = filtered["_start"].to_numpy().astype(np.int64)
                     ends = filtered["_end"].to_numpy().astype(np.int64)
                 else:
@@ -734,14 +766,10 @@ class MultimodalCellDataset:
                 group_readers: dict[str, GroupReader] = {}
                 for zg in groups:
                     raw_remap = atlas._get_remap(zg, fs)
-                    if wanted_globals is not None and fs in wanted_globals:
-                        wg = wanted_globals[fs]
-                        positions = np.searchsorted(wg, raw_remap).astype(np.int32)
-                        in_wg = np.isin(raw_remap, wg)
-                        positions[~in_wg] = -1
-                        effective_remap = positions
-                    else:
-                        effective_remap = raw_remap
+                    wg = wanted_globals.get(fs) if wanted_globals is not None else None
+                    effective_remap = (
+                        _apply_wanted_globals_remap(raw_remap, wg) if wg is not None else raw_remap
+                    )
                     group_readers[zg] = GroupReader.for_worker(
                         zarr_group=zg,
                         feature_space=fs,
@@ -782,10 +810,7 @@ class MultimodalCellDataset:
                     cell_positions[present_indices] = np.arange(n_present, dtype=np.int64)
 
                 if n_present > 0 and groups:
-                    group_to_id = {g: i for i, g in enumerate(groups)}
-                    groups_np = np.array(
-                        [group_to_id[v] for v in filtered["_zg"].to_list()], dtype=np.int32
-                    )
+                    groups_np = _build_groups_np(filtered["_zg"], groups)
                     pos_arr = filtered["_pos"].to_numpy().astype(np.int64)
                     starts = pos_arr
                     ends = pos_arr + 1
@@ -835,12 +860,7 @@ class MultimodalCellDataset:
 
         self._n_features = {fs: modality_data[fs].n_features for fs in feature_spaces}
 
-        self._metadata_arrays: dict[str, np.ndarray] | None = None
-        if metadata_columns:
-            self._metadata_arrays = {}
-            for col in metadata_columns:
-                if col in cells_pl.columns:
-                    self._metadata_arrays[col] = cells_pl[col].to_numpy()
+        self._metadata_arrays = _extract_metadata_arrays(cells_pl, metadata_columns)
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._local_sparse_readers: dict[str, dict] | None = None
@@ -883,9 +903,7 @@ class MultimodalCellDataset:
     def _ensure_initialized(self) -> None:
         if self._local_sparse_readers is not None:
             return
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
-        self._loop_thread.start()
+        self._start_event_loop()
         self._local_sparse_readers = {fs: {} for fs in self._feature_spaces}
         self._local_dense_readers = {fs: {} for fs in self._feature_spaces}
 
@@ -896,16 +914,6 @@ class MultimodalCellDataset:
         state["_loop"] = None
         state["_loop_thread"] = None
         return state
-
-    def __setstate__(self, state: dict) -> None:
-        self.__dict__.update(state)
-
-    def __del__(self) -> None:
-        if hasattr(self, "_loop") and self._loop is not None and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._loop_thread is not None:
-                self._loop_thread.join(timeout=5)
-            self._loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -920,15 +928,7 @@ def sparse_to_dense_collate(batch: SparseBatch) -> dict:
     """
     import torch
 
-    n_cells = len(batch.offsets) - 1
-    X = torch.zeros(n_cells, batch.n_features, dtype=torch.float32)
-
-    lengths = np.diff(batch.offsets)
-    row_indices = np.repeat(np.arange(n_cells), lengths)
-
-    X[row_indices, batch.indices] = torch.from_numpy(batch.values.astype(np.float32))
-
-    result: dict = {"X": X}
+    result: dict = {"X": _sparse_batch_to_dense_tensor(batch)}
     if batch.metadata:
         for col, arr in batch.metadata.items():
             if arr.dtype.kind in ("i", "u", "f"):
@@ -983,21 +983,11 @@ def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
 
     result: dict = {}
 
-    result["present"] = {
-        fs: torch.from_numpy(mask) for fs, mask in batch.present.items()
-    }
+    result["present"] = {fs: torch.from_numpy(mask) for fs, mask in batch.present.items()}
 
     for fs, mod_batch in batch.modalities.items():
         if isinstance(mod_batch, SparseBatch):
-            n_present = len(mod_batch.offsets) - 1
-            X = torch.zeros(n_present, mod_batch.n_features, dtype=torch.float32)
-            if n_present > 0 and len(mod_batch.indices) > 0:
-                lengths = np.diff(mod_batch.offsets)
-                row_indices = np.repeat(np.arange(n_present), lengths)
-                X[row_indices, mod_batch.indices] = torch.from_numpy(
-                    mod_batch.values.astype(np.float32)
-                )
-            result[fs] = {"X": X}
+            result[fs] = {"X": _sparse_batch_to_dense_tensor(mod_batch)}
         else:
             result[fs] = {"X": torch.from_numpy(mod_batch.data)}
 

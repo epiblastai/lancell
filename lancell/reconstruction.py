@@ -96,12 +96,10 @@ def _load_remaps_and_features(
 
     if wanted_globals is not None:
         joined_globals = wanted_globals
-        group_remap_to_joined: dict[str, np.ndarray] = {}
-        for zg, remap in group_remaps.items():
-            positions = np.searchsorted(wanted_globals, remap).astype(np.int32)
-            mask = np.isin(remap, wanted_globals)
-            positions[~mask] = -1
-            group_remap_to_joined[zg] = positions
+        group_remap_to_joined = {
+            zg: _apply_wanted_globals_remap(remap, wanted_globals)
+            for zg, remap in group_remaps.items()
+        }
         n_features = len(wanted_globals)
     elif group_remaps:
         joined_globals, group_remap_to_joined = _build_feature_space(group_remaps, feature_join)
@@ -159,6 +157,27 @@ def _build_feature_space(
         group_remap_to_joined[group] = positions
 
     return joined_globals, group_remap_to_joined
+
+
+def _apply_wanted_globals_remap(remap: np.ndarray, wanted_globals: np.ndarray) -> np.ndarray:
+    """Map local feature indices to positions in wanted_globals; -1 if absent.
+
+    Parameters
+    ----------
+    remap:
+        Array where remap[local_i] = global_index.
+    wanted_globals:
+        Sorted int32 array of desired global indices.
+
+    Returns
+    -------
+    np.ndarray
+        int32 array; result[local_i] = position in wanted_globals, or -1.
+    """
+    positions = np.searchsorted(wanted_globals, remap).astype(np.int32)
+    mask = np.isin(remap, wanted_globals)
+    positions[~mask] = -1
+    return positions
 
 
 def _build_obs_df(cells_pl: pl.DataFrame) -> pd.DataFrame:

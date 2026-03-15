@@ -125,17 +125,22 @@ class AtlasQuery:
 
     # -- Execution ----------------------------------------------------------
 
-    def _build_scanner(self) -> lancedb.table.Table:
-        """Build a LanceDB query from the current state."""
+    def _build_base_query(self) -> lancedb.table.Table:
+        """Build a query with search, where, and limit applied (no column selection)."""
         q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
-        if self._select_columns is not None:
-            pointer_cols = list(self._atlas._pointer_fields.keys())
-            columns = list(dict.fromkeys(self._select_columns + pointer_cols))
-            q = q.select(columns)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._limit_n is not None:
             q = q.limit(self._limit_n)
+        return q
+
+    def _build_scanner(self) -> lancedb.table.Table:
+        """Build a LanceDB query from the current state."""
+        q = self._build_base_query()
+        if self._select_columns is not None:
+            pointer_cols = list(self._atlas._pointer_fields.keys())
+            columns = list(dict.fromkeys(self._select_columns + pointer_cols))
+            q = q.select(columns)
         return q
 
     def _active_pointer_fields(self) -> dict[str, PointerFieldInfo]:
@@ -163,11 +168,7 @@ class AtlasQuery:
         pl.DataFrame
             DataFrame with one row per group and a ``count`` column otherwise.
         """
-        q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
-        if self._where_clause is not None:
-            q = q.where(self._where_clause)
-        if self._limit_n is not None:
-            q = q.limit(self._limit_n)
+        q = self._build_base_query()
 
         if group_by is None:
             # Fetch only a single cheap column to count rows
@@ -332,7 +333,7 @@ class AtlasQuery:
         wanted_globals: dict[str, np.ndarray] | None = None
         for fs in feature_spaces:
             if fs in self._feature_filter:
-                from lancell.var_df import resolve_feature_uids_to_global_indices
+                from lancell.dataset_vars import resolve_feature_uids_to_global_indices
 
                 wg = resolve_feature_uids_to_global_indices(
                     self._atlas._registry_tables[fs],
