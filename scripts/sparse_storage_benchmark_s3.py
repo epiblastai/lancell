@@ -22,8 +22,8 @@ import zarr
 from obstore.store import S3Store
 from zarr.storage import ObjectStore
 
-from lancell.batch_array import BatchAsyncArray
 import lancell.codecs.bitpacking  # noqa: F401  # register codec before opening arrays
+from lancell.batch_array import BatchAsyncArray
 
 ALL_METHODS = ["one_table", "two_table", "zarr_obstore", "zarr_bitpacked"]
 
@@ -56,8 +56,15 @@ def reconstruct_csr(all_indices: list[np.ndarray], all_values: list[np.ndarray])
 # Query functions — each returns (obs_df, gi_list, cv_list)
 # ---------------------------------------------------------------------------
 
+
 def query_blob_col(tbl, where: str) -> tuple[pd.DataFrame, list, list]:
-    result = tbl.search().where(where).select(METADATA_COLS + ["gene_indices", "counts"]).to_arrow().to_pydict()
+    result = (
+        tbl.search()
+        .where(where)
+        .select(METADATA_COLS + ["gene_indices", "counts"])
+        .to_arrow()
+        .to_pydict()
+    )
     obs = pd.DataFrame({c: result[c] for c in METADATA_COLS})
     gi = [np.frombuffer(b, dtype=np.uint32) for b in result["gene_indices"]]
     cv = [np.frombuffer(b, dtype=np.uint32) for b in result["counts"]]
@@ -65,18 +72,34 @@ def query_blob_col(tbl, where: str) -> tuple[pd.DataFrame, list, list]:
 
 
 def query_two_tbl(meta_tbl, blob_tbl, where: str) -> tuple[pd.DataFrame, list, list]:
-    meta = meta_tbl.search().where(where).select(METADATA_COLS + ["blob_row_offset"]).to_arrow().to_pydict()
+    meta = (
+        meta_tbl.search()
+        .where(where)
+        .select(METADATA_COLS + ["blob_row_offset"])
+        .to_arrow()
+        .to_pydict()
+    )
     obs = pd.DataFrame({c: meta[c] for c in METADATA_COLS})
-    blob = blob_tbl.to_lance().take(meta["blob_row_offset"], columns=["gene_indices", "counts"]).to_pydict()
+    blob = (
+        blob_tbl.to_lance()
+        .take(meta["blob_row_offset"], columns=["gene_indices", "counts"])
+        .to_pydict()
+    )
     gi = [np.frombuffer(b, dtype=np.uint32) for b in blob["gene_indices"]]
     cv = [np.frombuffer(b, dtype=np.uint32) for b in blob["counts"]]
     return obs, gi, cv
 
 
-def query_zarr_obstore(meta_tbl, reader_indices, reader_counts, where: str) -> tuple[pd.DataFrame, list, list]:
-    meta = meta_tbl.search().where(where).select(
-        METADATA_COLS + ["zarr_start", "zarr_end"]
-    ).to_arrow().to_pydict()
+def query_zarr_obstore(
+    meta_tbl, reader_indices, reader_counts, where: str
+) -> tuple[pd.DataFrame, list, list]:
+    meta = (
+        meta_tbl.search()
+        .where(where)
+        .select(METADATA_COLS + ["zarr_start", "zarr_end"])
+        .to_arrow()
+        .to_pydict()
+    )
     obs = pd.DataFrame({c: meta[c] for c in METADATA_COLS})
 
     starts = np.array(meta["zarr_start"], dtype=np.int64)
@@ -87,6 +110,7 @@ def query_zarr_obstore(meta_tbl, reader_indices, reader_counts, where: str) -> t
             reader_indices.read_ranges(starts, ends),
             reader_counts.read_ranges(starts, ends),
         )
+
     (gi_flat, gi_lengths), (cv_flat, cv_lengths) = asyncio.run(_fetch())
 
     gi_list = np.split(gi_flat, np.cumsum(gi_lengths)[:-1])
@@ -94,10 +118,16 @@ def query_zarr_obstore(meta_tbl, reader_indices, reader_counts, where: str) -> t
     return obs, gi_list, cv_list
 
 
-def query_zarr_bitpacked(meta_tbl, reader_indices, reader_counts, where: str) -> tuple[pd.DataFrame, list, list]:
-    meta = meta_tbl.search().where(where).select(
-        METADATA_COLS + ["zarr_start", "zarr_end"]
-    ).to_arrow().to_pydict()
+def query_zarr_bitpacked(
+    meta_tbl, reader_indices, reader_counts, where: str
+) -> tuple[pd.DataFrame, list, list]:
+    meta = (
+        meta_tbl.search()
+        .where(where)
+        .select(METADATA_COLS + ["zarr_start", "zarr_end"])
+        .to_arrow()
+        .to_pydict()
+    )
     obs = pd.DataFrame({c: meta[c] for c in METADATA_COLS})
 
     starts = np.array(meta["zarr_start"], dtype=np.int64)
@@ -108,6 +138,7 @@ def query_zarr_bitpacked(meta_tbl, reader_indices, reader_counts, where: str) ->
             reader_indices.read_ranges(starts, ends),
             reader_counts.read_ranges(starts, ends),
         )
+
     (gi_flat, gi_lengths), (cv_flat, cv_lengths) = asyncio.run(_fetch())
 
     gi_list = np.split(gi_flat, np.cumsum(gi_lengths)[:-1])
@@ -118,6 +149,7 @@ def query_zarr_bitpacked(meta_tbl, reader_indices, reader_counts, where: str) ->
 # ---------------------------------------------------------------------------
 # Benchmark
 # ---------------------------------------------------------------------------
+
 
 def bench(name: str, fn, queries: list[tuple[str, str]]):
     results = {}
@@ -143,7 +175,9 @@ def bench(name: str, fn, queries: list[tuple[str, str]]):
         med_csr = np.median(csr_times)
         med_total = med_load + med_csr
         results[label] = {"load": med_load, "csr": med_csr, "total": med_total, "n": n}
-        print(f"  {name:<22s} | {label:<16s} | n={n:>6d} | load={med_load:.4f}s | csr={med_csr:.4f}s | total={med_total:.4f}s")
+        print(
+            f"  {name:<22s} | {label:<16s} | n={n:>6d} | load={med_load:.4f}s | csr={med_csr:.4f}s | total={med_total:.4f}s"
+        )
     return results
 
 
@@ -180,11 +214,19 @@ def main():
     if "zarr_obstore" in methods:
         meta3 = lancedb.connect(f"{S3_BASE}/approach3_lance").open_table("metadata")
         indices_store = ObjectStore(
-            S3Store("epiblast", prefix="lancell_data_structure_test/approach3_indices.zarr/", region="us-east-2"),
+            S3Store(
+                "epiblast",
+                prefix="lancell_data_structure_test/approach3_indices.zarr/",
+                region="us-east-2",
+            ),
             read_only=True,
         )
         counts_store = ObjectStore(
-            S3Store("epiblast", prefix="lancell_data_structure_test/approach3_counts.zarr/", region="us-east-2"),
+            S3Store(
+                "epiblast",
+                prefix="lancell_data_structure_test/approach3_counts.zarr/",
+                region="us-east-2",
+            ),
             read_only=True,
         )
         indices_arr = zarr.open_array(store=indices_store, mode="r")
@@ -194,18 +236,30 @@ def main():
 
         reader_indices = BatchAsyncArray.from_array(indices_arr)
         reader_counts = BatchAsyncArray.from_array(counts_arr)
-        r3 = bench("zarr_obstore", lambda w: query_zarr_obstore(meta3, reader_indices, reader_counts, w), QUERIES)
+        r3 = bench(
+            "zarr_obstore",
+            lambda w: query_zarr_obstore(meta3, reader_indices, reader_counts, w),
+            QUERIES,
+        )
         all_benches.append(("zarr_obstore", r3))
         print()
 
     if "zarr_bitpacked" in methods:
         meta4 = lancedb.connect(f"{S3_BASE}/approach4_lance").open_table("metadata")
         bp_indices_store = ObjectStore(
-            S3Store("epiblast", prefix="lancell_data_structure_test/approach4_indices.zarr/", region="us-east-2"),
+            S3Store(
+                "epiblast",
+                prefix="lancell_data_structure_test/approach4_indices.zarr/",
+                region="us-east-2",
+            ),
             read_only=True,
         )
         bp_counts_store = ObjectStore(
-            S3Store("epiblast", prefix="lancell_data_structure_test/approach4_counts.zarr/", region="us-east-2"),
+            S3Store(
+                "epiblast",
+                prefix="lancell_data_structure_test/approach4_counts.zarr/",
+                region="us-east-2",
+            ),
             read_only=True,
         )
         bp_indices_arr = zarr.open_array(store=bp_indices_store, mode="r")
@@ -215,7 +269,11 @@ def main():
 
         bp_reader_indices = BatchAsyncArray.from_array(bp_indices_arr)
         bp_reader_counts = BatchAsyncArray.from_array(bp_counts_arr)
-        r4 = bench("zarr_bitpacked", lambda w: query_zarr_bitpacked(meta4, bp_reader_indices, bp_reader_counts, w), QUERIES)
+        r4 = bench(
+            "zarr_bitpacked",
+            lambda w: query_zarr_bitpacked(meta4, bp_reader_indices, bp_reader_counts, w),
+            QUERIES,
+        )
         all_benches.append(("zarr_bitpacked", r4))
         print()
 

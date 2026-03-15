@@ -67,4 +67,3 @@ class CellObs(LancellBaseSchema):
     tissue_ontology_term_id: str | None = None
     self_reported_ethnicity_ontology_term_id: str | None = None
     development_stage_ontology_term_id: str | None = None
-

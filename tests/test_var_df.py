@@ -29,7 +29,6 @@ from lancell.var_df import (
     write_var_df,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -137,10 +136,12 @@ class TestPaths:
 class TestWriteRead:
     def test_var_df_roundtrip(self, tmp_path):
         store, group_prefix, _ = _make_store_and_group(tmp_path)
-        df = pl.DataFrame({
-            "global_feature_uid": ["a", "b", "c", "d", "e"],
-            "feature_name": ["F0", "F1", "F2", "F3", "F4"],
-        })
+        df = pl.DataFrame(
+            {
+                "global_feature_uid": ["a", "b", "c", "d", "e"],
+                "feature_name": ["F0", "F1", "F2", "F3", "F4"],
+            }
+        )
         write_var_df(store, group_prefix, df)
         result = read_var_df(store, group_prefix)
         assert result.equals(df)
@@ -220,9 +221,11 @@ class TestValidateVarDf:
     def test_valid_dense(self, tmp_path):
         _, _, group = _make_store_and_group(tmp_path)
         spec = get_spec("protein_abundance")
-        df = pl.DataFrame({
-            "global_feature_uid": [f"u{i}" for i in range(5)],
-        })
+        df = pl.DataFrame(
+            {
+                "global_feature_uid": [f"u{i}" for i in range(5)],
+            }
+        )
         errors = validate_var_df(df, spec=spec, group=group)
         assert errors == []
 
@@ -238,9 +241,7 @@ class TestValidateVarDf:
         spec = get_spec("protein_abundance")
         df = pl.DataFrame({"global_feature_uid": ["u0", "u1", "u2"]})
         # group says 5, but explicit says 3 — explicit wins
-        errors = validate_var_df(
-            df, spec=spec, group=group, expected_feature_count=3
-        )
+        errors = validate_var_df(df, spec=spec, group=group, expected_feature_count=3)
         assert errors == []
 
     def test_sparse_needs_explicit_count(self, tmp_path):
@@ -303,10 +304,12 @@ class TestValidateVarDf:
         registry = _make_registry(tmp_path, uids)
         spec = get_spec("gene_expression")
         # correct indices
-        df = pl.DataFrame({
-            "global_feature_uid": ["uid_a", "uid_b"],
-            "global_index": [0, 1],
-        })
+        df = pl.DataFrame(
+            {
+                "global_feature_uid": ["uid_a", "uid_b"],
+                "global_index": [0, 1],
+            }
+        )
         errors = validate_var_df(df, spec=spec, registry_table=registry)
         assert errors == []
 
@@ -315,10 +318,12 @@ class TestValidateVarDf:
         registry = _make_registry(tmp_path, uids)
         spec = get_spec("gene_expression")
         # swapped indices
-        df = pl.DataFrame({
-            "global_feature_uid": ["uid_a", "uid_b"],
-            "global_index": [1, 0],
-        })
+        df = pl.DataFrame(
+            {
+                "global_feature_uid": ["uid_a", "uid_b"],
+                "global_index": [1, 0],
+            }
+        )
         errors = validate_var_df(df, spec=spec, registry_table=registry)
         assert any("mismatch" in e.lower() for e in errors)
 
@@ -354,6 +359,7 @@ class TestReadRemapIfFresh:
         # Simulate a legacy remap written without version gating by
         # writing the parquet file directly (no attrs).
         import io
+
         remap = np.array([10, 20, 30, 40, 50], dtype=np.int32)
         buf = io.BytesIO()
         pl.DataFrame({"global_index": remap}).write_parquet(buf)
@@ -408,9 +414,7 @@ class TestReindexRegistry:
 
     def test_build_remap_after_reindex(self, tmp_path):
         """End-to-end: ingest without indices, reindex, then build remap."""
-        registry = _make_registry(
-            tmp_path, ["uid_c", "uid_a", "uid_b"], indexed=False
-        )
+        registry = _make_registry(tmp_path, ["uid_c", "uid_a", "uid_b"], indexed=False)
         reindex_registry(registry)
 
         var_df = pl.DataFrame({"global_feature_uid": ["uid_b", "uid_c"]})

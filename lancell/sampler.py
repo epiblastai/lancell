@@ -37,8 +37,7 @@ except ImportError:
 
         def __init__(self, *args, **kwargs):
             raise ImportError(
-                "torch is required for lancell samplers. "
-                "Install it with: pip install lancell[ml]"
+                "torch is required for lancell samplers. Install it with: pip install lancell[ml]"
             )
 
 

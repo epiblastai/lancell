@@ -45,16 +45,12 @@ class VarDfColumnSchema(BaseModel):
 
     global_feature_uid: str
     csc_start: int | None = None  # offset into csc/indices where this feature's cells begin
-    csc_end: int | None = None    # exclusive end offset (populated by add_csc)
+    csc_end: int | None = None  # exclusive end offset (populated by add_csc)
 
     @classmethod
     def required_columns(cls) -> set[str]:
         """Column names that must be present (fields without defaults)."""
-        return {
-            name
-            for name, field in cls.model_fields.items()
-            if field.is_required()
-        }
+        return {name for name, field in cls.model_fields.items() if field.is_required()}
 
     @classmethod
     def validate_df(cls, df: pl.DataFrame) -> list[str]:
@@ -125,7 +121,9 @@ def write_var_df(
     """
     errors = schema.validate_df(df)
     if errors:
-        raise ValueError(f"var_df is missing required columns: {schema.required_columns() - set(df.columns)}")
+        raise ValueError(
+            f"var_df is missing required columns: {schema.required_columns() - set(df.columns)}"
+        )
 
     buf = io.BytesIO()
     df.write_parquet(buf)
@@ -243,11 +241,7 @@ def build_remap(
         If any uid in *var_df* is not found in the registry.
     """
     uids = var_df["global_feature_uid"].to_list()
-    registry_df = (
-        registry_table.search()
-        .select(["uid", "global_index"])
-        .to_polars()
-    )
+    registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
     # Filter out rows where global_index hasn't been assigned yet
     indexed_df = registry_df.filter(pl.col("global_index").is_not_null())
     uid_to_idx = dict(
@@ -268,8 +262,7 @@ def build_remap(
 
     if missing:
         raise ValueError(
-            f"{len(missing)} uid(s) in var_df not found in registry. "
-            f"First 5: {missing[:5]}"
+            f"{len(missing)} uid(s) in var_df not found in registry. First 5: {missing[:5]}"
         )
     if unindexed:
         raise ValueError(
@@ -310,19 +303,14 @@ def resolve_feature_uids_to_global_indices(
     if not feature_uids:
         return np.array([], dtype=np.int32)
 
-    registry_df = (
-        registry_table.search()
-        .select(["uid", "global_index"])
-        .to_polars()
-    )
+    registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
     requested = set(feature_uids)
     registry_uids = set(registry_df["uid"].to_list())
 
     missing = requested - registry_uids
     if missing:
         raise ValueError(
-            f"{len(missing)} UID(s) not found in registry. "
-            f"First 5: {sorted(missing)[:5]}"
+            f"{len(missing)} UID(s) not found in registry. First 5: {sorted(missing)[:5]}"
         )
 
     matched = registry_df.filter(pl.col("uid").is_in(list(requested)))
@@ -333,9 +321,11 @@ def resolve_feature_uids_to_global_indices(
             f"(run reindex_registry first). First 5: {unindexed[:5]}"
         )
 
-    return matched["global_index"].to_numpy().astype(np.int32, copy=False)[
-        np.argsort(matched["global_index"].to_numpy())
-    ]
+    return (
+        matched["global_index"]
+        .to_numpy()
+        .astype(np.int32, copy=False)[np.argsort(matched["global_index"].to_numpy())]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +424,7 @@ def _query_var_dfs_direct(
     to recover dataset identity.
     """
     paths = [f"{uri_prefix}/{var_df_path(zg)}" for zg in zarr_groups]
-    path_map = pl.DataFrame({"filepath": paths, "zarr_group": zarr_groups})
+    path_map = pl.DataFrame({"filepath": paths, "zarr_group": zarr_groups})  # noqa: F841 (used by DuckDB SQL)
     paths_sql = "[" + ", ".join(f"'{p}'" for p in paths) + "]"
 
     return duckdb.sql(f"""
@@ -454,12 +444,10 @@ def _query_var_dfs_via_obstore(
     var_dfs: list[pl.DataFrame] = []
     for zg in zarr_groups:
         vdf = read_var_df(store, zg)
-        vdf = vdf.select("global_feature_uid").with_columns(
-            pl.lit(zg).alias("zarr_group")
-        )
+        vdf = vdf.select("global_feature_uid").with_columns(pl.lit(zg).alias("zarr_group"))
         var_dfs.append(vdf)
 
-    all_var = pl.concat(var_dfs)
+    all_var = pl.concat(var_dfs)  # noqa: F841 (used by DuckDB SQL)
     return duckdb.sql("""
         SELECT DISTINCT v.zarr_group, v.global_feature_uid
         FROM all_var v
@@ -548,9 +536,7 @@ def validate_var_df(
     if n_local is None and group is not None:
         n_local = _get_local_feature_count(group, spec)
     if n_local is not None and len(var_df) != n_local:
-        errors.append(
-            f"var_df has {len(var_df)} rows but expected {n_local} features"
-        )
+        errors.append(f"var_df has {len(var_df)} rows but expected {n_local} features")
 
     # Null uids
     null_count = var_df["global_feature_uid"].null_count()
@@ -561,17 +547,12 @@ def validate_var_df(
     n_unique = var_df["global_feature_uid"].n_unique()
     if n_unique != len(var_df):
         errors.append(
-            f"global_feature_uid has duplicates: {len(var_df)} rows but "
-            f"{n_unique} unique values"
+            f"global_feature_uid has duplicates: {len(var_df)} rows but {n_unique} unique values"
         )
 
     # Registry checks
     if registry_table is not None:
-        registry_df = (
-            registry_table.search()
-            .select(["uid", "global_index"])
-            .to_polars()
-        )
+        registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
         registry_uids = set(registry_df["uid"].to_list())
         uid_to_idx = dict(
             zip(
@@ -586,8 +567,7 @@ def validate_var_df(
         unresolved = [u for u in var_uids if u not in registry_uids]
         if unresolved:
             errors.append(
-                f"{len(unresolved)} uid(s) not found in registry. "
-                f"First 5: {unresolved[:5]}"
+                f"{len(unresolved)} uid(s) not found in registry. First 5: {unresolved[:5]}"
             )
 
         # If var_df carries global_index, check agreement
@@ -603,8 +583,7 @@ def validate_var_df(
                     )
             if mismatches:
                 errors.append(
-                    f"global_index mismatch for {len(mismatches)} row(s). "
-                    f"First 3: {mismatches[:3]}"
+                    f"global_index mismatch for {len(mismatches)} row(s). First 3: {mismatches[:3]}"
                 )
 
     return errors
@@ -660,9 +639,5 @@ def reindex_registry(
         return 0
     df = df.with_columns(pl.Series("global_index", range(len(df)), dtype=pl.Int64))
 
-    (
-        table.merge_insert(on="uid")
-        .when_matched_update_all()
-        .execute(df)
-    )
+    (table.merge_insert(on="uid").when_matched_update_all().execute(df))
     return len(df)

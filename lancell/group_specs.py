@@ -127,8 +127,7 @@ class ZarrGroupSpec(BaseModel):
         if self.required_layers:
             if "layers" not in group or not isinstance(group["layers"], zarr.Group):
                 errors.append(
-                    f"Missing required 'layers' subgroup "
-                    f"(required layers: {self.required_layers})"
+                    f"Missing required 'layers' subgroup (required layers: {self.required_layers})"
                 )
             else:
                 layers_group = group["layers"]
@@ -159,9 +158,7 @@ _SPEC_REGISTRY: dict[str, ZarrGroupSpec] = {}
 def register_spec(spec: ZarrGroupSpec) -> None:
     """Register a new ZarrGroupSpec. Raises if already registered."""
     if spec.feature_space in _SPEC_REGISTRY:
-        raise ValueError(
-            f"Feature space '{spec.feature_space}' is already registered"
-        )
+        raise ValueError(f"Feature space '{spec.feature_space}' is already registered")
     _SPEC_REGISTRY[spec.feature_space] = spec
 
 

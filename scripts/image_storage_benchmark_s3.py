@@ -45,6 +45,7 @@ QUERIES = [
 # Query functions -- each returns (obs_df, images_array)
 # ---------------------------------------------------------------------------
 
+
 def query_blob_col(tbl, where: str) -> tuple[pd.DataFrame, np.ndarray]:
     result = tbl.search().where(where).select(METADATA_COLS + ["image"]).to_arrow().to_pydict()
     obs = pd.DataFrame({c: result[c] for c in METADATA_COLS})
@@ -55,19 +56,27 @@ def query_blob_col(tbl, where: str) -> tuple[pd.DataFrame, np.ndarray]:
 
 
 def query_two_tbl(meta_tbl, blob_tbl, where: str) -> tuple[pd.DataFrame, np.ndarray]:
-    meta = meta_tbl.search().where(where).select(METADATA_COLS + ["blob_row_offset"]).to_arrow().to_pydict()
+    meta = (
+        meta_tbl.search()
+        .where(where)
+        .select(METADATA_COLS + ["blob_row_offset"])
+        .to_arrow()
+        .to_pydict()
+    )
     obs = pd.DataFrame({c: meta[c] for c in METADATA_COLS})
     blob = blob_tbl.to_lance().take(meta["blob_row_offset"], columns=["image"]).to_pydict()
-    images = np.array(
-        [np.frombuffer(b, dtype=np.uint8).reshape(TILE_SHAPE) for b in blob["image"]]
-    )
+    images = np.array([np.frombuffer(b, dtype=np.uint8).reshape(TILE_SHAPE) for b in blob["image"]])
     return obs, images
 
 
 def query_zarr_obstore(meta_tbl, reader_images, where: str) -> tuple[pd.DataFrame, np.ndarray]:
-    meta = meta_tbl.search().where(where).select(
-        METADATA_COLS + ["zarr_row_index"]
-    ).to_arrow().to_pydict()
+    meta = (
+        meta_tbl.search()
+        .where(where)
+        .select(METADATA_COLS + ["zarr_row_index"])
+        .to_arrow()
+        .to_pydict()
+    )
     obs = pd.DataFrame({c: meta[c] for c in METADATA_COLS})
 
     row_indices = np.array(meta["zarr_row_index"], dtype=np.int64)
@@ -76,6 +85,7 @@ def query_zarr_obstore(meta_tbl, reader_images, where: str) -> tuple[pd.DataFram
 
     async def _fetch():
         return await reader_images.read_ranges(starts, ends)
+
     flat_data, lengths = asyncio.run(_fetch())
 
     images = flat_data.reshape(-1, *TILE_SHAPE)
@@ -85,6 +95,7 @@ def query_zarr_obstore(meta_tbl, reader_images, where: str) -> tuple[pd.DataFram
 # ---------------------------------------------------------------------------
 # Benchmark
 # ---------------------------------------------------------------------------
+
 
 def bench(name: str, fn, queries: list[tuple[str, str]]):
     results = {}
@@ -140,7 +151,9 @@ def main():
             read_only=True,
         )
         images_arr = zarr.open_array(store=images_store, mode="r")
-        print(f"Zarr images: shape={images_arr.shape}, chunks={images_arr.chunks}, shards={images_arr.shards}")
+        print(
+            f"Zarr images: shape={images_arr.shape}, chunks={images_arr.chunks}, shards={images_arr.shards}"
+        )
 
         reader_images = BatchAsyncArray.from_array(images_arr)
         r3 = bench("zarr_obstore", lambda w: query_zarr_obstore(meta3, reader_images, w), QUERIES)

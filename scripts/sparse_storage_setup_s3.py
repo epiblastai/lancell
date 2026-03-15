@@ -43,6 +43,7 @@ _s3 = s3fs.S3FileSystem()
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def get_s3_size_mb(s3_path: str) -> float:
     """Return total size in MB of all objects under an S3 prefix."""
     # strip protocol for s3fs.find
@@ -74,6 +75,7 @@ def _dict_to_arrow_table(data: dict) -> pa.Table:
 # Data generation
 # ---------------------------------------------------------------------------
 
+
 def generate_sparse_cell(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """Generate one sparse cell with variable sparsity: sorted gene indices and uint32 counts.
 
@@ -89,8 +91,10 @@ def generate_sparse_cell(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarr
 
 def generate_all_data():
     """Generate synthetic sparse expression data for all cells."""
-    print(f"Generating {N_CELLS:,} cells x {N_GENES:,} genes @ ~{DENSITY:.0%} density "
-          f"(mean {MEAN_NNZ_PER_CELL} nnz/cell, std {NNZ_STD})...")
+    print(
+        f"Generating {N_CELLS:,} cells x {N_GENES:,} genes @ ~{DENSITY:.0%} density "
+        f"(mean {MEAN_NNZ_PER_CELL} nnz/cell, std {NNZ_STD})..."
+    )
     rng = np.random.default_rng(SEED)
 
     all_gene_indices = []
@@ -105,8 +109,16 @@ def generate_all_data():
     print(f"  Generated in {t_gen:.1f}s")
 
     tissues = ["brain", "lung", "liver", "heart", "kidney", "spleen", "blood", "skin"]
-    cell_types = ["T cell", "B cell", "macrophage", "fibroblast", "epithelial",
-                  "neuron", "astrocyte", "endothelial"]
+    cell_types = [
+        "T cell",
+        "B cell",
+        "macrophage",
+        "fibroblast",
+        "epithelial",
+        "neuron",
+        "astrocyte",
+        "endothelial",
+    ]
     metadata = {
         "cell_uid": [f"cell_{i:07d}" for i in range(N_CELLS)],
         "tissue": rng.choice(tissues, size=N_CELLS).tolist(),
@@ -119,6 +131,7 @@ def generate_all_data():
 # ---------------------------------------------------------------------------
 # Approach 1: Single table with blob columns
 # ---------------------------------------------------------------------------
+
 
 def setup_approach1(all_gene_indices, all_counts, metadata):
     path = f"{S3_BASE}/approach1_blob"
@@ -141,6 +154,7 @@ def setup_approach1(all_gene_indices, all_counts, metadata):
 # ---------------------------------------------------------------------------
 # Approach 2: Two tables (metadata + blobs), row offset lookup
 # ---------------------------------------------------------------------------
+
 
 def setup_approach2(all_gene_indices, all_counts, metadata):
     path = f"{S3_BASE}/approach2_two_tables"
@@ -167,6 +181,7 @@ def setup_approach2(all_gene_indices, all_counts, metadata):
 # Approach 3: Zarr COO pointer
 # ---------------------------------------------------------------------------
 
+
 def setup_approach3(all_gene_indices, all_counts, metadata):
     lance_path = f"{S3_BASE}/approach3_lance"
     db = lancedb.connect(lance_path)
@@ -185,18 +200,26 @@ def setup_approach3(all_gene_indices, all_counts, metadata):
         n = len(all_gene_indices[i])
         starts[i] = offset
         ends[i] = offset + n
-        coo_gene_ids[offset:offset + n] = all_gene_indices[i]
-        coo_values[offset:offset + n] = all_counts[i]
+        coo_gene_ids[offset : offset + n] = all_gene_indices[i]
+        coo_values[offset : offset + n] = all_counts[i]
         offset += n
 
     print("  Writing approach 3 (Zarr COO, separate 1D arrays, zstd)...")
     t0 = time.perf_counter()
 
     indices_store = zarr.storage.ObjectStore(
-        S3Store("epiblast", prefix="lancell_data_structure_test/approach3_indices.zarr/", region="us-east-2"),
+        S3Store(
+            "epiblast",
+            prefix="lancell_data_structure_test/approach3_indices.zarr/",
+            region="us-east-2",
+        ),
     )
     counts_store = zarr.storage.ObjectStore(
-        S3Store("epiblast", prefix="lancell_data_structure_test/approach3_counts.zarr/", region="us-east-2"),
+        S3Store(
+            "epiblast",
+            prefix="lancell_data_structure_test/approach3_counts.zarr/",
+            region="us-east-2",
+        ),
     )
     zarr.create_array(
         indices_store,
@@ -230,14 +253,17 @@ def setup_approach3(all_gene_indices, all_counts, metadata):
     counts_size = get_s3_size_mb(counts_zarr_path)
     lance_size = get_s3_size_mb(lance_path)
     total_size = lance_size + indices_size + counts_size
-    print(f"  Written in {t_zarr_write + t_lance_write:.1f}s "
-          f"(indices zarr: {indices_size:.1f} MB, counts zarr: {counts_size:.1f} MB, "
-          f"lance: {lance_size:.1f} MB, total: {total_size:.1f} MB)")
+    print(
+        f"  Written in {t_zarr_write + t_lance_write:.1f}s "
+        f"(indices zarr: {indices_size:.1f} MB, counts zarr: {counts_size:.1f} MB, "
+        f"lance: {lance_size:.1f} MB, total: {total_size:.1f} MB)"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Approach 4: Zarr COO pointer + bitpacking codec
 # ---------------------------------------------------------------------------
+
 
 def setup_approach4(all_gene_indices, all_counts, metadata):
     from lancell.codecs.bitpacking import BitpackingCodec
@@ -259,18 +285,26 @@ def setup_approach4(all_gene_indices, all_counts, metadata):
         n = len(all_gene_indices[i])
         starts[i] = offset
         ends[i] = offset + n
-        coo_gene_ids[offset:offset + n] = all_gene_indices[i]
-        coo_values[offset:offset + n] = all_counts[i]
+        coo_gene_ids[offset : offset + n] = all_gene_indices[i]
+        coo_values[offset : offset + n] = all_counts[i]
         offset += n
 
     print("  Writing approach 4 (Zarr COO + bitpacking for both arrays)...")
     t0 = time.perf_counter()
 
     indices_store = zarr.storage.ObjectStore(
-        S3Store("epiblast", prefix="lancell_data_structure_test/approach4_indices.zarr/", region="us-east-2"),
+        S3Store(
+            "epiblast",
+            prefix="lancell_data_structure_test/approach4_indices.zarr/",
+            region="us-east-2",
+        ),
     )
     counts_store = zarr.storage.ObjectStore(
-        S3Store("epiblast", prefix="lancell_data_structure_test/approach4_counts.zarr/", region="us-east-2"),
+        S3Store(
+            "epiblast",
+            prefix="lancell_data_structure_test/approach4_counts.zarr/",
+            region="us-east-2",
+        ),
     )
     zarr.create_array(
         indices_store,
@@ -306,14 +340,17 @@ def setup_approach4(all_gene_indices, all_counts, metadata):
     counts_size = get_s3_size_mb(counts_zarr_path)
     lance_size = get_s3_size_mb(lance_path)
     total_size = lance_size + indices_size + counts_size
-    print(f"  Written in {t_zarr_write + t_lance_write:.1f}s "
-          f"(indices zarr: {indices_size:.1f} MB, counts zarr: {counts_size:.1f} MB, "
-          f"lance: {lance_size:.1f} MB, total: {total_size:.1f} MB)")
+    print(
+        f"  Written in {t_zarr_write + t_lance_write:.1f}s "
+        f"(indices zarr: {indices_size:.1f} MB, counts zarr: {counts_size:.1f} MB, "
+        f"lance: {lance_size:.1f} MB, total: {total_size:.1f} MB)"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     print(f"Clearing existing data at {S3_BASE} ...")
@@ -327,19 +364,25 @@ def main():
     setup_approach3(all_gene_indices, all_counts, metadata)
     setup_approach4(all_gene_indices, all_counts, metadata)
 
-    print(f"\nStorage sizes:")
+    print("\nStorage sizes:")
     print(f"  Approach 1 (blob column):  {get_s3_size_mb(f'{S3_BASE}/approach1_blob'):.1f} MB")
-    print(f"  Approach 2 (two tables):   {get_s3_size_mb(f'{S3_BASE}/approach2_two_tables'):.1f} MB")
+    print(
+        f"  Approach 2 (two tables):   {get_s3_size_mb(f'{S3_BASE}/approach2_two_tables'):.1f} MB"
+    )
     a3_lance = get_s3_size_mb(f"{S3_BASE}/approach3_lance")
     a3_idx = get_s3_size_mb(f"{S3_BASE}/approach3_indices.zarr")
     a3_cnt = get_s3_size_mb(f"{S3_BASE}/approach3_counts.zarr")
-    print(f"  Approach 3 (zarr pointer): {a3_lance + a3_idx + a3_cnt:.1f} MB "
-          f"(lance: {a3_lance:.1f}, indices: {a3_idx:.1f}, counts: {a3_cnt:.1f})")
+    print(
+        f"  Approach 3 (zarr pointer): {a3_lance + a3_idx + a3_cnt:.1f} MB "
+        f"(lance: {a3_lance:.1f}, indices: {a3_idx:.1f}, counts: {a3_cnt:.1f})"
+    )
     a4_lance = get_s3_size_mb(f"{S3_BASE}/approach4_lance")
     a4_idx = get_s3_size_mb(f"{S3_BASE}/approach4_indices.zarr")
     a4_cnt = get_s3_size_mb(f"{S3_BASE}/approach4_counts.zarr")
-    print(f"  Approach 4 (zarr+bitpack): {a4_lance + a4_idx + a4_cnt:.1f} MB "
-          f"(lance: {a4_lance:.1f}, indices: {a4_idx:.1f}, counts: {a4_cnt:.1f})")
+    print(
+        f"  Approach 4 (zarr+bitpack): {a4_lance + a4_idx + a4_cnt:.1f} MB "
+        f"(lance: {a4_lance:.1f}, indices: {a4_idx:.1f}, counts: {a4_cnt:.1f})"
+    )
     print(f"\nData written to {S3_BASE}")
 
 
