@@ -13,22 +13,19 @@ import os
 from pathlib import Path
 
 import anndata as ad
-import numpy as np
 import obstore.store
 import polars as pl
-import pyarrow as pa
-import zarr
 
 from examples.cellxgene_census.schema import (
     CellObs,
     CensusDatasetRecord,
     GeneFeatureSpace,
 )
-from lancell.atlas import RaggedAtlas, _schema_obs_fields
-from lancell.codecs.bitpacking import BitpackingCodec
+from lancell.atlas import RaggedAtlas
+from lancell.ingestion import add_anndata_batch
 from lancell.schema import make_uid
 from lancell.tools.add_csc import add_csc
-from lancell.var_df import build_remap, reindex_registry, write_remap, write_var_df
+from lancell.var_df import reindex_registry
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"
@@ -154,26 +151,18 @@ def ingest_backed(
     adata: ad.AnnData,
     h5ad_path: str,
     ensembl_to_uid: dict[str, str],
-) -> int:
-    """Ingest a backed h5ad into the atlas using streaming writes.
-
-    1. Read nnz from the HDF5 file without loading data
-    2. Pre-allocate zarr arrays with shape=(nnz,)
-    3. Stream shard-sized batches of values/indices from the backed CSR
-    4. Build cell records with correct start/end pointers
-    """
-    h5_file = adata.file._file
-    h5_data = h5_file["X/data"]
-    h5_indices = h5_file["X/indices"]
-    h5_indptr = h5_file["X/indptr"]
-
-    nnz = h5_data.shape[0]
+) -> tuple[int, str]:
+    """Ingest a backed h5ad into the atlas using batched streaming writes."""
     n_cells = adata.n_obs
-    print(f"  nnz={nnz:,}, n_cells={n_cells:,}")
+    print(f"  n_cells={n_cells:,}")
 
-    # Create dataset record
     cellxgene_dataset_id = Path(h5ad_path).stem
     zarr_group = make_uid()
+
+    # Attach global_feature_uid to adata.var so write_var_sidecar can use it
+    ensembl_ids = list(adata.var.index)
+    adata.var["global_feature_uid"] = [ensembl_to_uid[eid] for eid in ensembl_ids]
+
     dataset_record = CensusDatasetRecord(
         uid=zarr_group,
         zarr_group=zarr_group,
@@ -182,114 +171,20 @@ def ingest_backed(
         cellxgene_dataset_id=cellxgene_dataset_id,
     )
 
-    # Write dataset record
-    dataset_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=CensusDatasetRecord.to_arrow_schema(),
-    )
-    atlas._dataset_table.add(dataset_arrow)
-
-    # Create zarr group and pre-allocate arrays
-    # Use a writable zarr store wrapping the same obstore (atlas._root may be read-only)
-    writable_store = zarr.storage.ObjectStore(atlas._store)
-    group = zarr.open_group(writable_store, path=zarr_group, mode="w")
-    csr_group = group.create_group("csr")
-    csr_group.create_array(
-        "indices",
-        shape=(nnz,),
-        dtype=np.uint32,
-        chunks=(CHUNK_SIZE,),
-        shards=(SHARD_SIZE,),
-        compressors=BitpackingCodec(transform="delta"),
-    )
-    layers = csr_group.create_group("layers")
-    layers.create_array(
-        LAYER_NAME,
-        shape=(nnz,),
-        dtype=np.uint32,
-        chunks=(CHUNK_SIZE,),
-        shards=(SHARD_SIZE,),
-        compressors=BitpackingCodec(transform="none"),
+    add_anndata_batch(
+        atlas, adata,
+        feature_space=FEATURE_SPACE,
+        zarr_layer=LAYER_NAME,
+        dataset_record=dataset_record,
+        chunk_shape=(CHUNK_SIZE,),
+        shard_shape=(SHARD_SIZE,),
     )
 
-    # Read indptr fully (small: n_cells+1 int64 values)
-    indptr = h5_indptr[:]
-    starts = indptr[:-1]
-    ends = indptr[1:]
-
-    # Stream data in shard-sized batches
-    zarr_indices = csr_group["indices"]
-    zarr_counts = csr_group["layers"][LAYER_NAME]
-
-    written = 0
-    while written < nnz:
-        batch_end = min(written + SHARD_SIZE, nnz)
-        chunk_indices = h5_indices[written:batch_end].astype(np.uint32)
-        chunk_values = h5_data[written:batch_end].astype(np.uint32)
-        zarr_indices[written:batch_end] = chunk_indices
-        zarr_counts[written:batch_end] = chunk_values
-        written = batch_end
-        print(f"    Written {written:,}/{nnz:,} nnz values")
-
-    # Write var_df sidecar with global_feature_uid mapped to registry uids
-    ensembl_ids = list(adata.var.index)
-    global_feature_uids = [ensembl_to_uid[eid] for eid in ensembl_ids]
+    # Index feature-dataset pairs for FTS queries (census-specific, not part of add_anndata_batch)
     var_df = pl.from_pandas(adata.var.reset_index())
-    var_df = var_df.with_columns(pl.Series("global_feature_uid", global_feature_uids))
-    write_var_df(atlas._store, zarr_group, var_df)
     atlas.add_feature_dataset_pairs(var_df, dataset_record.uid)
 
-    # Build and write remap
-    registry_table = atlas._registry_tables[FEATURE_SPACE]
-    remap = build_remap(var_df, registry_table)
-    write_remap(atlas._store, group, remap, registry_version=registry_table.version)
-
-    # Build and insert cell records directly from the obs table
-    arrow_schema = CellObs.to_arrow_schema()
-    schema_fields = _schema_obs_fields(CellObs)
-    obs_df = adata.obs
-
-    # Build pointer struct array
-    pointer_struct = pa.StructArray.from_arrays(
-        [
-            pa.array([FEATURE_SPACE] * n_cells, type=pa.string()),
-            pa.array([zarr_group] * n_cells, type=pa.string()),
-            pa.array(starts.astype(np.int64), type=pa.int64()),
-            pa.array(ends.astype(np.int64), type=pa.int64()),
-            pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
-        ],
-        names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
-    )
-
-    # Start with auto-generated columns
-    uids = [make_uid() for _ in range(n_cells)]
-    columns = {
-        "uid": pa.array(uids, type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
-        "gene_expression": pointer_struct,
-    }
-
-    # Add obs columns that match the schema
-    available_obs_cols = [c for c in schema_fields if c in obs_df.columns]
-    for col in available_obs_cols:
-        series = obs_df[col]
-        # Convert categorical to string for Arrow compatibility
-        if hasattr(series, "cat"):
-            series = series.astype(str)
-        arrow_field = arrow_schema.field(col)
-        columns[col] = pa.array(series.values, type=arrow_field.type)
-
-    # Add None columns for schema fields not in obs
-    for field_name in schema_fields:
-        if field_name not in columns:
-            arrow_field = arrow_schema.field(field_name)
-            columns[field_name] = pa.nulls(n_cells, type=arrow_field.type)
-
-    arrow_table = pa.table(columns, schema=arrow_schema)
-
-    atlas.cell_table.add(arrow_table)
     print(f"    Inserted {n_cells:,} cell records")
-
     return n_cells, zarr_group
 
 

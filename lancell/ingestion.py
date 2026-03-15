@@ -5,11 +5,14 @@ reference implementation.  Downstream projects can write their own ingestion
 that calls the lower-level ``var_df`` helpers directly.
 """
 
+from pathlib import Path
+
 import anndata as ad
 import numpy as np
 import pyarrow as pa
 import polars as pl
 import scipy.sparse as sp
+import zarr
 
 from lancell.atlas import (
     RaggedAtlas,
@@ -20,28 +23,145 @@ from lancell.atlas import (
 from lancell.group_specs import PointerKind, get_spec
 from lancell.schema import (
     DatasetRecord,
-    DenseZarrPointer,
-    SparseZarrPointer,
+    make_uid,
 )
 from lancell.var_df import build_remap, write_remap, write_var_df
 
 
-def add_from_anndata(
+_INTEGER_DTYPES = {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
+
+_CHUNK_ELEMS = 40_960
+_CHUNKS_PER_SHARD = 1024
+_SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
+
+
+def _is_backed_csr(adata: ad.AnnData) -> bool:
+    """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
+    return (
+        adata.isbacked
+        and "X" in adata.file._file
+        and "data" in adata.file._file["X"]
+    )
+
+
+def _write_sparse_batched(
+    group: zarr.Group,
+    adata: ad.AnnData,
+    zarr_layer: str,
+    chunk_shape: tuple[int, ...],
+    shard_shape: tuple[int, ...],
+    use_bitpacking: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pre-allocate and stream-write CSR data in shard-sized batches.
+
+    For backed h5ad files, reads directly from the HDF5 CSR datasets without
+    materialising the full matrix.  For in-memory AnnData, converts to scipy
+    CSR first, then streams the flat arrays.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(starts, ends)`` — per-cell indptr start/end positions.
+    """
+    batch_size = shard_shape[0]
+
+    indices_kwargs: dict = {}
+    layer_kwargs: dict = {}
+    if use_bitpacking:
+        from lancell.codecs.bitpacking import BitpackingCodec
+
+        indices_kwargs["compressors"] = BitpackingCodec(transform="delta")
+        layer_kwargs["compressors"] = BitpackingCodec(transform="none")
+
+    if _is_backed_csr(adata):
+        h5x = adata.file._file["X"]
+        nnz = int(h5x["data"].shape[0])
+        indptr = h5x["indptr"][:]
+        src_indices = h5x["indices"]
+        src_data = h5x["data"]
+        data_dtype = src_data.dtype
+    else:
+        csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
+        nnz = csr.nnz
+        indptr = csr.indptr
+        src_indices = csr.indices
+        src_data = csr.data
+        data_dtype = csr.data.dtype
+
+    csr_group = group.create_group("csr")
+    zarr_indices = csr_group.create_array(
+        "indices", shape=(nnz,), dtype=np.uint32,
+        chunks=chunk_shape, shards=shard_shape, **indices_kwargs,
+    )
+    layers = csr_group.create_group("layers")
+    zarr_values = layers.create_array(
+        zarr_layer, shape=(nnz,), dtype=data_dtype,
+        chunks=chunk_shape, shards=shard_shape, **layer_kwargs,
+    )
+
+    written = 0
+    while written < nnz:
+        end = min(written + batch_size, nnz)
+        zarr_indices[written:end] = src_indices[written:end].astype(np.uint32, copy=False)
+        zarr_values[written:end] = src_data[written:end]
+        written = end
+
+    starts = indptr[:-1].astype(np.int64)
+    ends = indptr[1:].astype(np.int64)
+    return starts, ends
+
+
+def _write_dense_batched(
+    group: zarr.Group,
+    adata: ad.AnnData,
+    zarr_layer: str | None,
+    chunk_shape: tuple[int, ...],
+    shard_shape: tuple[int, ...],
+) -> None:
+    """Pre-allocate and stream-write dense 2D data in shard-sized cell batches.
+
+    Slices ``adata.X[start:end, :]`` per batch; anndata handles backed vs
+    in-memory transparently for dense arrays.
+    """
+    n_cells, n_vars = adata.shape
+    batch_size = shard_shape[0]
+
+    if zarr_layer is not None:
+        layers_group = group.create_group("layers")
+        zarr_arr = layers_group.create_array(
+            zarr_layer, shape=(n_cells, n_vars), dtype=np.float32,
+            chunks=chunk_shape, shards=shard_shape,
+        )
+    else:
+        zarr_arr = group.create_array(
+            "data", shape=(n_cells, n_vars), dtype=np.float32,
+            chunks=chunk_shape, shards=shard_shape,
+        )
+
+    written = 0
+    while written < n_cells:
+        end = min(written + batch_size, n_cells)
+        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=np.float32)
+        written = end
+
+
+def add_anndata_batch(
     atlas: RaggedAtlas,
     adata: ad.AnnData,
     *,
     feature_space: str,
-    zarr_group: str | None = None,
-    layer_name: str | None,
-    chunk_size: int = 4096,
-    shard_size: int = 65536,
-    dataset_record: DatasetRecord | None = None,
-    use_bitpacking: bool = False,
+    zarr_layer: str | None,
+    dataset_record: DatasetRecord,
+    chunk_shape: tuple[int, ...] | None = None,
+    shard_shape: tuple[int, ...] | None = None,
 ) -> int:
-    """Ingest an AnnData into the atlas.
+    """Ingest an AnnData into the atlas using batched zarr writes.
 
-    Writes zarr arrays, var_df sidecar, remap, and inserts cell records
-    into the cell table. Features must already be registered via
+    Always ingests ``adata.X``. ``zarr_layer`` is the *destination* layer name
+    within the zarr group (e.g. ``"counts"``), not a source AnnData layer.
+
+    Writes zarr arrays, var_df sidecar, remap, and inserts cell records into
+    the cell table. Features must already be registered via
     :meth:`RaggedAtlas.register_features`, and ``adata.var`` must contain a
     ``global_feature_uid`` column.
 
@@ -50,29 +170,29 @@ def add_from_anndata(
     atlas:
         The atlas to ingest into.
     adata:
-        The AnnData to ingest.
+        The AnnData to ingest. Use ``backed="r"`` for large files to avoid
+        materialising the full matrix; see :func:`add_from_anndata` for a
+        convenience wrapper that opens h5ad paths automatically.
     feature_space:
         Which feature space this data belongs to.
-    zarr_group:
-        Zarr group path (relative to atlas store) for this ingestion.
-        If ``None`` (default), a UUID-based name is generated
-        automatically, which guarantees uniqueness across concurrent
-        writers.
-    layer_name:
-        Required for feature spaces with allowed_layers — the layer to
-        write (e.g. ``"counts"``). Unused for feature spaces
-        without layers (e.g. image_tiles), in which case set to None.
-    chunk_size:
-        Zarr chunk size for 1D arrays.
-    shard_size:
-        Zarr shard size for 1D arrays.
+    zarr_layer:
+        Destination layer name within the zarr CSR ``layers/`` group
+        (e.g. ``"counts"``). Required for feature spaces with
+        ``allowed_layers``; pass ``None`` for feature spaces without layers.
     dataset_record:
-        Optional pre-built dataset record. If ``None``, a default
-        :class:`DatasetRecord` is created. Pass a subclassed record
-        for richer dataset metadata.
-    use_bitpacking:
-        If True, use BP-128 bitpacking instead of zstd for integer
-        arrays (indices and count layers). Float arrays still use zstd.
+        Dataset record to register. ``dataset_record.zarr_group`` is used as
+        the zarr group path (relative to the atlas store). Construct with
+        :class:`DatasetRecord` or a subclass for richer metadata.
+    chunk_shape:
+        Zarr chunk shape. For sparse feature spaces this must be a 1-element
+        tuple; for dense a 2-element tuple ``(n_cells_per_chunk, n_features)``.
+        Defaults to ``(_CHUNK_ELEMS,)`` for sparse and
+        ``(max(1, _CHUNK_ELEMS // n_vars), n_vars)`` for dense.
+        Values should be multiples of 128 for optimal BP-128 bitpacking.
+    shard_shape:
+        Zarr shard shape, same dimensionality rules as ``chunk_shape``.
+        Defaults to ``(_SHARD_ELEMS,)`` for sparse and
+        ``(max(1, _SHARD_ELEMS // n_vars), n_vars)`` for dense.
 
     Returns
     -------
@@ -81,25 +201,23 @@ def add_from_anndata(
     """
     spec = get_spec(feature_space)
 
-    if spec.allowed_layers and layer_name is None:
+    if spec.allowed_layers and zarr_layer is None:
         raise ValueError(
-            f"layer_name is required for feature space '{feature_space}'. "
+            f"zarr_layer is required for feature space '{feature_space}'. "
             f"Allowed values: {spec.allowed_layers}"
         )
-    if layer_name is not None and spec.allowed_layers and layer_name not in spec.allowed_layers:
+    if zarr_layer is not None and spec.allowed_layers and zarr_layer not in spec.allowed_layers:
         raise ValueError(
-            f"layer_name '{layer_name}' is not allowed for feature space "
+            f"zarr_layer '{zarr_layer}' is not allowed for feature space "
             f"'{feature_space}'. Allowed: {spec.allowed_layers}"
         )
 
-    # Pre-flight: validate obs columns match schema before any writes
     obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
     if obs_errors:
         raise ValueError(
             f"obs columns do not match cell schema: {obs_errors}"
         )
 
-    # Find the pointer field for this feature space
     pointer_field: PointerFieldInfo | None = None
     for pf in atlas._pointer_fields.values():
         if pf.feature_space == feature_space:
@@ -112,165 +230,123 @@ def add_from_anndata(
         )
 
     n_cells = adata.n_obs
+    zarr_group = dataset_record.zarr_group
 
-    # Create dataset record (FK for cells)
-    if dataset_record is None:
-        dataset_record = DatasetRecord(
-            zarr_group="",  # placeholder, overwritten below
-            feature_space=feature_space,
-            n_cells=n_cells,
+    if spec.pointer_kind is PointerKind.SPARSE:
+        chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
+        shard_shape = shard_shape or (_SHARD_ELEMS,)
+        if len(chunk_shape) != 1 or len(shard_shape) != 1:
+            raise ValueError(
+                f"Sparse feature space '{feature_space}' requires 1-element chunk_shape "
+                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
+            )
+        data_dtype = (
+            np.dtype(adata.file._file["X"]["data"].dtype)
+            if _is_backed_csr(adata)
+            else adata.X.dtype
         )
+        use_bitpacking = data_dtype in _INTEGER_DTYPES
+    else:
+        n_vars = adata.n_vars
+        chunk_shape = chunk_shape or (max(1, _CHUNK_ELEMS // n_vars), n_vars)
+        shard_shape = shard_shape or (max(1, _SHARD_ELEMS // n_vars), n_vars)
+        if len(chunk_shape) != 2 or len(shard_shape) != 2:
+            raise ValueError(
+                f"Dense feature space '{feature_space}' requires 2-element chunk_shape "
+                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
+            )
+        use_bitpacking = False
 
-    # Default zarr_group to dataset_uid to prevent collisions between
-    # concurrent writers.
-    if zarr_group is None:
-        zarr_group = dataset_record.uid
-    dataset_record.zarr_group = zarr_group
     dataset_arrow = pa.Table.from_pylist(
         [dataset_record.model_dump()],
         schema=type(dataset_record).to_arrow_schema(),
     )
     atlas._dataset_table.add(dataset_arrow)
 
-    # Write zarr arrays
+    group = atlas._root.create_group(zarr_group)
     if spec.pointer_kind is PointerKind.SPARSE:
-        starts, ends = write_sparse_zarr(
-            atlas, adata, zarr_group, layer_name, chunk_size, shard_size,
-            use_bitpacking=use_bitpacking,
+        starts, ends = _write_sparse_batched(
+            group, adata, zarr_layer, chunk_shape, shard_shape, use_bitpacking,
         )
     else:
-        write_dense_zarr(atlas, adata, zarr_group, layer_name, chunk_size, shard_size)
+        _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape)
 
-    # Write var_df sidecar
     if spec.has_var_df:
         write_var_sidecar(atlas, adata, feature_space, zarr_group)
 
-    # Build cell records from obs columns
-    obs_field_names = list(_schema_obs_fields(atlas._cell_schema).keys())
-    records = []
-    for i in range(n_cells):
-        if spec.pointer_kind is PointerKind.SPARSE:
-            pointer = SparseZarrPointer(
-                feature_space=feature_space,
-                zarr_group=zarr_group,
-                start=int(starts[i]),
-                end=int(ends[i]),
-                zarr_row=i,
-            )
-        else:
-            pointer = DenseZarrPointer(
-                feature_space=feature_space,
-                zarr_group=zarr_group,
-                position=i,
-            )
-
-        extra = {
-            col: adata.obs.iloc[i][col]
-            for col in obs_field_names
-            if col in adata.obs.columns
-        }
-        record_kwargs = {
-            pointer_field.field_name: pointer,
-            "dataset_uid": dataset_record.uid,
-            **extra,
-        }
-        records.append(atlas._cell_schema(**record_kwargs))
-
     arrow_schema = atlas._cell_schema.to_arrow_schema()
-    arrow_table = pa.Table.from_pylist(
-        [r.model_dump() for r in records], schema=arrow_schema
-    )
+    obs_df = adata.obs
+    schema_fields = _schema_obs_fields(atlas._cell_schema)
+
+    if spec.pointer_kind is PointerKind.SPARSE:
+        pointer_struct = pa.StructArray.from_arrays(
+            [
+                pa.array([feature_space] * n_cells, type=pa.string()),
+                pa.array([zarr_group] * n_cells, type=pa.string()),
+                pa.array(starts.astype(np.int64), type=pa.int64()),
+                pa.array(ends.astype(np.int64), type=pa.int64()),
+                pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
+            ],
+            names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+        )
+    else:
+        pointer_struct = pa.StructArray.from_arrays(
+            [
+                pa.array([feature_space] * n_cells, type=pa.string()),
+                pa.array([zarr_group] * n_cells, type=pa.string()),
+                pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
+            ],
+            names=["feature_space", "zarr_group", "position"],
+        )
+
+    columns = {
+        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
+        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
+        pointer_field.field_name: pointer_struct,
+    }
+
+    for col in schema_fields:
+        if col in obs_df.columns:
+            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
+
+    for col in schema_fields:
+        if col not in columns:
+            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
+
+    arrow_table = pa.table(columns, schema=arrow_schema)
     atlas.cell_table.add(arrow_table)
     return n_cells
 
 
-def write_sparse_zarr(
+def add_from_anndata(
     atlas: RaggedAtlas,
-    adata: ad.AnnData,
-    zarr_group: str,
-    layer_name: str,
-    chunk_size: int,
-    shard_size: int,
-    use_bitpacking: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Write sparse (CSR) data to zarr arrays. Returns (starts, ends).
+    adata: ad.AnnData | str | Path,
+    *,
+    feature_space: str,
+    zarr_layer: str | None,
+    dataset_record: DatasetRecord,
+    chunk_shape: tuple[int, ...] | None = None,
+    shard_shape: tuple[int, ...] | None = None,
+) -> int:
+    """Convenience wrapper around :func:`add_anndata_batch`.
 
-    Parameters
-    ----------
-    use_bitpacking
-        If True, use BP-128 bitpacking for indices (with delta) and
-        integer count layers instead of the default zstd codec.
+    Accepts an in-memory :class:`anndata.AnnData` or a path to an ``.h5ad``
+    file.  Paths are opened with ``backed="r"`` so the full matrix is never
+    materialised into memory.
+
+    All other parameters are forwarded to :func:`add_anndata_batch`; see that
+    function for full documentation.
     """
-    csr = sp.csr_matrix(adata.X)
-    flat_indices = csr.indices.astype(np.uint32)
-    flat_values = csr.data
-
-    starts = csr.indptr[:-1].astype(np.int64)
-    ends = csr.indptr[1:].astype(np.int64)
-
-    group = atlas._root.create_group(zarr_group)
-
-    indices_kwargs: dict = {}
-    layer_kwargs: dict = {}
-    if use_bitpacking:
-        from lancell.codecs.bitpacking import BitpackingCodec
-
-        indices_kwargs["compressors"] = BitpackingCodec(transform="delta")
-        # Only use bitpacking for integer layers
-        if np.issubdtype(flat_values.dtype, np.integer):
-            layer_kwargs["compressors"] = BitpackingCodec(transform="none")
-
-    csr_group = group.create_group("csr")
-    csr_group.create_array(
-        "indices",
-        data=flat_indices,
-        chunks=(chunk_size,),
-        shards=(shard_size,),
-        **indices_kwargs,
+    if not isinstance(adata, ad.AnnData):
+        adata = ad.read_h5ad(adata, backed="r")
+    return add_anndata_batch(
+        atlas, adata,
+        feature_space=feature_space,
+        zarr_layer=zarr_layer,
+        dataset_record=dataset_record,
+        chunk_shape=chunk_shape,
+        shard_shape=shard_shape,
     )
-
-    layers = csr_group.create_group("layers")
-    layers.create_array(
-        layer_name,
-        data=flat_values,
-        chunks=(chunk_size,),
-        shards=(shard_size,),
-        **layer_kwargs,
-    )
-
-    return starts, ends
-
-
-def write_dense_zarr(
-    atlas: RaggedAtlas,
-    adata: ad.AnnData,
-    zarr_group: str,
-    layer_name: str | None,
-    chunk_size: int,
-    shard_size: int,
-) -> None:
-    """Write dense data to a 2D zarr array."""
-    data = np.asarray(adata.X, dtype=np.float32)
-
-    group = atlas._root.create_group(zarr_group)
-
-    n_cells, n_features = data.shape
-
-    if layer_name is not None:
-        layers_group = group.create_group("layers")
-        layers_group.create_array(
-            layer_name,
-            data=data,
-            chunks=(chunk_size, n_features),
-            shards=(shard_size, n_features),
-        )
-    else:
-        group.create_array(
-            "data",
-            data=data,
-            chunks=(chunk_size, n_features),
-            shards=(shard_size, n_features),
-        )
 
 
 def write_var_sidecar(
@@ -290,7 +366,7 @@ def write_var_sidecar(
     if "global_feature_uid" not in var_df.columns:
         raise ValueError(
             "adata.var must have a 'global_feature_uid' column. "
-            "Set it before calling add_from_anndata()."
+            "Set it before calling add_anndata_batch()."
         )
 
     write_var_df(atlas._store, zarr_group, var_df)
