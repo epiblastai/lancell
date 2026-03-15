@@ -24,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extras dev
       - uses: PyO3/maturin-action@v1
         with:
           command: develop
