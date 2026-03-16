@@ -17,7 +17,7 @@ import zarr
 from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
 from lancell.batch_array import BatchArray
-from lancell.dataset_vars import read_dataset_vars
+from lancell.feature_layouts import read_feature_layout
 from lancell.group_specs import PointerKind, get_spec
 from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields, validate_obs_columns
 from lancell.schema import (
@@ -282,7 +282,7 @@ def add_anndata_batch(
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape)
 
     if spec.has_var_df:
-        write_dataset_vars(atlas, adata, feature_space, zarr_group, dataset_record.uid)
+        write_feature_layout(atlas, adata, feature_space, zarr_group, dataset_record.uid)
 
     arrow_schema = atlas._cell_schema.to_arrow_schema()
     obs_df = adata.obs
@@ -387,14 +387,14 @@ def add_from_anndata(
     )
 
 
-def write_dataset_vars(
+def write_feature_layout(
     atlas: RaggedAtlas,
     adata: ad.AnnData,
     feature_space: str,
     zarr_group: str,
     dataset_uid: str,
 ) -> None:
-    """Write feature-level metadata for a dataset into the _dataset_vars Lance table.
+    """Write feature layout for a dataset into the _feature_layouts Lance table.
 
     Requires ``global_feature_uid`` in ``adata.var`` and features to
     already be registered via :meth:`RaggedAtlas.register_features`.
@@ -406,7 +406,7 @@ def write_dataset_vars(
             "Set it before calling add_anndata_batch()."
         )
 
-    atlas.add_dataset_vars(var_df, dataset_uid, feature_space)
+    atlas.add_or_reuse_layout(var_df, dataset_uid, feature_space)
 
 
 def add_csc(
@@ -421,12 +421,11 @@ def add_csc(
 
     Reads the full CSR flat arrays from ``{zarr_group}/csr/``, transposes
     to CSC order sorted by feature index, writes ``{zarr_group}/csc/``, and
-    updates ``_dataset_vars`` with ``csc_start``/``csc_end`` values.
+    stores the CSC ``indptr`` as a zarr array at ``{zarr_group}/csc/indptr``.
 
-    After running, ``_dataset_vars`` gains ``csc_start``/``csc_end`` values and a
-    new ``{zarr_group}/csc/`` subgroup appears alongside the existing
-    ``{zarr_group}/csr/``. Subsequent feature-filtered queries will automatically
-    use the CSC path.
+    After running, a new ``{zarr_group}/csc/`` subgroup appears alongside the
+    existing ``{zarr_group}/csr/``, including an ``indptr`` array. Subsequent
+    feature-filtered queries will automatically use the CSC path.
 
     Parameters
     ----------
@@ -449,14 +448,14 @@ def add_csc(
         If no cells or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
-    # Look up dataset_uid for this zarr_group + feature_space
+    # Look up dataset_uid and layout_uid for this zarr_group + feature_space
     datasets_df = (
         atlas._dataset_table.search()
         .where(
             f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
             prefilter=True,
         )
-        .select(["uid"])
+        .select(["uid", "layout_uid"])
         .to_polars()
     )
     if datasets_df.is_empty():
@@ -464,7 +463,7 @@ def add_csc(
             f"No dataset record found for zarr_group='{zarr_group}', "
             f"feature_space='{feature_space}'"
         )
-    dataset_uid = datasets_df["uid"][0]
+    layout_uid = datasets_df["layout_uid"][0]
 
     # Query all cells in this zarr group
     cells_df = (
@@ -505,60 +504,70 @@ def add_csc(
             f"Was zarr_row populated correctly during ingest?"
         )
 
-    # Read the full flat CSR arrays
-    csr_index_arr = BatchArray.from_array(atlas._root[f"{zarr_group}/csr/indices"])
-    csr_layer_arr = BatchArray.from_array(atlas._root[f"{zarr_group}/csr/layers/{layer_name}"])
-
-    flat_indices, lengths = csr_index_arr.read_ranges(
-        starts.astype(np.int64), ends.astype(np.int64)
-    )
-    flat_values, _ = csr_layer_arr.read_ranges(starts.astype(np.int64), ends.astype(np.int64))
-
-    # Reconstruct (zarr_row, feature_idx) for every non-zero element
-    cell_ids = np.repeat(np.arange(n_cells, dtype=np.int64), lengths)
-    feature_indices = flat_indices.astype(np.int64)
-
-    # Sort by feature index (stable preserves zarr_row order within each feature)
-    sort_order = np.argsort(feature_indices, kind="stable")
-    sorted_cell_ids = cell_ids[sort_order]
-    sorted_features = feature_indices[sort_order]
-    sorted_values = flat_values[sort_order]
-
-    # Get n_features from _dataset_vars
-    rows = read_dataset_vars(atlas._dataset_vars_table, dataset_uid)
+    # Get n_features from _feature_layouts
+    rows = read_feature_layout(atlas._feature_layouts_table, layout_uid)
     n_features = len(rows)
 
-    feature_range = np.arange(n_features, dtype=np.int64)
-    csc_start = np.searchsorted(sorted_features, feature_range, side="left").astype(np.int64)
-    csc_end = np.searchsorted(sorted_features, feature_range, side="right").astype(np.int64)
+    # Run memory-efficient two-pass CSR-to-CSC conversion in Rust
+    import tempfile
 
-    # Write CSC zarr arrays (open writable root so this works even when atlas was opened read-only)
-    _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
-    csc_group = _writable_root.require_group(f"{zarr_group}/csc")
-    csc_group.create_array(
-        "indices",
-        data=sorted_cell_ids.astype(np.uint32),
-        chunks=(chunk_size,),
-        shards=(shard_size,),
-    )
-    layers_group = csc_group.create_group("layers")
-    layers_group.create_array(
-        layer_name,
-        data=sorted_values,
-        chunks=(chunk_size,),
-        shards=(shard_size,),
-    )
+    from lancell._rust import csr_to_csc as _rust_csr_to_csc
 
-    # Update _dataset_vars with csc_start/csc_end via merge_insert
-    rows = rows.with_columns(
-        pl.Series("csc_start", csc_start),
-        pl.Series("csc_end", csc_end),
-    )
-    (
-        atlas._dataset_vars_table.merge_insert(on=["feature_uid", "dataset_uid"])
-        .when_matched_update_all()
-        .execute(rows)
-    )
-    # Cache invalidation is automatic: GroupReader checks _dataset_vars_table.version
-    # on next access to var_df or has_csc.
+    csr_indices_path = f"{zarr_group}/csr/indices"
+    csr_layer_path = f"{zarr_group}/csr/layers/{layer_name}"
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        idx_mmap_path, val_mmap_path, csc_start, csc_end = _rust_csr_to_csc(
+            atlas._store,
+            csr_indices_path,
+            csr_layer_path,
+            starts.astype(np.int64),
+            ends.astype(np.int64),
+            int(n_features),
+            tmp_dir,
+        )
+
+        # Write CSC zarr arrays from mmap files in batches
+        _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
+        csc_group = _writable_root.require_group(f"{zarr_group}/csc")
+
+        nnz = int(csc_end[-1]) if len(csc_end) > 0 else 0
+
+        csc_indices_zarr = csc_group.create_array(
+            "indices",
+            shape=(nnz,),
+            dtype=np.uint32,
+            chunks=(chunk_size,),
+            shards=(shard_size,),
+        )
+        layers_group = csc_group.create_group("layers")
+        csc_values_zarr = layers_group.create_array(
+            layer_name,
+            shape=(nnz,),
+            dtype=np.uint32,
+            chunks=(chunk_size,),
+            shards=(shard_size,),
+        )
+
+        # Write indptr as zarr array at {zarr_group}/csc/indptr
+        indptr = np.zeros(n_features + 1, dtype=np.int64)
+        indptr[:n_features] = csc_start
+        indptr[n_features] = csc_end[-1] if len(csc_end) > 0 else 0
+        csc_group.create_array("indptr", data=indptr)
+
+        # Read mmap files in shard-sized batches and write to zarr
+        if nnz > 0:
+            mmap_indices = np.memmap(idx_mmap_path, dtype=np.uint32, mode="r", shape=(nnz,))
+            mmap_values = np.memmap(val_mmap_path, dtype=np.uint32, mode="r", shape=(nnz,))
+
+            written = 0
+            while written < nnz:
+                end = min(written + shard_size, nnz)
+                csc_indices_zarr[written:end] = mmap_indices[written:end]
+                csc_values_zarr[written:end] = mmap_values[written:end]
+                written = end
+
+            del mmap_indices, mmap_values
+
+    # Cache invalidation: GroupReader needs fresh data
     atlas._group_readers.pop((zarr_group, feature_space), None)
