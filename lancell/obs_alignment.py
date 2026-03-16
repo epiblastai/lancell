@@ -21,9 +21,24 @@ from lancell.schema import AUTO_FIELDS, DenseZarrPointer, LancellBaseSchema, Spa
 
 @dataclasses.dataclass(frozen=True)
 class PointerFieldInfo:
-    """Metadata extracted from a single pointer field on a cell schema."""
+    """Metadata extracted from a single pointer field on a cell schema.
 
-    # REVIEW: Give a bit more description of what these fields are for in the docstring
+    Attributes
+    ----------
+    field_name:
+        The attribute name on the schema class (e.g. ``"gene_expression"``).
+        By convention this doubles as the feature space name.
+    feature_space:
+        The feature space this pointer references (e.g. ``"gene_expression"``).
+        Used to look up the matching ``GroupSpec`` via ``get_spec()``.
+    pointer_kind:
+        Whether the feature data is stored as a sparse or dense zarr array.
+        Must agree with what the registered ``GroupSpec`` expects.
+    pointer_type:
+        The concrete pointer class — either ``SparseZarrPointer`` or
+        ``DenseZarrPointer``.
+    """
+
     field_name: str
     feature_space: str
     pointer_kind: PointerKind
@@ -33,9 +48,22 @@ class PointerFieldInfo:
 def _extract_pointer_fields(
     schema_cls: type[LancellBaseSchema],
 ) -> dict[str, PointerFieldInfo]:
-    """Introspect a schema class and return info for each pointer field."""
-    # REVIEW: A bit more description on why this is important in the docstring
-    # would be helpful. E.g., why can't we just used the `ZarrPointer` as is?
+    """Introspect a schema class and return info for each pointer field.
+
+    Pointer fields (``SparseZarrPointer`` / ``DenseZarrPointer``) are not
+    obs metadata — they are references to external zarr arrays that hold the
+    actual feature matrices.  They must be excluded from obs alignment logic
+    and tracked separately so the atlas knows which feature spaces a schema
+    supports.
+
+    We can't rely on the raw annotation alone because:
+
+    * Fields may be optional (``SparseZarrPointer | None``), requiring union
+      unpacking to find the concrete pointer type.
+    * We need to verify that the pointer kind (sparse vs. dense) matches what
+      the registered ``GroupSpec`` for that feature space expects, and this
+      cross-check lives here rather than on the pointer class itself.
+    """
     result: dict[str, PointerFieldInfo] = {}
     for name, annotation in schema_cls.__annotations__.items():
         if name == "uid":
