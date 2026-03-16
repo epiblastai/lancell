@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import mudata as mu
-    import torch
 
     from lancell.dataloader import CellDataset, MultimodalCellDataset
 
@@ -276,6 +275,14 @@ class AtlasQuery:
             Which layer to read within the feature space.
         metadata_columns:
             Obs column names to include as metadata on each SparseBatch.
+
+        Notes
+        -----
+        If a feature filter was set on this query (via
+        :meth:`~lancell.query.AtlasQuery.feature_spaces`), the returned
+        dataset's feature space is automatically restricted to those features
+        (``wanted_globals`` is derived from the filter; ``n_features`` reflects
+        the filtered count).
         """
         from lancell.dataloader import CellDataset
 
@@ -359,59 +366,6 @@ class AtlasQuery:
     # REVIEW: We should probably remove this convenience method and instead
     # make a similar function in `dataloader.py` that accepts a CellDataset
     # or MultimodalCellDataset and a CellSampler
-    def to_dataloader(
-        self,
-        collate_fn=None,
-        batch_size: int = 1024,
-        shuffle: bool = True,
-        seed: int | None = None,
-        drop_last: bool = False,
-        num_workers: int = 0,
-        **cell_dataset_kwargs,
-    ) -> "torch.utils.data.DataLoader":
-        """Create a torch DataLoader for fast ML training.
-
-        Convenience wrapper: creates a :class:`~lancell.dataloader.CellDataset`,
-        a :class:`~lancell.sampler.CellSampler`, and calls
-        :func:`~lancell.dataloader.make_loader`.
-
-        Parameters
-        ----------
-        collate_fn:
-            Optional function to transform each :class:`SparseBatch`.
-            See :func:`~lancell.dataloader.sparse_to_dense_collate` and
-            :func:`~lancell.dataloader.sparse_to_csr_collate`.
-        batch_size:
-            Cells per batch.
-        shuffle:
-            Whether to shuffle cells each epoch.
-        seed:
-            Random seed for reproducibility.
-        drop_last:
-            Whether to drop the last incomplete batch.
-        num_workers:
-            Number of DataLoader workers.
-        **cell_dataset_kwargs:
-            Forwarded to :meth:`to_cell_dataset`
-            (``feature_space``, ``layer``, ``metadata_columns``).
-        """
-        from lancell.dataloader import make_loader
-        from lancell.sampler import CellSampler
-
-        dataset = self.to_cell_dataset(**cell_dataset_kwargs)
-        sampler = CellSampler(
-            dataset.groups_np,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            seed=seed,
-            drop_last=drop_last,
-            num_workers=num_workers,
-        )
-        loader_kwargs = {}
-        if collate_fn is not None:
-            loader_kwargs["collate_fn"] = collate_fn
-        return make_loader(dataset, sampler, **loader_kwargs)
-
     # -- Reconstruction internals -------------------------------------------
 
     def _reconstruct_single_space_anndata(
