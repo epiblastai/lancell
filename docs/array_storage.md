@@ -112,23 +112,24 @@ At ingest time, `add_from_anndata` writes one `DatasetVar` row per feature in th
 
 The `local_index → global_index` mapping is what allows the reconstruction layer to correctly align features from different datasets into a single output matrix. Each dataset may have measured a different subset of features, in a different order. The remap array (`remap[local_i] = global_index`) derived from `_dataset_vars` drives the scatter step.
 
-### Prerequisite: `reindex_registry`
+### Prerequisite: `global_index` assignment
 
-Before `add_from_anndata` can write `_dataset_vars`, features must have a non-null `global_index` in the registry. `global_index` is assigned by `reindex_registry()`, which must be called after `register_features()` and before ingest. If any feature in `adata.var` has `global_index = None` in the registry, `add_from_anndata` raises a `ValueError` reporting the offending UIDs.
+Before `add_from_anndata` can write `_dataset_vars`, features must have a non-null `global_index` in the registry. `global_index` is assigned by `atlas.optimize()`, which runs `reindex_registry` as part of its maintenance pass. If any feature in `adata.var` has `global_index = None` in the registry, `add_from_anndata` raises a `ValueError` reporting the offending UIDs.
+
+The typical pattern is to batch-register features across all datasets first, call `optimize()` once to assign indices, and then ingest:
 
 ```python
-# Register features (idempotent — safe to call for each dataset)
-atlas.register_features("gene_expression", features_list)
+# Register features for each dataset (idempotent — safe to call multiple times)
+atlas.register_features("gene_expression", features_dataset_a)
+atlas.register_features("gene_expression", features_dataset_b)
 
-# Assign global_index to any newly registered features
-from lancell.dataset_vars import reindex_registry
-reindex_registry(atlas._registry_tables["gene_expression"])
+# optimize() assigns global_index to all newly registered features
+atlas.optimize()
 
 # Now ingest
-n = add_from_anndata(atlas, adata, ...)
+n_a = add_from_anndata(atlas, adata_a, ...)
+n_b = add_from_anndata(atlas, adata_b, ...)
 ```
-
-In practice, `atlas.optimize()` calls `reindex_registry` as part of its maintenance pass, so you can also batch-register features across many datasets and call `optimize()` once before ingesting any of them.
 
 ---
 
@@ -226,13 +227,14 @@ add_csc(atlas, zarr_group="large_dataset_2", feature_space="gene_expression", la
 
 ```python
 from lancell.ingestion import add_from_anndata, add_csc
-from lancell.dataset_vars import reindex_registry
 
-# 1. Register features and assign global_index
+# 1. Register features
 atlas.register_features("gene_expression", features)
-reindex_registry(atlas._registry_tables["gene_expression"])
 
-# 2. Ingest
+# 2. Assign global_index and compact — optimize() handles reindex internally
+atlas.optimize()
+
+# 3. Ingest
 n = add_from_anndata(
     atlas, adata,
     feature_space="gene_expression",
@@ -240,7 +242,7 @@ n = add_from_anndata(
     dataset_record=record,
 )
 
-# 3. Build CSC for feature-filtered queries (optional but recommended for large groups)
+# 4. Build CSC for feature-filtered queries (optional but recommended for large groups)
 add_csc(
     atlas,
     zarr_group=record.zarr_group,
@@ -248,7 +250,7 @@ add_csc(
     layer_name="counts",
 )
 
-# 4. Compact and snapshot
+# 5. Compact and snapshot
 atlas.optimize()
 v = atlas.snapshot()
 ```
@@ -259,5 +261,4 @@ v = atlas.snapshot()
 
 ```python
 from lancell.ingestion import add_from_anndata, add_csc
-from lancell.dataset_vars import reindex_registry
 ```
