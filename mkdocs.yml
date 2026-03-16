@@ -37,8 +37,16 @@ plugins:
 
 nav:
   - Overview: index.md
-  - Data Structure: data_structure.md
-  - RaggedAtlas: atlas.md
+  - Concepts:
+    - Data Structure: data_structure.md
+    - Building an Atlas: atlas.md
+  - Reference:
+    - Schemas: schemas.md
+    - Group Specs: group_specs.md
+    - Querying: querying.md
+    - Reconstructors: reconstructors.md
+    - Array Storage: array_storage.md
+    - PyTorch Data Loading: dataloader.md
 
 markdown_extensions:
   - admonition
