@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import mudata as mu
+    from lancedb.query import LanceQueryBuilder
 
     from lancell.dataloader import CellDataset, MultimodalCellDataset
 
 import anndata as ad
-import lancedb
 import numpy as np
 import polars as pl
 
@@ -126,7 +126,7 @@ class AtlasQuery:
 
     # -- Execution ----------------------------------------------------------
 
-    def _build_base_query(self) -> lancedb.table.Table:
+    def _build_base_query(self) -> "LanceQueryBuilder":
         """Build a query with search, where, and limit applied (no column selection)."""
         q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
@@ -135,7 +135,7 @@ class AtlasQuery:
             q = q.limit(self._limit_n)
         return q
 
-    def _build_scanner(self) -> lancedb.table.Table:
+    def _build_scanner(self) -> "LanceQueryBuilder":
         """Build a LanceDB query from the current state."""
         q = self._build_base_query()
         if self._select_columns is not None:
@@ -183,8 +183,8 @@ class AtlasQuery:
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of cell metadata."""
         result = self._build_scanner().to_polars()
-        if self._select_columns is not None:
-            pointer_cols = _get_pointer_columns(result)
+        pointer_cols = _get_pointer_columns(result)
+        if pointer_cols:
             keep = [c for c in result.columns if c not in pointer_cols]
             result = result.select(keep)
         return result
