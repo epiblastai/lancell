@@ -587,7 +587,7 @@ class CellDataset(_AsyncDataset):
         # Per-group: load remap (local->global), wrap in GroupReader for workers
         self._group_readers: dict[str, GroupReader] = {}
         for zg in groups:
-            raw_remap = atlas._get_remap(zg, feature_space)
+            raw_remap = atlas._get_group_reader(zg, feature_space).get_remap()
             effective_remap = (
                 _apply_wanted_globals_remap(raw_remap, wanted_globals)
                 if wanted_globals is not None
@@ -774,7 +774,7 @@ class MultimodalCellDataset(_AsyncDataset):
 
                 group_readers: dict[str, GroupReader] = {}
                 for zg in groups:
-                    raw_remap = atlas._get_remap(zg, fs)
+                    raw_remap = atlas._get_group_reader(zg, fs).get_remap()
                     wg = wanted_globals.get(fs) if wanted_globals is not None else None
                     effective_remap = (
                         _apply_wanted_globals_remap(raw_remap, wg) if wg is not None else raw_remap

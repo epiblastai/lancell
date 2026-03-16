@@ -92,7 +92,7 @@ def _load_remaps_and_features(
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
         for zg in groups:
-            group_remaps[zg] = atlas._get_remap(zg, spec.feature_space)
+            group_remaps[zg] = atlas._get_group_reader(zg, spec.feature_space).get_remap()
 
     if wanted_globals is not None:
         joined_globals = wanted_globals

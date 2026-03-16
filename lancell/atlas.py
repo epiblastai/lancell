@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from lancell.query import AtlasQuery
 
 import lancedb
-import numpy as np
 import obstore
 import polars as pl
 import zarr
@@ -222,11 +221,6 @@ class RaggedAtlas:
             )
         return self._group_readers[key]
 
-    # REVIEW: I believe this can be removed, there shouldn't be any callers that predate GroupReader.
-    def _get_remap(self, zarr_group: str, feature_space: str) -> np.ndarray:
-        """Thin wrapper around GroupReader.get_remap for callers that predate GroupReader."""
-        return self._get_group_reader(zarr_group, feature_space).get_remap()
-
     # -- Query entry point --------------------------------------------------
 
     def query(self) -> "AtlasQuery":
@@ -408,8 +402,7 @@ class RaggedAtlas:
         """Return a Polars DataFrame of all ingested datasets."""
         return self._dataset_table.search().to_polars()
 
-    # REVIEW: Rename `find_dataset_with_features`?
-    def datasets_with_features(
+    def find_datasets_with_features(
         self,
         feature_uids: str | list[str],
         feature_space: str,
@@ -435,9 +428,9 @@ class RaggedAtlas:
         """
         if isinstance(feature_uids, str):
             feature_uids = [feature_uids]
-        return self._datasets_with_features_fast(feature_uids, feature_space)
+        return self._find_datasets_with_features_fast(feature_uids, feature_space)
 
-    def _datasets_with_features_fast(
+    def _find_datasets_with_features_fast(
         self, feature_uids: list[str], feature_space: str
     ) -> pl.DataFrame:
         from lancedb.query import MatchQuery
@@ -455,14 +448,7 @@ class RaggedAtlas:
         if pairs.is_empty():
             return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
 
-        # REVIEW: MatchQuery already guarantees that it's exact, we don't need to
-        # filter again.
-        # Filter to only exact feature_uid matches (FTS may return partial matches)
-        pairs = pairs.filter(pl.col("feature_uid").is_in(feature_uids)).unique(
-            subset=["feature_uid", "dataset_uid"]
-        )
-        if pairs.is_empty():
-            return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
+        pairs = pairs.unique(subset=["feature_uid", "dataset_uid"])
 
         datasets_df = (
             self._dataset_table.search()
@@ -542,26 +528,20 @@ class RaggedAtlas:
 
     # -- Versioning ---------------------------------------------------------
 
-    def snapshot(self, *, validate: bool = True) -> int:
+    def snapshot(self) -> int:
         """Record a consistent snapshot of all table versions.
 
         Returns the new atlas version number (0-indexed, monotonically increasing).
         Raises ``ValueError`` if the atlas was created without a version table, or if
-        ``validate=True`` (the default) and validation errors are found.
+        validation errors are found.
 
-        Parameters
-        ----------
-        validate:
-            If ``True`` (default), run :meth:`validate` before recording the snapshot
-            and raise if any errors are found.
         """
-        if validate:
-            errors = self.validate()
-            if errors:
-                raise ValueError(
-                    "Atlas validation failed — fix errors before snapshotting:\n"
-                    + "\n".join(f"  • {e}" for e in errors)
-                )
+        errors = self.validate()
+        if errors:
+            raise ValueError(
+                "Atlas validation failed — fix errors before snapshotting:\n"
+                + "\n".join(f"  • {e}" for e in errors)
+            )
 
         existing = self._version_table.search().select(["version"]).to_polars()
         if existing.is_empty():
