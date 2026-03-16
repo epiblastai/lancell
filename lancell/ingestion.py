@@ -14,13 +14,12 @@ import pyarrow as pa
 import scipy.sparse as sp
 import zarr
 
-from lancell.atlas import (
-    PointerFieldInfo,
-    RaggedAtlas,
-    _schema_obs_fields,
-    validate_obs_columns,
-)
+from lancell._util import sql_escape
+from lancell.atlas import RaggedAtlas
+from lancell.batch_array import BatchArray
+from lancell.dataset_vars import read_dataset_vars
 from lancell.group_specs import PointerKind, get_spec
+from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields, validate_obs_columns
 from lancell.schema import (
     DatasetRecord,
     make_uid,
@@ -59,12 +58,11 @@ def _write_sparse_batched(
     """
     batch_size = shard_shape[0]
 
-    indices_kwargs: dict = {}
+    from lancell.codecs.bitpacking import BitpackingCodec
+
+    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
     layer_kwargs: dict = {}
     if use_bitpacking:
-        from lancell.codecs.bitpacking import BitpackingCodec
-
-        indices_kwargs["compressors"] = BitpackingCodec(transform="delta")
         layer_kwargs["compressors"] = BitpackingCodec(transform="none")
 
     if _is_backed_csr(adata):
@@ -127,13 +125,14 @@ def _write_dense_batched(
     """
     n_cells, n_vars = adata.shape
     batch_size = shard_shape[0]
+    data_dtype = adata.X.dtype
 
     if zarr_layer is not None:
         layers_group = group.create_group("layers")
         zarr_arr = layers_group.create_array(
             zarr_layer,
             shape=(n_cells, n_vars),
-            dtype=np.float32,
+            dtype=data_dtype,
             chunks=chunk_shape,
             shards=shard_shape,
         )
@@ -141,7 +140,7 @@ def _write_dense_batched(
         zarr_arr = group.create_array(
             "data",
             shape=(n_cells, n_vars),
-            dtype=np.float32,
+            dtype=data_dtype,
             chunks=chunk_shape,
             shards=shard_shape,
         )
@@ -149,7 +148,7 @@ def _write_dense_batched(
     written = 0
     while written < n_cells:
         end = min(written + batch_size, n_cells)
-        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=np.float32)
+        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=data_dtype)
         written = end
 
 
@@ -283,7 +282,7 @@ def add_anndata_batch(
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape)
 
     if spec.has_var_df:
-        write_var_sidecar(atlas, adata, feature_space, zarr_group, dataset_record.uid)
+        write_dataset_vars(atlas, adata, feature_space, zarr_group, dataset_record.uid)
 
     arrow_schema = atlas._cell_schema.to_arrow_schema()
     obs_df = adata.obs
@@ -315,6 +314,33 @@ def add_anndata_batch(
         "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
         pointer_field.field_name: pointer_struct,
     }
+
+    # Zero-fill any other pointer fields in the schema (multi-modal schemas).
+    # Lance requires non-null values for non-null struct fields; an empty zarr_group
+    # string ("") signals "absent" and is filtered by _prepare_*_cells.
+    for other_pf_name, other_pf in atlas._pointer_fields.items():
+        if other_pf_name == pointer_field.field_name:
+            continue
+        if other_pf.pointer_kind is PointerKind.SPARSE:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+            )
+        else:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "position"],
+            )
 
     for col in schema_fields:
         if col in obs_df.columns:
@@ -361,7 +387,7 @@ def add_from_anndata(
     )
 
 
-def write_var_sidecar(
+def write_dataset_vars(
     atlas: RaggedAtlas,
     adata: ad.AnnData,
     feature_space: str,
@@ -381,3 +407,158 @@ def write_var_sidecar(
         )
 
     atlas.add_dataset_vars(var_df, dataset_uid, feature_space)
+
+
+def add_csc(
+    atlas: RaggedAtlas,
+    zarr_group: str,
+    feature_space: str,
+    layer_name: str = "counts",
+    chunk_size: int = 4096,
+    shard_size: int = 65536,
+) -> None:
+    """Read existing CSR group and write CSC alongside it.
+
+    Reads the full CSR flat arrays from ``{zarr_group}/csr/``, transposes
+    to CSC order sorted by feature index, writes ``{zarr_group}/csc/``, and
+    updates ``_dataset_vars`` with ``csc_start``/``csc_end`` values.
+
+    After running, ``_dataset_vars`` gains ``csc_start``/``csc_end`` values and a
+    new ``{zarr_group}/csc/`` subgroup appears alongside the existing
+    ``{zarr_group}/csr/``. Subsequent feature-filtered queries will automatically
+    use the CSC path.
+
+    Parameters
+    ----------
+    atlas:
+        The atlas whose zarr store and cell table to use.
+    zarr_group:
+        Path of the zarr group to process (relative to atlas store root).
+    feature_space:
+        The feature space this zarr group belongs to.
+    layer_name:
+        Which layer to transpose (e.g. ``"counts"``).
+    chunk_size:
+        Chunk size for the new CSC zarr arrays.
+    shard_size:
+        Shard size for the new CSC zarr arrays.
+
+    Raises
+    ------
+    ValueError
+        If no cells or no dataset record are found for this group, or if
+        ``zarr_row`` is not sequential.
+    """
+    # Look up dataset_uid for this zarr_group + feature_space
+    datasets_df = (
+        atlas._dataset_table.search()
+        .where(
+            f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
+            prefilter=True,
+        )
+        .select(["uid"])
+        .to_polars()
+    )
+    if datasets_df.is_empty():
+        raise ValueError(
+            f"No dataset record found for zarr_group='{zarr_group}', "
+            f"feature_space='{feature_space}'"
+        )
+    dataset_uid = datasets_df["uid"][0]
+
+    # Query all cells in this zarr group
+    cells_df = (
+        atlas.cell_table.search()
+        .where(f"{feature_space}.zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
+        .select([feature_space])
+        .to_polars()
+    )
+    ptr_struct = cells_df[feature_space].struct.unnest()
+    cells_df = pl.DataFrame(
+        {
+            "_zg": ptr_struct["zarr_group"],
+            "_zarr_row": ptr_struct["zarr_row"],
+            "_start": ptr_struct["start"],
+            "_end": ptr_struct["end"],
+        }
+    )
+
+    if cells_df.is_empty():
+        raise ValueError(
+            f"No cells found for zarr_group='{zarr_group}', feature_space='{feature_space}'"
+        )
+
+    cells_df = cells_df.sort("_zarr_row")
+    zarr_rows = cells_df["_zarr_row"].to_numpy()
+    starts = cells_df["_start"].to_numpy()
+    ends = cells_df["_end"].to_numpy()
+    n_cells = len(zarr_rows)
+
+    if len(zarr_rows) != len(np.unique(zarr_rows)):
+        raise ValueError(
+            f"zarr_rows for group '{zarr_group}' contain duplicate values. "
+            f"Was zarr_row populated correctly during ingest?"
+        )
+    if not np.array_equal(zarr_rows, np.arange(n_cells)):
+        raise ValueError(
+            f"zarr_rows for group '{zarr_group}' are not sequential 0..{n_cells - 1}. "
+            f"Was zarr_row populated correctly during ingest?"
+        )
+
+    # Read the full flat CSR arrays
+    csr_index_arr = BatchArray.from_array(atlas._root[f"{zarr_group}/csr/indices"])
+    csr_layer_arr = BatchArray.from_array(atlas._root[f"{zarr_group}/csr/layers/{layer_name}"])
+
+    flat_indices, lengths = csr_index_arr.read_ranges(
+        starts.astype(np.int64), ends.astype(np.int64)
+    )
+    flat_values, _ = csr_layer_arr.read_ranges(starts.astype(np.int64), ends.astype(np.int64))
+
+    # Reconstruct (zarr_row, feature_idx) for every non-zero element
+    cell_ids = np.repeat(np.arange(n_cells, dtype=np.int64), lengths)
+    feature_indices = flat_indices.astype(np.int64)
+
+    # Sort by feature index (stable preserves zarr_row order within each feature)
+    sort_order = np.argsort(feature_indices, kind="stable")
+    sorted_cell_ids = cell_ids[sort_order]
+    sorted_features = feature_indices[sort_order]
+    sorted_values = flat_values[sort_order]
+
+    # Get n_features from _dataset_vars
+    rows = read_dataset_vars(atlas._dataset_vars_table, dataset_uid)
+    n_features = len(rows)
+
+    feature_range = np.arange(n_features, dtype=np.int64)
+    csc_start = np.searchsorted(sorted_features, feature_range, side="left").astype(np.int64)
+    csc_end = np.searchsorted(sorted_features, feature_range, side="right").astype(np.int64)
+
+    # Write CSC zarr arrays (open writable root so this works even when atlas was opened read-only)
+    _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
+    csc_group = _writable_root.require_group(f"{zarr_group}/csc")
+    csc_group.create_array(
+        "indices",
+        data=sorted_cell_ids.astype(np.uint32),
+        chunks=(chunk_size,),
+        shards=(shard_size,),
+    )
+    layers_group = csc_group.create_group("layers")
+    layers_group.create_array(
+        layer_name,
+        data=sorted_values,
+        chunks=(chunk_size,),
+        shards=(shard_size,),
+    )
+
+    # Update _dataset_vars with csc_start/csc_end via merge_insert
+    rows = rows.with_columns(
+        pl.Series("csc_start", csc_start),
+        pl.Series("csc_end", csc_end),
+    )
+    (
+        atlas._dataset_vars_table.merge_insert(on=["feature_uid", "dataset_uid"])
+        .when_matched_update_all()
+        .execute(rows)
+    )
+    # Cache invalidation is automatic: GroupReader checks _dataset_vars_table.version
+    # on next access to var_df or has_csc.
+    atlas._group_readers.pop((zarr_group, feature_space), None)

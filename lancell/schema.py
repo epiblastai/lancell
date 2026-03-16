@@ -14,7 +14,7 @@ class SparseZarrPointer(LanceModel):
     zarr_group: str
     start: int
     end: int
-    zarr_row: int = 0  # cell's 0-indexed position within this zarr group (for CSC lookup)
+    zarr_row: int  # cell's 0-indexed position within this zarr group (for CSC lookup)
 
     @model_validator(mode="after")
     def _require_sparse_feature_space(self):
@@ -41,14 +41,6 @@ class DenseZarrPointer(LanceModel):
                 f"{spec.pointer_kind.value} pointer, not a dense pointer"
             )
         return self
-
-
-# Placeholder for now, logic for loading hasn't been implemented yet
-# Eventually we can use this for nifty things like RTree indexes
-# class SpatialZarrPointer(LanceModel):
-#     feature_space: FeatureSpace
-#     zarr_group: str
-#     bounding_box: list[float]  # [x_min, y_min, x_max, y_max]
 
 
 ZarrPointer = SparseZarrPointer | DenseZarrPointer
@@ -109,6 +101,10 @@ class LancellBaseSchema(LanceModel):
         )
 
 
+# Fields set automatically by the atlas — never expected in user-provided obs.
+AUTO_FIELDS: frozenset[str] = frozenset(LancellBaseSchema.model_fields)
+
+
 class FeatureBaseSchema(LanceModel):
     """
     Minimal schema for a global feature registry entry.
@@ -118,9 +114,9 @@ class FeatureBaseSchema(LanceModel):
 
     Fields:
         uid: Canonical stable identifier. Safe to preserve across registry rebuilds.
-        global_index: Dense integer for compute paths (gather/scatter in NumPy,
-            PyTorch, Arrow, Rust). Unique within one feature registry. May be
-            reassigned on registry rebuild — use uid for durable references.
+        global_index: Unique stable integer, assigned incrementally (new features get
+            max(existing) + 1). Used as a scatter/gather key in compute paths. Never
+            reassigned once set — use uid for durable references.
     """
 
     uid: str = Field(default_factory=make_uid)
@@ -140,30 +136,78 @@ class DatasetRecord(LanceModel):
 
 
 class DatasetVar(LanceModel):
-    """Per-feature-per-dataset index row for the _dataset_vars table.
+    """Per-feature-per-dataset index row for the ``_dataset_vars`` table.
 
-    Replaces the sidecar parquet files (var.parquet, local_to_global_index.parquet)
-    and the _feature_dataset_pairs inverted index.
+    Each row maps a single feature within a single dataset to its local
+    position in the zarr group and its global position in the feature
+    registry.  The table is FTS-indexed on ``feature_uid`` and
+    ``dataset_uid`` to support fast feature-to-dataset and
+    dataset-to-feature lookups.
+
+    Parameters
+    ----------
+    feature_uid:
+        Global feature UID (FTS indexed for feature-to-dataset lookups).
+    dataset_uid:
+        Dataset record UID (FTS indexed for dataset-to-feature and remap lookups).
+    local_index:
+        0-based position of the feature within the zarr group (used as sort key for remaps).
+    global_index:
+        Position in the global feature registry. Denormalized from the registry and
+        kept in sync by ``sync_dataset_vars_global_index``.
+    csc_start:
+        Start offset in the CSC data arrays (sparse feature spaces only; populated by ``add_csc``).
+    csc_end:
+        End offset in the CSC data arrays (sparse feature spaces only; populated by ``add_csc``).
     """
 
-    feature_uid: str  # global_feature_uid (FTS indexed — feature→datasets lookup)
-    dataset_uid: str  # DatasetRecord.uid (FTS indexed — dataset→features / remap lookup)
-    local_index: int  # 0-based position within the zarr group (sort key for remap)
-    global_index: int  # denormalized from registry; updated by sync_dataset_vars_global_index
-    csc_start: int | None = None  # sparse only; populated by add_csc
-    csc_end: int | None = None  # sparse only; populated by add_csc
+    feature_uid: str
+    dataset_uid: str
+    local_index: int
+    global_index: int
+    csc_start: int | None = None
+    csc_end: int | None = None
 
 
 class AtlasVersionRecord(LanceModel):
-    """One row per atlas snapshot created by RaggedAtlas.snapshot()."""
+    """One row per atlas snapshot created by ``RaggedAtlas.snapshot()``.
+
+    Captures the Lance table versions for every table in the atlas at the
+    time of the snapshot, enabling reproducible point-in-time queries via
+    ``RaggedAtlas.checkout(version)``.
+
+    Parameters
+    ----------
+    version:
+        Monotonically increasing snapshot version number.
+    cell_table_name:
+        Name of the cells Lance table.
+    cell_table_version:
+        Lance version of the cells table at snapshot time.
+    dataset_table_name:
+        Name of the datasets Lance table.
+    dataset_table_version:
+        Lance version of the datasets table at snapshot time.
+    registry_table_names:
+        JSON-encoded mapping of ``{feature_space: table_name}`` for feature registries.
+    registry_table_versions:
+        JSON-encoded mapping of ``{feature_space: version_int}`` for feature registries.
+    dataset_vars_table_version:
+        Lance version of the ``_dataset_vars`` table at snapshot time.
+    total_cells:
+        Total number of cells across all datasets at snapshot time.
+    created_at:
+        ISO-8601 UTC timestamp of when the snapshot was created.
+    """
 
     version: int
     cell_table_name: str
     cell_table_version: int
     dataset_table_name: str
     dataset_table_version: int
-    registry_table_names: str  # JSON: {"feature_space": "table_name", ...}
-    registry_table_versions: str  # JSON: {"feature_space": version_int, ...}
+    registry_table_names: str
+    registry_table_versions: str
+    dataset_vars_table_version: int
     total_cells: int
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()

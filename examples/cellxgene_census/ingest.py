@@ -21,10 +21,8 @@ from examples.cellxgene_census.schema import (
     GeneFeatureSpace,
 )
 from lancell.atlas import RaggedAtlas
-from lancell.dataset_vars import reindex_registry
-from lancell.ingestion import add_anndata_batch
+from lancell.ingestion import add_anndata_batch, add_csc
 from lancell.schema import make_uid
-from lancell.tools.add_csc import add_csc
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"
@@ -141,7 +139,6 @@ def register_genes(atlas: RaggedAtlas, adata: ad.AnnData) -> dict[str, str]:
     else:
         print(f"  All {len(ensembl_ids)} genes already registered")
 
-    reindex_registry(registry_table)
     return ensembl_to_uid
 
 
@@ -158,7 +155,7 @@ def ingest_backed(
     cellxgene_dataset_id = Path(h5ad_path).stem
     zarr_group = make_uid()
 
-    # Attach global_feature_uid to adata.var so write_var_sidecar can use it
+    # Attach global_feature_uid to adata.var so write_dataset_vars can use it
     ensembl_ids = list(adata.var.index)
     adata.var["global_feature_uid"] = [ensembl_to_uid[eid] for eid in ensembl_ids]
 

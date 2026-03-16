@@ -7,10 +7,15 @@ import polars as pl
 import pytest
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas, align_obs_to_schema
-from lancell.dataloader import CellDataset, SparseBatch, sparse_to_dense_collate
+from lancell.atlas import RaggedAtlas
+from lancell.dataloader import (
+    CellDataset,
+    SparseBatch,
+    sparse_to_dense_collate,
+)
 from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_from_anndata
+from lancell.obs_alignment import align_obs_to_schema
 from lancell.sampler import BalancedCellSampler, CellSampler
 from lancell.schema import (
     DatasetRecord,
@@ -62,9 +67,10 @@ def _make_sparse_adata(
 @pytest.fixture
 def two_group_atlas(tmp_path):
     """Atlas with 2 zarr groups, 10 genes, 35 total cells (20 + 15)."""
+    db_uri = str(tmp_path / "atlas.lancedb")
     store = obstore.store.LocalStore(prefix=str(tmp_path))
     atlas = RaggedAtlas.create(
-        db_uri=str(tmp_path / "atlas.lancedb"),
+        db_uri=db_uri,
         cell_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
@@ -90,7 +96,11 @@ def two_group_atlas(tmp_path):
         adata1,
         feature_space="gene_expression",
         zarr_layer="counts",
-        dataset_record=_ds(adata1, "ds1/gene_expression"),
+        dataset_record=DatasetRecord(
+            zarr_group="ds1/gene_expression",
+            feature_space="gene_expression",
+            n_cells=20,
+        ),
     )
 
     # Dataset 2: 15 cells, first 7 genes
@@ -101,18 +111,24 @@ def two_group_atlas(tmp_path):
         adata2,
         feature_space="gene_expression",
         zarr_layer="counts",
-        dataset_record=_ds(adata2, "ds2/gene_expression"),
+        dataset_record=DatasetRecord(
+            zarr_group="ds2/gene_expression",
+            feature_space="gene_expression",
+            n_cells=15,
+        ),
     )
 
-    return atlas
+    atlas.snapshot()
+    return RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
 
 
 @pytest.fixture
 def single_group_atlas(tmp_path):
     """Atlas with 1 zarr group for exact round-trip comparison."""
+    db_uri = str(tmp_path / "atlas.lancedb")
     store = obstore.store.LocalStore(prefix=str(tmp_path))
     atlas = RaggedAtlas.create(
-        db_uri=str(tmp_path / "atlas.lancedb"),
+        db_uri=db_uri,
         cell_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
@@ -136,10 +152,15 @@ def single_group_atlas(tmp_path):
         adata,
         feature_space="gene_expression",
         zarr_layer="counts",
-        dataset_record=_ds(adata, "ds/gene_expression"),
+        dataset_record=DatasetRecord(
+            zarr_group="ds/gene_expression",
+            feature_space="gene_expression",
+            n_cells=10,
+        ),
     )
 
-    return atlas
+    atlas.snapshot()
+    return RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +170,11 @@ def single_group_atlas(tmp_path):
 
 def test_cell_dataset_shapes(two_group_atlas):
     """CellDataset + CellSampler yield SparseBatch with correct shapes."""
-    ds = two_group_atlas.query().feature_spaces("gene_expression").to_cell_dataset()
+    ds = (
+        two_group_atlas.query()
+        .feature_spaces("gene_expression")
+        .to_cell_dataset("gene_expression", "counts")
+    )
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
 
     assert ds.n_cells == 35
@@ -175,7 +200,11 @@ def test_cell_dataset_shapes(two_group_atlas):
 
 def test_cell_dataset_drop_last(two_group_atlas):
     """drop_last=True on sampler skips the last incomplete batch."""
-    ds = two_group_atlas.query().feature_spaces("gene_expression").to_cell_dataset()
+    ds = (
+        two_group_atlas.query()
+        .feature_spaces("gene_expression")
+        .to_cell_dataset("gene_expression", "counts")
+    )
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, drop_last=True, num_workers=1)
 
     assert len(sampler) == 3  # 35 // 10
@@ -186,7 +215,11 @@ def test_cell_dataset_drop_last(two_group_atlas):
 
 def test_cell_dataset_empty(two_group_atlas):
     """CellDataset handles empty query results."""
-    ds = two_group_atlas.query().where("tissue = 'nonexistent'").to_cell_dataset()
+    ds = (
+        two_group_atlas.query()
+        .where("tissue = 'nonexistent'")
+        .to_cell_dataset("gene_expression", "counts")
+    )
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
 
     assert ds.n_cells == 0
@@ -210,7 +243,7 @@ def test_round_trip_values(single_group_atlas):
     ref_uids = list(adata.obs.index)
 
     # CellDataset path (single batch, no shuffle, with uid metadata)
-    ds = q.to_cell_dataset(metadata_columns=["uid"])
+    ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
     batch = ds.__getitems__(next(iter(sampler)))
 
@@ -242,7 +275,7 @@ def test_round_trip_two_groups(two_group_atlas):
     ref_dense = adata.X.toarray()
     ref_uids = list(adata.obs.index)
 
-    ds = q.to_cell_dataset(metadata_columns=["uid"])
+    ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
     sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
     batch = ds.__getitems__(next(iter(sampler)))
     n_cells = len(batch.offsets) - 1
@@ -273,7 +306,7 @@ def test_shuffle_different_epochs(two_group_atlas):
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset(metadata_columns=["uid"])
+        .to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
     )
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=True, seed=42, num_workers=1)
 
@@ -374,7 +407,7 @@ def test_balanced_cell_sampler_from_column(two_group_atlas):
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset(metadata_columns=["tissue"])
+        .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue"])
     )
     # 3 tissue types, batch_size=9, drop_last=True → cells_per_cat=3, all batches full
     sampler = BalancedCellSampler.from_column(
@@ -399,7 +432,7 @@ def test_metadata_columns(two_group_atlas):
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset(metadata_columns=["tissue", "uid"])
+        .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
     )
     sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
     batch = ds.__getitems__(next(iter(sampler)))
@@ -413,7 +446,11 @@ def test_metadata_columns(two_group_atlas):
 
 def test_no_metadata(two_group_atlas):
     """Without metadata_columns, metadata is None."""
-    ds = two_group_atlas.query().feature_spaces("gene_expression").to_cell_dataset()
+    ds = (
+        two_group_atlas.query()
+        .feature_spaces("gene_expression")
+        .to_cell_dataset("gene_expression", "counts")
+    )
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
     batch = ds.__getitems__(next(iter(sampler)))
     assert batch.metadata is None
@@ -427,7 +464,11 @@ def test_no_metadata(two_group_atlas):
 def test_sparse_to_dense_collate(single_group_atlas):
     """sparse_to_dense_collate produces correct dense tensor."""
     pytest.importorskip("torch")
-    ds = single_group_atlas.query().feature_spaces("gene_expression").to_cell_dataset()
+    ds = (
+        single_group_atlas.query()
+        .feature_spaces("gene_expression")
+        .to_cell_dataset("gene_expression", "counts")
+    )
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
     batch = ds.__getitems__(next(iter(sampler)))
 
@@ -450,7 +491,7 @@ def test_collate_with_metadata(two_group_atlas):
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset(metadata_columns=["tissue"])
+        .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue"])
     )
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
     batch = ds.__getitems__(next(iter(sampler)))
@@ -463,40 +504,3 @@ def test_collate_with_metadata(two_group_atlas):
 
 # ---------------------------------------------------------------------------
 # Tests: DataLoader integration
-# ---------------------------------------------------------------------------
-
-
-def test_to_dataloader(single_group_atlas):
-    """to_dataloader returns a working DataLoader."""
-    pytest.importorskip("torch")
-
-    dl = (
-        single_group_atlas.query()
-        .feature_spaces("gene_expression")
-        .to_dataloader(batch_size=5, shuffle=False)
-    )
-
-    batches = list(dl)
-    assert len(batches) == 2  # 10 cells / 5
-    for batch in batches:
-        assert isinstance(batch, SparseBatch)
-
-
-def test_to_dataloader_with_collate(single_group_atlas):
-    """to_dataloader with collate_fn returns transformed batches."""
-    pytest.importorskip("torch")
-
-    dl = (
-        single_group_atlas.query()
-        .feature_spaces("gene_expression")
-        .to_dataloader(
-            collate_fn=sparse_to_dense_collate,
-            batch_size=10,
-            shuffle=False,
-        )
-    )
-
-    batches = list(dl)
-    assert len(batches) == 1
-    assert "X" in batches[0]
-    assert batches[0]["X"].shape == (10, 5)

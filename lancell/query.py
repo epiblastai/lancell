@@ -5,17 +5,17 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import mudata as mu
-    import torch
+    from lancedb.query import LanceQueryBuilder
 
-    from lancell.dataloader import CellDataset
+    from lancell.dataloader import CellDataset, MultimodalCellDataset
 
 import anndata as ad
-import lancedb
 import numpy as np
 import polars as pl
 
-from lancell.atlas import PointerFieldInfo, RaggedAtlas
+from lancell.atlas import RaggedAtlas
 from lancell.group_specs import get_spec
+from lancell.obs_alignment import PointerFieldInfo
 from lancell.reconstruction import (
     _build_obs_only_anndata,
     _get_pointer_columns,
@@ -80,7 +80,8 @@ class AtlasQuery:
         columns:
             Column names to include in the results.
         """
-        assert isinstance(columns, list), "Columns must be a list"
+        if not isinstance(columns, list):
+            raise ValueError("Columns must be a list")
         self._select_columns = columns
         return self
 
@@ -96,6 +97,12 @@ class AtlasQuery:
 
     def feature_spaces(self, *spaces: str) -> "AtlasQuery":
         """Restrict reconstruction to specific feature spaces."""
+        known = {pf.feature_space for pf in self._atlas._pointer_fields.values()}
+        unknown = set(spaces) - known
+        if unknown:
+            raise ValueError(
+                f"Unknown feature space(s): {sorted(unknown)}. Available: {sorted(known)}"
+            )
         self._feature_spaces = list(spaces)
         return self
 
@@ -111,6 +118,9 @@ class AtlasQuery:
         requested features. The ``feature_join`` setting is ignored for
         filtered feature spaces; intersection semantics are used.
         """
+        if feature_space not in self._atlas._registry_tables:
+            known = sorted(self._atlas._registry_tables.keys())
+            raise ValueError(f"No registry for feature space '{feature_space}'. Available: {known}")
         self._feature_filter[feature_space] = list(uids)
         return self
 
@@ -125,17 +135,22 @@ class AtlasQuery:
 
     # -- Execution ----------------------------------------------------------
 
-    def _build_scanner(self) -> lancedb.table.Table:
-        """Build a LanceDB query from the current state."""
+    def _build_base_query(self) -> "LanceQueryBuilder":
+        """Build a query with search, where, and limit applied (no column selection)."""
         q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
-        if self._select_columns is not None:
-            pointer_cols = list(self._atlas._pointer_fields.keys())
-            columns = list(dict.fromkeys(self._select_columns + pointer_cols))
-            q = q.select(columns)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._limit_n is not None:
             q = q.limit(self._limit_n)
+        return q
+
+    def _build_scanner(self) -> "LanceQueryBuilder":
+        """Build a LanceDB query from the current state."""
+        q = self._build_base_query()
+        if self._select_columns is not None:
+            pointer_cols = list(self._atlas._pointer_fields.keys())
+            columns = list(dict.fromkeys(self._select_columns + pointer_cols))
+            q = q.select(columns)
         return q
 
     def _active_pointer_fields(self) -> dict[str, PointerFieldInfo]:
@@ -163,11 +178,7 @@ class AtlasQuery:
         pl.DataFrame
             DataFrame with one row per group and a ``count`` column otherwise.
         """
-        q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
-        if self._where_clause is not None:
-            q = q.where(self._where_clause)
-        if self._limit_n is not None:
-            q = q.limit(self._limit_n)
+        q = self._build_base_query()
 
         if group_by is None:
             # Fetch only a single cheap column to count rows
@@ -181,8 +192,8 @@ class AtlasQuery:
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of cell metadata."""
         result = self._build_scanner().to_polars()
-        if self._select_columns is not None:
-            pointer_cols = _get_pointer_columns(result)
+        pointer_cols = _get_pointer_columns(result)
+        if pointer_cols:
             keep = [c for c in result.columns if c not in pointer_cols]
             result = result.select(keep)
         return result
@@ -195,7 +206,7 @@ class AtlasQuery:
         """
         cells_pl = self._build_scanner().to_polars()
         if cells_pl.is_empty():
-            return ad.AnnData()
+            return _build_obs_only_anndata(cells_pl)
 
         active_pfs = self._active_pointer_fields()
         # Pick the first feature space for X
@@ -248,8 +259,8 @@ class AtlasQuery:
 
     def to_cell_dataset(
         self,
-        feature_space: str = "gene_expression",
-        layer: str = "counts",
+        feature_space: str,
+        layer: str,
         metadata_columns: list[str] | None = None,
     ) -> "CellDataset":
         """Create a CellDataset for fast ML training iteration.
@@ -271,6 +282,14 @@ class AtlasQuery:
             Which layer to read within the feature space.
         metadata_columns:
             Obs column names to include as metadata on each SparseBatch.
+
+        Notes
+        -----
+        If a feature filter was set on this query (via
+        :meth:`~lancell.query.AtlasQuery.feature_spaces`), the returned
+        dataset's feature space is automatically restricted to those features
+        (``wanted_globals`` is derived from the filter; ``n_features`` reflects
+        the filtered count).
         """
         from lancell.dataloader import CellDataset
 
@@ -294,58 +313,62 @@ class AtlasQuery:
             wanted_globals=wanted_globals,
         )
 
-    def to_dataloader(
+    def to_multimodal_dataset(
         self,
-        collate_fn=None,
-        batch_size: int = 1024,
-        shuffle: bool = True,
-        seed: int | None = None,
-        drop_last: bool = False,
-        num_workers: int = 0,
-        **cell_dataset_kwargs,
-    ) -> "torch.utils.data.DataLoader":
-        """Create a torch DataLoader for fast ML training.
+        feature_spaces: list[str],
+        layers: dict[str, str] | None = None,
+        metadata_columns: list[str] | None = None,
+    ) -> "MultimodalCellDataset":
+        """Create a MultimodalCellDataset for within-cell multimodal training.
 
-        Convenience wrapper: creates a :class:`~lancell.dataloader.CellDataset`,
-        a :class:`~lancell.sampler.CellSampler`, and calls
-        :func:`~lancell.dataloader.make_loader`.
+        Each yielded :class:`~lancell.dataloader.MultimodalBatch` contains
+        one sub-batch per modality with only the cells that have that
+        modality present. A ``present`` mask tracks membership. No fill
+        values are added.
+
+        Pair with :class:`~lancell.sampler.CellSampler` (using
+        ``dataset.groups_np``) and :func:`~lancell.dataloader.make_loader`
+        for the standard training loop.
 
         Parameters
         ----------
-        collate_fn:
-            Optional function to transform each :class:`SparseBatch`.
-            See :func:`~lancell.dataloader.sparse_to_dense_collate` and
-            :func:`~lancell.dataloader.sparse_to_csr_collate`.
-        batch_size:
-            Cells per batch.
-        shuffle:
-            Whether to shuffle cells each epoch.
-        seed:
-            Random seed for reproducibility.
-        drop_last:
-            Whether to drop the last incomplete batch.
-        num_workers:
-            Number of DataLoader workers.
-        **cell_dataset_kwargs:
-            Forwarded to :meth:`to_cell_dataset`
-            (``feature_space``, ``layer``, ``metadata_columns``).
+        feature_spaces:
+            Ordered list of feature spaces to include.  The first is
+            the "primary" space used to derive ``groups_np``.
+        layers:
+            ``{feature_space: layer_name}`` mapping.  Defaults to
+            ``"counts"`` for each space when omitted.
+        metadata_columns:
+            Obs column names to include as metadata on each batch.
         """
-        from lancell.dataloader import make_loader
-        from lancell.sampler import CellSampler
+        from lancell.dataloader import MultimodalCellDataset
 
-        dataset = self.to_cell_dataset(**cell_dataset_kwargs)
-        sampler = CellSampler(
-            dataset.groups_np,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            seed=seed,
-            drop_last=drop_last,
-            num_workers=num_workers,
+        cells_pl = self._build_scanner().to_polars()
+
+        if layers is None:
+            layers = {fs: "counts" for fs in feature_spaces}
+
+        wanted_globals: dict[str, np.ndarray] | None = None
+        for fs in feature_spaces:
+            if fs in self._feature_filter:
+                from lancell.dataset_vars import resolve_feature_uids_to_global_indices
+
+                wg = resolve_feature_uids_to_global_indices(
+                    self._atlas._registry_tables[fs],
+                    self._feature_filter[fs],
+                )
+                if wanted_globals is None:
+                    wanted_globals = {}
+                wanted_globals[fs] = wg
+
+        return MultimodalCellDataset(
+            atlas=self._atlas,
+            cells_pl=cells_pl,
+            feature_spaces=feature_spaces,
+            layers=layers,
+            metadata_columns=metadata_columns,
+            wanted_globals=wanted_globals,
         )
-        loader_kwargs = {}
-        if collate_fn is not None:
-            loader_kwargs["collate_fn"] = collate_fn
-        return make_loader(dataset, sampler, **loader_kwargs)
 
     # -- Reconstruction internals -------------------------------------------
 

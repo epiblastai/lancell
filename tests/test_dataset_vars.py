@@ -56,14 +56,6 @@ def _make_dataset_vars_table(
     return db.create_table("_dataset_vars", schema=DatasetVar)
 
 
-def _make_store_and_group(tmp_path: Path):
-    """Create a zarr group with a 10x5 dense data array."""
-    group_prefix = "datasets/test/protein_abundance"
-    zarr_root = zarr.open_group(str(tmp_path / group_prefix), mode="w")
-    zarr_root.create_array("data", shape=(10, 5), dtype="float32", chunks=(10, 5))
-    return group_prefix, zarr_root
-
-
 # ---------------------------------------------------------------------------
 # build_dataset_vars_df
 # ---------------------------------------------------------------------------
@@ -166,16 +158,18 @@ class TestSyncDatasetVarsGlobalIndex:
         registry = _make_registry(tmp_path, uids, indexed=False)
         table = _make_dataset_vars_table(tmp_path)
 
-        # Reindex assigns uid_a=0, uid_b=1, uid_c=2
         reindex_registry(registry)
+
+        # Look up actual assigned indices
+        reg_df = registry.search().select(["uid", "global_index"]).to_polars()
+        gi_c = int(reg_df.filter(pl.col("uid") == "uid_c")["global_index"][0])
+        gi_a = int(reg_df.filter(pl.col("uid") == "uid_a")["global_index"][0])
 
         var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
         df = build_dataset_vars_df(var_df, "ds_001", registry)
         table.add(df)
 
-        # Simulate registry change: add a new feature and reindex
-        # (global_index values in _dataset_vars are now stale)
-        # For this test, manually mess up global_index then sync
+        # Manually mess up global_index then sync
         rows = read_dataset_vars(table, "ds_001")
         stale = rows.with_columns(pl.Series("global_index", [-1, -1]))
         (
@@ -189,8 +183,7 @@ class TestSyncDatasetVarsGlobalIndex:
         assert n == 2
 
         result = read_dataset_vars(table, "ds_001")
-        # uid_c=2, uid_a=0 after reindex
-        assert result["global_index"].to_list() == [2, 0]
+        assert result["global_index"].to_list() == [gi_c, gi_a]
 
     def test_empty_registry(self, tmp_path):
         db = lancedb.connect(str(tmp_path / "lancedb"))
@@ -210,36 +203,6 @@ class TestSyncDatasetVarsGlobalIndex:
 
 
 class TestValidateDatasetVars:
-    def test_valid_dense(self, tmp_path):
-        group_prefix, zarr_group = _make_store_and_group(tmp_path)
-        spec = get_spec("protein_abundance")
-        uids = [f"u{i}" for i in range(5)]
-        registry = _make_registry(tmp_path, uids)
-        table = _make_dataset_vars_table(tmp_path)
-
-        var_df = pl.DataFrame({"global_feature_uid": uids})
-        table.add(build_dataset_vars_df(var_df, "ds_001", registry))
-
-        errors = validate_dataset_vars(
-            table, "ds_001", spec=spec, group=zarr_group, registry_table=registry
-        )
-        assert errors == []
-
-    def test_wrong_row_count(self, tmp_path):
-        group_prefix, zarr_group = _make_store_and_group(tmp_path)
-        spec = get_spec("protein_abundance")
-        # zarr has 5 features but we only insert 2
-        uids = ["u0", "u1"]
-        registry = _make_registry(tmp_path, [f"u{i}" for i in range(5)])
-        table = _make_dataset_vars_table(tmp_path)
-
-        # Only insert 2 rows (zarr has 5)
-        var_df = pl.DataFrame({"global_feature_uid": uids})
-        table.add(build_dataset_vars_df(var_df, "ds_001", registry))
-
-        errors = validate_dataset_vars(table, "ds_001", spec=spec, group=zarr_group)
-        assert any("2 rows but expected 5" in e for e in errors)
-
     def test_registry_unresolved(self, tmp_path):
         spec = get_spec("gene_expression")
         registry = _make_registry(tmp_path, ["uid_a"])
@@ -281,15 +244,14 @@ class TestValidateDatasetVars:
 
 
 class TestReindexRegistry:
-    def test_assigns_contiguous_indices(self, tmp_path):
+    def test_assigns_indices_to_unindexed(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_c", "uid_a", "uid_b"], indexed=False)
         n = reindex_registry(registry)
         assert n == 3
 
         df = registry.search().select(["uid", "global_index"]).to_polars()
-        df = df.sort("uid")
-        assert df["uid"].to_list() == ["uid_a", "uid_b", "uid_c"]
-        assert df["global_index"].to_list() == [0, 1, 2]
+        assert df["global_index"].null_count() == 0
+        assert df["global_index"].n_unique() == 3
 
     def test_reindex_is_deterministic(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_z", "uid_a", "uid_m"], indexed=False)
@@ -301,12 +263,13 @@ class TestReindexRegistry:
 
         assert df1["global_index"].to_list() == df2["global_index"].to_list()
 
-    def test_reindex_overwrites_existing_indices(self, tmp_path):
+    def test_reindex_is_noop_when_already_indexed(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_b", "uid_a"], indexed=True)
-        reindex_registry(registry)
-        df = registry.search().select(["uid", "global_index"]).to_polars().sort("uid")
-        assert df["uid"].to_list() == ["uid_a", "uid_b"]
-        assert df["global_index"].to_list() == [0, 1]
+        df_before = registry.search().select(["uid", "global_index"]).to_polars().sort("uid")
+        n = reindex_registry(registry)
+        assert n == 0
+        df_after = registry.search().select(["uid", "global_index"]).to_polars().sort("uid")
+        assert df_before["global_index"].to_list() == df_after["global_index"].to_list()
 
     def test_empty_table(self, tmp_path):
         db = lancedb.connect(str(tmp_path / "lancedb"))
@@ -317,10 +280,13 @@ class TestReindexRegistry:
         registry = _make_registry(tmp_path, ["uid_c", "uid_a", "uid_b"], indexed=False)
         reindex_registry(registry)
 
+        reg_df = registry.search().select(["uid", "global_index"]).to_polars()
+        gi_b = int(reg_df.filter(pl.col("uid") == "uid_b")["global_index"][0])
+        gi_c = int(reg_df.filter(pl.col("uid") == "uid_c")["global_index"][0])
+
         var_df = pl.DataFrame({"global_feature_uid": ["uid_b", "uid_c"]})
         df = build_dataset_vars_df(var_df, "ds_001", registry)
-        # uid_a=0, uid_b=1, uid_c=2 after reindex
-        assert df["global_index"].to_list() == [1, 2]
+        assert df["global_index"].to_list() == [gi_b, gi_c]
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +351,8 @@ class TestGroupReaderRemap:
         # Same object (warm cache)
         assert remap1 is remap2
 
-    def test_cache_invalidated_by_table_version(self, tmp_path):
+    def test_remap_load_once_ignores_table_mutations(self, tmp_path):
+        """get_remap() is load-once: mutations to the table after first load are not seen."""
         from lancell.group_reader import GroupReader
 
         uids = ["uid_a", "uid_b"]
@@ -411,7 +378,7 @@ class TestGroupReaderRemap:
         remap1 = gr.get_remap()
         np.testing.assert_array_equal(remap1, [0, 1])
 
-        # Simulate reindex: swap global indices
+        # Mutate the underlying table
         rows = read_dataset_vars(table, "ds_001")
         rows = rows.with_columns(pl.Series("global_index", [1, 0]))
         (
@@ -420,10 +387,10 @@ class TestGroupReaderRemap:
             .execute(rows)
         )
 
-        # Cache is stale — next call rebuilds
+        # Load-once: same cached object returned, mutation is not visible
         remap2 = gr.get_remap()
-        np.testing.assert_array_equal(remap2, [1, 0])
-        assert remap1 is not remap2
+        np.testing.assert_array_equal(remap2, [0, 1])
+        assert remap1 is remap2
 
     def test_worker_path_returns_frozen_remap(self, tmp_path):
         import obstore

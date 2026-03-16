@@ -6,217 +6,35 @@ spaces) exist and their types. ``RaggedAtlas.open(...)`` or ``.create(...)`` is
 the full API — no manifest file to maintain.
 """
 
-import dataclasses
 import json
 from collections import defaultdict
-from types import UnionType
-from typing import TYPE_CHECKING, Union, get_args, get_origin
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lancell.group_reader import GroupReader
     from lancell.query import AtlasQuery
 
-import anndata as ad
 import lancedb
-import numpy as np
 import obstore
-import pandas as pd
 import polars as pl
 import zarr
 
+from lancell._util import sql_escape
 from lancell.dataset_vars import (
     build_dataset_vars_df,
     reindex_registry,
     sync_dataset_vars_global_index,
     validate_dataset_vars,
 )
-from lancell.group_specs import PointerKind, get_spec
+from lancell.group_specs import get_spec
+from lancell.obs_alignment import _extract_pointer_fields
 from lancell.schema import (
     AtlasVersionRecord,
     DatasetRecord,
     DatasetVar,
-    DenseZarrPointer,
     FeatureBaseSchema,
     LancellBaseSchema,
-    SparseZarrPointer,
 )
-
-# ---------------------------------------------------------------------------
-# PointerFieldInfo — metadata about a schema's pointer fields
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class PointerFieldInfo:
-    """Metadata extracted from a single pointer field on a cell schema."""
-
-    field_name: str
-    feature_space: str
-    pointer_kind: PointerKind
-    pointer_type: type  # SparseZarrPointer or DenseZarrPointer
-
-
-def _extract_pointer_fields(
-    schema_cls: type[LancellBaseSchema],
-) -> dict[str, PointerFieldInfo]:
-    """Introspect a schema class and return info for each pointer field."""
-    result: dict[str, PointerFieldInfo] = {}
-    for name, annotation in schema_cls.__annotations__.items():
-        if name == "uid":
-            continue
-        origin = get_origin(annotation)
-        if origin is Union or isinstance(annotation, UnionType):
-            inner_types = get_args(annotation)
-        else:
-            inner_types = (annotation,)
-
-        for t in inner_types:
-            if t is type(None):
-                continue
-            if t is SparseZarrPointer or t is DenseZarrPointer:
-                # Convention: field name == feature space name.
-                # Enforced at class-definition time in LancellBaseSchema.__init_subclass__.
-                feature_space = name
-                spec = get_spec(feature_space)
-                pointer_kind = PointerKind.SPARSE if t is SparseZarrPointer else PointerKind.DENSE
-                if pointer_kind is not spec.pointer_kind:
-                    raise TypeError(
-                        f"Field '{name}' uses {pointer_kind.value} pointer but "
-                        f"feature space '{feature_space}' requires {spec.pointer_kind.value}"
-                    )
-                result[name] = PointerFieldInfo(
-                    field_name=name,
-                    feature_space=feature_space,
-                    pointer_kind=pointer_kind,
-                    pointer_type=t,
-                )
-                break
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Pre-flight schema alignment
-# ---------------------------------------------------------------------------
-
-# Fields set automatically by the atlas — never expected in user-provided obs.
-_AUTO_FIELDS = {"uid", "dataset_uid"}
-
-
-def _schema_obs_fields(
-    cell_schema: type[LancellBaseSchema],
-) -> dict[str, bool]:
-    """Return {field_name: required} for user-supplied obs fields.
-
-    Excludes auto-generated fields (uid, dataset_uid) and pointer fields.
-    """
-    pointer_fields = _extract_pointer_fields(cell_schema)
-    result: dict[str, bool] = {}
-    for name, field_info in cell_schema.model_fields.items():
-        if name in _AUTO_FIELDS or name in pointer_fields:
-            continue
-        required = field_info.is_required()
-        result[name] = required
-    return result
-
-
-def validate_obs_columns(
-    obs: pd.DataFrame,
-    cell_schema: type[LancellBaseSchema],
-    obs_to_schema: dict[str, str] | None = None,
-) -> list[str]:
-    """Validate that obs columns match the cell schema.
-
-    Parameters
-    ----------
-    obs:
-        The obs DataFrame from an AnnData.
-    cell_schema:
-        The schema class to validate against.
-    obs_to_schema:
-        Optional mapping from obs column names to schema field names.
-        Use this when obs columns have different names than the schema
-        expects, e.g. ``{"donor_id": "donor", "cell_type_ontology": "cell_type"}``.
-
-    Returns
-    -------
-    list[str]
-        List of error strings. Empty list means valid.
-    """
-    errors: list[str] = []
-    schema_fields = _schema_obs_fields(cell_schema)
-    obs_to_schema = obs_to_schema or {}
-
-    # Build the set of schema field names reachable from obs columns
-    # (either directly or via the mapping)
-    reverse_map = {v: k for k, v in obs_to_schema.items()}
-    obs_cols = set(obs.columns)
-
-    for field_name, required in schema_fields.items():
-        # Field is satisfied if obs has it directly or via mapping
-        obs_col = reverse_map.get(field_name, field_name)
-        if required and obs_col not in obs_cols:
-            errors.append(f"Missing required column '{field_name}'")
-
-    return errors
-
-
-def align_obs_to_schema(
-    adata: ad.AnnData,
-    cell_schema: type[LancellBaseSchema],
-    *,
-    obs_to_schema: dict[str, str] | None = None,
-    inplace: bool = False,
-) -> ad.AnnData:
-    """Align an AnnData's obs to match a cell schema.
-
-    - Renames columns according to ``obs_to_schema``.
-    - Raises if required fields are missing (after renaming).
-    - Adds ``None`` columns for optional fields not present.
-    - Drops extra columns not in the schema.
-
-    Parameters
-    ----------
-    adata:
-        The AnnData to align.
-    cell_schema:
-        The schema class to align to.
-    obs_to_schema:
-        Optional mapping from obs column names to schema field names.
-        Use this when obs columns have different names than the schema
-        expects, e.g. ``{"donor_id": "donor", "cell_type_ontology": "cell_type"}``.
-    inplace:
-        If True, modify ``adata`` in place. Otherwise return a copy.
-
-    Returns
-    -------
-    ad.AnnData
-        The aligned AnnData.
-    """
-    errors = validate_obs_columns(adata.obs, cell_schema, obs_to_schema)
-    if errors:
-        raise ValueError(f"Cannot align obs to schema: {errors}")
-
-    if not inplace:
-        adata = adata.copy()
-
-    # Rename obs columns according to mapping
-    if obs_to_schema:
-        adata.obs = adata.obs.rename(columns=obs_to_schema)
-
-    schema_fields = _schema_obs_fields(cell_schema)
-    obs_cols = set(adata.obs.columns)
-
-    # Add None columns for optional fields not present
-    for field_name, required in schema_fields.items():
-        if not required and field_name not in obs_cols:
-            adata.obs[field_name] = None
-
-    # Drop extra columns not in schema
-    keep = [c for c in adata.obs.columns if c in schema_fields]
-    adata.obs = adata.obs[keep]
-
-    return adata
-
 
 # ---------------------------------------------------------------------------
 # RaggedAtlas
@@ -239,9 +57,8 @@ class RaggedAtlas:
         registry_tables: dict[str, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
         *,
-        version_table: lancedb.table.Table | None = None,
-        dataset_vars_table: lancedb.table.Table | None = None,
-        update_feature_registries: bool = True,
+        version_table: lancedb.table.Table,
+        dataset_vars_table: lancedb.table.Table,
     ) -> None:
         self.db = db
         self.cell_table = cell_table
@@ -254,19 +71,10 @@ class RaggedAtlas:
         self._version_table = version_table
         self._dataset_vars_table = dataset_vars_table
 
+        self._checked_out_version: int | None = None
+
         # Instance-level cache: one GroupReader per (zarr_group, feature_space)
         self._group_readers: dict[tuple[str, str], GroupReader] = {}
-
-        # Validate that global_index is contiguous 0..N-1 within each
-        # registry table. A broken index silently corrupts every remap and
-        # every reconstructed AnnData.
-        registry_errors = self._validate_registries()
-        if registry_errors and update_feature_registries:
-            for table in self._registry_tables.values():
-                reindex_registry(table)
-            registry_errors = self._validate_registries()
-        if registry_errors:
-            raise ValueError(f"Registry validation failed at init: {registry_errors}")
 
     # -- Construction -------------------------------------------------------
 
@@ -282,7 +90,6 @@ class RaggedAtlas:
         store: obstore.store.ObjectStore,
         registry_schemas: dict[str, type[FeatureBaseSchema]],
         version_table_name: str = "atlas_versions",
-        update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Create a new atlas, initialising the LanceDB tables.
 
@@ -305,11 +112,6 @@ class RaggedAtlas:
             Table names default to ``"{feature_space}_registry"``.
         version_table_name:
             Name for the version tracking table.
-        update_feature_registries:
-            If ``True`` (default), automatically run
-            :func:`~lancell.dataset_vars.reindex_registry` on any registry whose
-            ``global_index`` is not contiguous.  If ``False``, raise on
-            broken registries instead.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
@@ -337,7 +139,6 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             dataset_vars_table=dataset_vars_table,
-            update_feature_registries=update_feature_registries,
         )
 
     @classmethod
@@ -351,7 +152,6 @@ class RaggedAtlas:
         store: obstore.store.ObjectStore,
         registry_tables: dict[str, str],
         version_table_name: str = "atlas_versions",
-        update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Open an existing atlas.
 
@@ -371,11 +171,6 @@ class RaggedAtlas:
             Mapping of feature space names to LanceDB table names.
         version_table_name:
             Name of the version tracking table.
-        update_feature_registries:
-            If ``True`` (default), automatically run
-            :func:`~lancell.dataset_vars.reindex_registry` on any registry whose
-            ``global_index`` is not contiguous.  If ``False``, raise on
-            broken registries instead.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.open_table(cell_table_name)
@@ -385,15 +180,8 @@ class RaggedAtlas:
         for fs, table_name in registry_tables.items():
             resolved_registries[fs] = db.open_table(table_name)
 
-        try:
-            version_table: lancedb.table.Table | None = db.open_table(version_table_name)
-        except Exception:
-            version_table = None
-
-        try:
-            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
-        except Exception:
-            dataset_vars_table = None
+        version_table = db.open_table(version_table_name)
+        dataset_vars_table = db.open_table("_dataset_vars")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
 
@@ -406,7 +194,6 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             dataset_vars_table=dataset_vars_table,
-            update_feature_registries=update_feature_registries,
         )
 
     # -- Store helpers ------------------------------------------------------
@@ -417,19 +204,16 @@ class RaggedAtlas:
 
         key = (zarr_group, feature_space)
         if key not in self._group_readers:
-            dataset_uid: str | None = None
-            if self._dataset_vars_table is not None:
-                datasets_df = (
-                    self._dataset_table.search()
-                    .to_polars()
-                    .filter(
-                        (pl.col("zarr_group") == zarr_group)
-                        & (pl.col("feature_space") == feature_space)
-                    )
-                    .select(["uid"])
+            datasets_df = (
+                self._dataset_table.search()
+                .where(
+                    f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
+                    prefilter=True,
                 )
-                if not datasets_df.is_empty():
-                    dataset_uid = datasets_df["uid"][0]
+                .select(["uid"])
+                .to_polars()
+            )
+            dataset_uid: str | None = datasets_df["uid"][0] if not datasets_df.is_empty() else None
 
             self._group_readers[key] = GroupReader.from_atlas_root(
                 zarr_group=zarr_group,
@@ -440,16 +224,19 @@ class RaggedAtlas:
             )
         return self._group_readers[key]
 
-    def _get_remap(self, zarr_group: str, feature_space: str) -> np.ndarray:
-        """Thin wrapper around GroupReader.get_remap for callers that predate GroupReader."""
-        return self._get_group_reader(zarr_group, feature_space).get_remap()
-
     # -- Query entry point --------------------------------------------------
 
     def query(self) -> "AtlasQuery":
         """Start building a query against this atlas."""
         from lancell.query import AtlasQuery
 
+        if self._checked_out_version is None:
+            raise RuntimeError(
+                "query() is only available on a versioned atlas. "
+                "After ingestion, call atlas.snapshot() then "
+                "RaggedAtlas.checkout(db_uri, version, schema, store) to pin to a "
+                "validated snapshot. For convenience, use RaggedAtlas.checkout_latest(...)."
+            )
         return AtlasQuery(self)
 
     # -- Feature registration -----------------------------------------------
@@ -532,8 +319,6 @@ class RaggedAtlas:
         feature_space:
             Which feature space this dataset belongs to (used to look up registry).
         """
-        if self._dataset_vars_table is None:
-            return
         registry_table = self._registry_tables.get(feature_space)
         if registry_table is None:
             raise ValueError(
@@ -549,8 +334,8 @@ class RaggedAtlas:
         """Compact tables and reindex feature registries.
 
         Calls ``table.optimize()`` on the cell, dataset, and registry tables
-        to compact small Lance fragments, then assigns contiguous
-        ``global_index`` values on every registry via
+        to compact small Lance fragments, then assigns ``global_index`` to any
+        unindexed registry features via
         :func:`~lancell.dataset_vars.reindex_registry`, and propagates updated
         indices to ``_dataset_vars`` via
         :func:`~lancell.dataset_vars.sync_dataset_vars_global_index`.
@@ -558,14 +343,14 @@ class RaggedAtlas:
         self.cell_table.optimize()
         self._dataset_table.optimize()
         for table in self._registry_tables.values():
-            table.optimize()
             reindex_registry(table)
-            if self._dataset_vars_table is not None:
-                sync_dataset_vars_global_index(self._dataset_vars_table, table)
-        if self._dataset_vars_table is not None:
-            self._dataset_vars_table.optimize()
-            self._dataset_vars_table.create_fts_index("feature_uid", replace=True)
-            self._dataset_vars_table.create_fts_index("dataset_uid", replace=True)
+            table.create_scalar_index("uid", replace=True)
+            table.optimize()
+            sync_dataset_vars_global_index(self._dataset_vars_table, table)
+
+        self._dataset_vars_table.create_fts_index("feature_uid", replace=True)
+        self._dataset_vars_table.create_fts_index("dataset_uid", replace=True)
+        self._dataset_vars_table.optimize()
 
     # -- Validation ---------------------------------------------------------
 
@@ -585,7 +370,7 @@ class RaggedAtlas:
         check_var_dfs:
             For feature spaces with var_df, validate _dataset_vars rows.
         check_registries:
-            Check that registry tables exist and global_index is contiguous.
+            Check that all registry rows have a global_index assigned.
         """
         errors: list[str] = []
 
@@ -628,7 +413,7 @@ class RaggedAtlas:
         """Return a Polars DataFrame of all ingested datasets."""
         return self._dataset_table.search().to_polars()
 
-    def datasets_with_features(
+    def find_datasets_with_features(
         self,
         feature_uids: str | list[str],
         feature_space: str,
@@ -654,14 +439,9 @@ class RaggedAtlas:
         """
         if isinstance(feature_uids, str):
             feature_uids = [feature_uids]
-        if self._dataset_vars_table is None:
-            raise RuntimeError(
-                "_dataset_vars table not found. This atlas may have been created "
-                "before _dataset_vars was introduced. Re-create the atlas to use this feature."
-            )
-        return self._datasets_with_features_fast(feature_uids, feature_space)
+        return self._find_datasets_with_features_fast(feature_uids, feature_space)
 
-    def _datasets_with_features_fast(
+    def _find_datasets_with_features_fast(
         self, feature_uids: list[str], feature_space: str
     ) -> pl.DataFrame:
         from lancedb.query import MatchQuery
@@ -679,15 +459,13 @@ class RaggedAtlas:
         if pairs.is_empty():
             return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
 
-        # Filter to only exact feature_uid matches (FTS may return partial matches)
-        pairs = pairs.filter(pl.col("feature_uid").is_in(feature_uids)).unique(
-            subset=["feature_uid", "dataset_uid"]
-        )
-        if pairs.is_empty():
-            return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
+        pairs = pairs.unique(subset=["feature_uid", "dataset_uid"])
 
-        datasets_df = self._dataset_table.search().to_polars()
-        datasets_df = datasets_df.filter(pl.col("feature_space") == feature_space)
+        datasets_df = (
+            self._dataset_table.search()
+            .where(f"feature_space = '{sql_escape(feature_space)}'", prefilter=True)
+            .to_polars()
+        )
 
         return (
             pairs.rename({"feature_uid": "global_feature_uid"})
@@ -707,14 +485,6 @@ class RaggedAtlas:
                     f"Registry '{fs}': {null_count} row(s) have no global_index. "
                     f"Run reindex_registry(table) to fix."
                 )
-                continue
-            indices = sorted(df["global_index"].to_list())
-            expected = list(range(len(indices)))
-            if indices != expected:
-                errors.append(
-                    f"Registry '{fs}': global_index is not contiguous 0..{len(indices) - 1}. "
-                    f"Run reindex_registry(table) to fix."
-                )
         return errors
 
     def _validate_zarr_groups(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
@@ -729,8 +499,6 @@ class RaggedAtlas:
         return errors
 
     def _validate_dataset_vars(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
-        if self._dataset_vars_table is None:
-            return []
         errors: list[str] = []
         # Build a lookup: (zarr_group, feature_space) -> dataset_uid
         datasets_df = (
@@ -767,12 +535,15 @@ class RaggedAtlas:
         """Record a consistent snapshot of all table versions.
 
         Returns the new atlas version number (0-indexed, monotonically increasing).
-        Raises ``ValueError`` if the atlas was created without a version table.
+        Raises ``ValueError`` if the atlas was created without a version table, or if
+        validation errors are found.
+
         """
-        if self._version_table is None:
+        errors = self.validate()
+        if errors:
             raise ValueError(
-                "This atlas has no version table. Re-create it with RaggedAtlas.create() "
-                "to enable versioning."
+                "Atlas validation failed — fix errors before snapshotting:\n"
+                + "\n".join(f"  • {e}" for e in errors)
             )
 
         existing = self._version_table.search().select(["version"]).to_polars()
@@ -792,6 +563,7 @@ class RaggedAtlas:
             dataset_table_version=self._dataset_table.version,
             registry_table_names=json.dumps(registry_names),
             registry_table_versions=json.dumps(registry_versions),
+            dataset_vars_table_version=self._dataset_vars_table.version,
             total_cells=self.cell_table.count_rows(),
         )
         self._version_table.add([record])
@@ -867,14 +639,12 @@ class RaggedAtlas:
             t.checkout(registry_versions[fs])
             resolved_registries[fs] = t
 
-        try:
-            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
-        except Exception:
-            dataset_vars_table = None
+        dataset_vars_table = db.open_table("_dataset_vars")
+        dataset_vars_table.checkout(row["dataset_vars_table_version"])
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 
-        return cls(
+        atlas = cls(
             db=db,
             cell_table=cell_table,
             cell_schema=cell_schema,
@@ -883,5 +653,46 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             dataset_vars_table=dataset_vars_table,
-            update_feature_registries=False,
+        )
+        atlas._checked_out_version = version
+        return atlas
+
+    @classmethod
+    def checkout_latest(
+        cls,
+        db_uri: str,
+        cell_schema: type[LancellBaseSchema],
+        store: obstore.store.ObjectStore,
+        *,
+        version_table_name: str = "atlas_versions",
+    ) -> "RaggedAtlas":
+        """Open the most recent validated snapshot.
+
+        Convenience wrapper around :meth:`checkout` that automatically selects
+        the highest recorded version number.
+
+        Parameters
+        ----------
+        db_uri:
+            LanceDB connection URI.
+        cell_schema:
+            The schema class used when the atlas was created.
+        store:
+            An obstore ObjectStore for zarr I/O.
+        version_table_name:
+            Name of the version tracking table.
+        """
+        versions = cls.list_versions(db_uri, version_table_name=version_table_name)
+        if versions.is_empty():
+            raise ValueError(
+                f"No snapshots found in atlas at '{db_uri}'. "
+                "Call atlas.snapshot() after ingestion to create one."
+            )
+        latest_version = int(versions["version"].max())
+        return cls.checkout(
+            db_uri,
+            version=latest_version,
+            cell_schema=cell_schema,
+            store=store,
+            version_table_name=version_table_name,
         )

@@ -37,21 +37,6 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     reconstructor=SparseCSRReconstructor(),
 )
 
-PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
-    feature_space="protein_abundance",
-    pointer_kind=PointerKind.DENSE,
-    has_var_df=True,
-    required_subgroups=[
-        SubgroupSpec(
-            subgroup_name="layers",
-            uniform_shape=True,
-        ),
-    ],
-    required_layers=["counts"],
-    allowed_layers=["counts", "clr", "dsb", "log_normalized"],
-    reconstructor=DenseReconstructor(),
-)
-
 IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     feature_space="image_features",
     pointer_kind=PointerKind.DENSE,
@@ -70,7 +55,6 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
 
 for _spec in [
     GENE_EXPRESSION_SPEC,
-    PROTEIN_ABUNDANCE_SPEC,
     IMAGE_FEATURES_SPEC,
 ]:
     register_spec(_spec)

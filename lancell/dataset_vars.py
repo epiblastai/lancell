@@ -4,13 +4,13 @@ Replaces the sidecar parquet files (var.parquet, local_to_global_index.parquet)
 and the _feature_dataset_pairs inverted index table.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import lancedb
 import numpy as np
 import polars as pl
+
+from lancell._util import sql_escape
 
 if TYPE_CHECKING:
     import zarr
@@ -57,9 +57,15 @@ def build_dataset_vars_df(
     feature_uids = var_df["global_feature_uid"].to_list()
     n = len(feature_uids)
 
-    registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
+    uids_sql = ", ".join(f"'{sql_escape(u)}'" for u in feature_uids)
+    registry_df = (
+        registry_table.search()
+        .where(f"uid IN ({uids_sql})", prefilter=True)
+        .select(["uid", "global_index"])
+        .to_polars()
+    )
     uid_to_global: dict[str, int] = dict(
-        zip(registry_df["uid"].to_list(), registry_df["global_index"].to_list(), strict=False)
+        zip(registry_df["uid"].to_list(), registry_df["global_index"].to_list(), strict=True)
     )
     registry_uids = set(registry_df["uid"].to_list())
 
@@ -77,7 +83,7 @@ def build_dataset_vars_df(
 
     if missing:
         raise ValueError(
-            f"{len(missing)} uid(s) in var_df not found in registry. First 5: {missing[:5]}"
+            f"{len(missing)} uid(s) in var_df not found in registry. First 5: {sorted(missing)[:5]}"
         )
     if unindexed:
         raise ValueError(
@@ -109,7 +115,10 @@ def read_dataset_vars(
     """Read all DatasetVar rows for a dataset, sorted by local_index."""
     return (
         table.search()
-        .where(f"dataset_uid = '{dataset_uid}'", prefilter=True)
+        .where(f"dataset_uid = '{sql_escape(dataset_uid)}'", prefilter=True)
+        .select(
+            ["feature_uid", "dataset_uid", "local_index", "global_index", "csc_start", "csc_end"]
+        )
         .to_polars()
         .sort("local_index")
     )
@@ -144,7 +153,13 @@ def sync_dataset_vars_global_index(
     if registry_df.is_empty():
         return 0
 
-    all_rows = dataset_vars_table.search().to_polars()
+    all_rows = (
+        dataset_vars_table.search()
+        .select(
+            ["feature_uid", "dataset_uid", "local_index", "global_index", "csc_start", "csc_end"]
+        )
+        .to_polars()
+    )
     if all_rows.is_empty():
         return 0
 
@@ -179,8 +194,8 @@ def validate_dataset_vars(
     dataset_vars_table: lancedb.table.Table,
     dataset_uid: str,
     *,
-    spec: ZarrGroupSpec,
-    group: zarr.Group | None = None,
+    spec: "ZarrGroupSpec",
+    group: "zarr.Group | None" = None,
     expected_feature_count: int | None = None,
     registry_table: lancedb.table.Table | None = None,
 ) -> list[str]:
@@ -242,8 +257,8 @@ def validate_dataset_vars(
 
 
 def _get_local_feature_count(
-    group: zarr.Group,
-    spec: ZarrGroupSpec,
+    group: "zarr.Group",
+    spec: "ZarrGroupSpec",
 ) -> int | None:
     """Derive the expected number of local features from the zarr group."""
     import zarr
@@ -264,52 +279,44 @@ def _get_local_feature_count(
 # ---------------------------------------------------------------------------
 
 
-def reindex_registry(
-    table: lancedb.table.Table,
-    *,
-    sort_by: str = "uid",
-) -> int:
-    """Assign contiguous ``global_index`` values to every row in a feature registry.
+def reindex_registry(table: lancedb.table.Table) -> int:
+    """Assign ``global_index`` to any features that do not yet have one.
 
-    Reads all rows, sorts deterministically by *sort_by*, assigns
-    ``global_index = 0 .. N-1``, and writes the updated indices back via
-    ``merge_insert`` on ``uid``.
-
-    Parameters
-    ----------
-    table:
-        A LanceDB table backed by a FeatureBaseSchema subclass.
-    sort_by:
-        Column to sort by before assigning indices.
+    Reads only unindexed rows (``global_index IS NULL``) and assigns each a
+    unique integer starting from ``max(existing_index) + 1`` (or 0 if the
+    table is currently empty).  Rows that already have a ``global_index`` are
+    never modified.
 
     Returns
     -------
     int
-        Number of features indexed.
+        Number of features newly indexed.  0 if all features are already indexed.
     """
-    columns = ["uid", "global_index"]
-    if sort_by not in columns:
-        columns.append(sort_by)
-    df = table.search().select(columns).to_polars()
-    if df.is_empty():
+    unindexed = (
+        table.search().where("global_index IS NULL", prefilter=True).select(["uid"]).to_polars()
+    )
+    if unindexed.is_empty():
         return 0
 
-    df = df.sort(sort_by)
-    indices = df["global_index"]
-    if (
-        indices.null_count() == 0
-        and int(indices[0]) == 0
-        and int(indices.diff().drop_nulls().max()) <= 1
-    ):
-        return 0
-    df = df.with_columns(pl.Series("global_index", range(len(df)), dtype=pl.Int64))
+    existing = (
+        table.search()
+        .where("global_index IS NOT NULL", prefilter=True)
+        .select(["global_index"])
+        .to_polars()
+    )
+    next_index = int(existing["global_index"].max()) + 1 if not existing.is_empty() else 0
 
-    (table.merge_insert(on="uid").when_matched_update_all().execute(df))
-    return len(df)
+    updated = unindexed.with_columns(
+        pl.Series(
+            "global_index", list(range(next_index, next_index + len(unindexed))), dtype=pl.Int64
+        )
+    )
+    table.merge_insert(on="uid").when_matched_update_all().execute(updated)
+    return len(updated)
 
 
 # ---------------------------------------------------------------------------
-# Feature UID resolution (unchanged from var_df.py)
+# Feature UID resolution
 # ---------------------------------------------------------------------------
 
 
@@ -357,8 +364,5 @@ def resolve_feature_uids_to_global_indices(
             f"(run reindex_registry first). First 5: {unindexed[:5]}"
         )
 
-    return (
-        matched["global_index"]
-        .to_numpy()
-        .astype(np.int32, copy=False)[np.argsort(matched["global_index"].to_numpy())]
-    )
+    global_index_np = matched["global_index"].to_numpy()
+    return global_index_np.astype(np.int32, copy=False)[np.argsort(global_index_np)]

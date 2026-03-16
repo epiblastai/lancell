@@ -7,9 +7,10 @@ import polars as pl
 import pytest
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas, align_obs_to_schema
+from lancell.atlas import RaggedAtlas
 from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_from_anndata
+from lancell.obs_alignment import align_obs_to_schema
 from lancell.schema import (
     DatasetRecord,
     FeatureBaseSchema,
@@ -143,10 +144,36 @@ class TestSnapshot:
 
     def test_snapshot_raises_without_version_table(self, tmp_path):
         store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
-        atlas._version_table = None
+        # Opening with a non-existent version table name raises immediately.
+        with pytest.raises(ValueError, match="not found"):
+            RaggedAtlas.open(
+                db_uri=str(tmp_path / "atlas.lancedb"),
+                cell_table_name="cells",
+                cell_schema=TestCellSchema,
+                dataset_table_name="_datasets",
+                store=store,
+                registry_tables={"gene_expression": "gene_expression_registry"},
+                version_table_name="nonexistent_versions",
+            )
 
-        with pytest.raises(ValueError, match="no version table"):
+    def test_snapshot_raises_if_registry_invalid(self, tmp_path):
+        """snapshot() must fail if registries are not fully indexed."""
+        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas = RaggedAtlas.create(
+            db_uri=str(tmp_path / "atlas.lancedb"),
+            cell_table_name="cells",
+            cell_schema=TestCellSchema,
+            store=store,
+            registry_schemas={"gene_expression": GeneFeatureSchema},
+            dataset_table_name="_datasets",
+            dataset_schema=DatasetRecord,
+        )
+        # Register features but deliberately skip reindex_registry
+        atlas.register_features(
+            "gene_expression",
+            [GeneFeatureSchema(uid=f"gene_{i}", gene_name=f"GENE{i}") for i in range(5)],
+        )
+        with pytest.raises(ValueError, match="validation failed"):
             atlas.snapshot()
 
 
@@ -284,14 +311,57 @@ class TestCheckout:
                 store=store,
             )
 
-
-class TestBackwardCompat:
-    def test_open_without_version_table_succeeds(self, tmp_path):
-        """Atlas opened without a version table sets _version_table=None."""
+    def test_checkout_dataset_vars_pinned(self, tmp_path):
         store = obstore.store.LocalStore(prefix=str(tmp_path))
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
-        # Write data so the tables are persisted on disk
+        adata = align_obs_to_schema(_make_sparse_adata(10, 10, gene_uids), TestCellSchema)
+        add_from_anndata(
+            atlas,
+            adata,
+            feature_space="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata, "ds1/gene_expression"),
+        )
+        atlas.snapshot()  # v0 — pins dataset_vars at current version
+
+        # Record the remap as it was at snapshot time
+        from lancell.dataset_vars import read_dataset_vars
+
+        ds_rows = (
+            atlas._dataset_table.search()
+            .where("zarr_group = 'ds1/gene_expression'", prefilter=True)
+            .to_polars()
+        )
+        dataset_uid = ds_rows["uid"][0]
+        rows_at_v0 = read_dataset_vars(atlas._dataset_vars_table, dataset_uid)
+        remap_at_v0 = rows_at_v0["global_index"].to_numpy().astype(np.int32, copy=False).copy()
+
+        # Mutate _dataset_vars on the live atlas: reverse global_index for ds1
+        reversed_rows = rows_at_v0.with_columns(pl.col("global_index").reverse())
+        (
+            atlas._dataset_vars_table.merge_insert(on=["feature_uid", "dataset_uid"])
+            .when_matched_update_all()
+            .execute(reversed_rows)
+        )
+
+        # Checkout v0 — _dataset_vars must be pinned to the snapshot version
+        pinned = RaggedAtlas.checkout(
+            db_uri=str(tmp_path / "atlas.lancedb"),
+            version=0,
+            cell_schema=TestCellSchema,
+            store=store,
+        )
+        gr = pinned._get_group_reader("ds1/gene_expression", "gene_expression")
+        np.testing.assert_array_equal(gr.get_remap(), remap_at_v0)
+
+
+class TestBackwardCompat:
+    def test_open_without_version_table_raises(self, tmp_path):
+        """Opening with a non-existent version table name raises immediately."""
+        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas, gene_uids = _make_atlas(tmp_path, store)
+
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -301,22 +371,13 @@ class TestBackwardCompat:
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
 
-        # Pass a non-existent version table name to simulate an older atlas
-        opened = RaggedAtlas.open(
-            db_uri=str(tmp_path / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
-            dataset_table_name="_datasets",
-            store=store,
-            registry_tables={"gene_expression": "gene_expression_registry"},
-            version_table_name="nonexistent_versions",
-        )
-        assert opened._version_table is None
-
-    def test_snapshot_on_no_version_table_raises(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, _ = _make_atlas(tmp_path, store)
-        atlas._version_table = None
-
-        with pytest.raises(ValueError, match="no version table"):
-            atlas.snapshot()
+        with pytest.raises(ValueError, match="not found"):
+            RaggedAtlas.open(
+                db_uri=str(tmp_path / "atlas.lancedb"),
+                cell_table_name="cells",
+                cell_schema=TestCellSchema,
+                dataset_table_name="_datasets",
+                store=store,
+                registry_tables={"gene_expression": "gene_expression_registry"},
+                version_table_name="nonexistent_versions",
+            )
