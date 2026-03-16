@@ -57,14 +57,11 @@ def _write_sparse_batched(
     """
     batch_size = shard_shape[0]
 
-    indices_kwargs: dict = {}
+    from lancell.codecs.bitpacking import BitpackingCodec
+
+    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
     layer_kwargs: dict = {}
     if use_bitpacking:
-        from lancell.codecs.bitpacking import BitpackingCodec
-
-        # REVIEW: bitpacking should 100% always be applied to the indices array, the argument
-        # should only be applied to the data layer.
-        indices_kwargs["compressors"] = BitpackingCodec(transform="delta")
         layer_kwargs["compressors"] = BitpackingCodec(transform="none")
 
     if _is_backed_csr(adata):
@@ -127,14 +124,14 @@ def _write_dense_batched(
     """
     n_cells, n_vars = adata.shape
     batch_size = shard_shape[0]
+    data_dtype = adata.X.dtype
 
     if zarr_layer is not None:
         layers_group = group.create_group("layers")
         zarr_arr = layers_group.create_array(
             zarr_layer,
             shape=(n_cells, n_vars),
-            # REVIEW: The dtype should match the source data, not be hardcoded to float32.
-            dtype=np.float32,
+            dtype=data_dtype,
             chunks=chunk_shape,
             shards=shard_shape,
         )
@@ -142,8 +139,7 @@ def _write_dense_batched(
         zarr_arr = group.create_array(
             "data",
             shape=(n_cells, n_vars),
-            # REVIEW: The dtype should match the source data, not be hardcoded to float32.
-            dtype=np.float32,
+            dtype=data_dtype,
             chunks=chunk_shape,
             shards=shard_shape,
         )
@@ -151,8 +147,7 @@ def _write_dense_batched(
     written = 0
     while written < n_cells:
         end = min(written + batch_size, n_cells)
-        # REVIEW: The dtype should match the source data, not be hardcoded to float32.
-        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=np.float32)
+        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=data_dtype)
         written = end
 
 
@@ -286,7 +281,7 @@ def add_anndata_batch(
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape)
 
     if spec.has_var_df:
-        write_var_sidecar(atlas, adata, feature_space, zarr_group, dataset_record.uid)
+        write_dataset_vars(atlas, adata, feature_space, zarr_group, dataset_record.uid)
 
     arrow_schema = atlas._cell_schema.to_arrow_schema()
     obs_df = adata.obs
@@ -391,9 +386,7 @@ def add_from_anndata(
     )
 
 
-# REVIEW: The side car pattern is legacy, we should rename this function
-# to reflect what it's actually doing now.
-def write_var_sidecar(
+def write_dataset_vars(
     atlas: RaggedAtlas,
     adata: ad.AnnData,
     feature_space: str,

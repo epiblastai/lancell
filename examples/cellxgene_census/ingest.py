@@ -155,7 +155,7 @@ def ingest_backed(
     cellxgene_dataset_id = Path(h5ad_path).stem
     zarr_group = make_uid()
 
-    # Attach global_feature_uid to adata.var so write_var_sidecar can use it
+    # Attach global_feature_uid to adata.var so write_dataset_vars can use it
     ensembl_ids = list(adata.var.index)
     adata.var["global_feature_uid"] = [ensembl_to_uid[eid] for eid in ensembl_ids]
 
