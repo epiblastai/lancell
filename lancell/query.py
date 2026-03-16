@@ -249,6 +249,8 @@ class AtlasQuery:
                 continue
             yield self._reconstruct_single_space_anndata(pl.from_arrow(batch), pf)
 
+    # REVIEW: We shouldn't default the feature_space and layer here.
+    # Should be more similar to `to_multimodal_dataset`
     def to_cell_dataset(
         self,
         feature_space: str = "gene_expression",
@@ -354,6 +356,9 @@ class AtlasQuery:
             wanted_globals=wanted_globals,
         )
 
+    # REVIEW: We should probably remove this convenience method and instead
+    # make a similar function in `dataloader.py` that accepts a CellDataset
+    # or MultimodalCellDataset and a CellSampler
     def to_dataloader(
         self,
         collate_fn=None,

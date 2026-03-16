@@ -194,6 +194,7 @@ class _ModalityData:
     n_features: int
     index_array_name: str  # sparse only; "" for dense
     layer: str
+    layer_dtype: np.dtype
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +290,14 @@ async def _take_sparse(
         all_lengths.append(lengths)
 
     flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
-    flat_values = np.concatenate(all_values) if all_values else np.array([], dtype=np.float32)
+    if all_values:
+        flat_values = np.concatenate(all_values)
+    else:
+        layer_dtype = np.dtype(np.float32)
+        for _, (_, lr) in local_readers.items():
+            layer_dtype = lr._native_dtype
+            break
+        flat_values = np.array([], dtype=layer_dtype)
     lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
 
     # Build CSR-style offsets
@@ -431,13 +439,13 @@ async def _take_multimodal(
             if mod_data.kind is PointerKind.SPARSE:
                 empty_modalities[fs] = SparseBatch(
                     indices=np.array([], dtype=np.int32),
-                    values=np.array([], dtype=np.float32),
+                    values=np.array([], dtype=mod_data.layer_dtype),
                     offsets=np.zeros(1, dtype=np.int64),
                     n_features=mod_data.n_features,
                 )
             else:
                 empty_modalities[fs] = DenseBatch(
-                    data=np.zeros((0, mod_data.n_features), dtype=np.float32),
+                    data=np.zeros((0, mod_data.n_features), dtype=mod_data.layer_dtype),
                     n_features=mod_data.n_features,
                 )
             continue
@@ -640,9 +648,12 @@ class CellDataset(_AsyncDataset):
             List of 0-based cell indices into this dataset's cell arrays.
         """
         self._ensure_initialized()
+        indices_arr = np.array(cell_indices, dtype=np.int64)
+        sort_order = np.argsort(self._groups_np[indices_arr], kind="stable")
+        inv_sort = np.argsort(sort_order, kind="stable")
         future = asyncio.run_coroutine_threadsafe(
             _take_sparse(
-                np.array(cell_indices, dtype=np.int64),
+                indices_arr,
                 self._groups_np,
                 self._starts,
                 self._ends,
@@ -656,7 +667,7 @@ class CellDataset(_AsyncDataset):
             ),
             self._loop,
         )
-        return future.result()
+        return _reorder_sparse_batch_rows(future.result(), inv_sort)
 
     def __getitem__(self, idx: int) -> SparseBatch:
         """Fetch a single cell as a :class:`SparseBatch`."""
@@ -791,6 +802,14 @@ class MultimodalCellDataset(_AsyncDataset):
                 else:
                     n_features = atlas._registry_tables[fs].count_rows()
 
+                if groups:
+                    first_gr = group_readers[groups[0]]
+                    sparse_layer_dtype = first_gr.get_array_reader(
+                        f"csr/layers/{layer}"
+                    )._native_dtype
+                else:
+                    sparse_layer_dtype = np.dtype(np.float32)
+
                 modality_data[fs] = _ModalityData(
                     kind=PointerKind.SPARSE,
                     present_mask=present_mask,
@@ -803,6 +822,7 @@ class MultimodalCellDataset(_AsyncDataset):
                     n_features=n_features,
                     index_array_name=index_array_name,
                     layer=layer,
+                    layer_dtype=sparse_layer_dtype,
                 )
 
             else:  # DENSE
@@ -839,6 +859,12 @@ class MultimodalCellDataset(_AsyncDataset):
 
                 n_features = atlas._registry_tables[fs].count_rows()
 
+                if groups:
+                    first_gr = group_readers[groups[0]]
+                    dense_layer_dtype = first_gr.get_array_reader(f"layers/{layer}")._native_dtype
+                else:
+                    dense_layer_dtype = np.dtype(np.float32)
+
                 modality_data[fs] = _ModalityData(
                     kind=PointerKind.DENSE,
                     present_mask=present_mask,
@@ -851,6 +877,7 @@ class MultimodalCellDataset(_AsyncDataset):
                     n_features=n_features,
                     index_array_name="",
                     layer=layer,
+                    layer_dtype=dense_layer_dtype,
                 )
 
         self._modality_data = modality_data

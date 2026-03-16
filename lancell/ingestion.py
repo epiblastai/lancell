@@ -60,6 +60,8 @@ def _write_sparse_batched(
     if use_bitpacking:
         from lancell.codecs.bitpacking import BitpackingCodec
 
+        # REVIEW: bitpacking should 100% always be applied to the indices array, the argument
+        # should only be applied to the data layer.
         indices_kwargs["compressors"] = BitpackingCodec(transform="delta")
         layer_kwargs["compressors"] = BitpackingCodec(transform="none")
 
@@ -129,6 +131,7 @@ def _write_dense_batched(
         zarr_arr = layers_group.create_array(
             zarr_layer,
             shape=(n_cells, n_vars),
+            # REVIEW: The dtype should match the source data, not be hardcoded to float32.
             dtype=np.float32,
             chunks=chunk_shape,
             shards=shard_shape,
@@ -137,6 +140,7 @@ def _write_dense_batched(
         zarr_arr = group.create_array(
             "data",
             shape=(n_cells, n_vars),
+            # REVIEW: The dtype should match the source data, not be hardcoded to float32.
             dtype=np.float32,
             chunks=chunk_shape,
             shards=shard_shape,
@@ -145,6 +149,7 @@ def _write_dense_batched(
     written = 0
     while written < n_cells:
         end = min(written + batch_size, n_cells)
+        # REVIEW: The dtype should match the source data, not be hardcoded to float32.
         zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=np.float32)
         written = end
 
@@ -384,6 +389,8 @@ def add_from_anndata(
     )
 
 
+# REVIEW: The side car pattern is legacy, we should rename this function
+# to reflect what it's actually doing now.
 def write_var_sidecar(
     atlas: RaggedAtlas,
     adata: ad.AnnData,

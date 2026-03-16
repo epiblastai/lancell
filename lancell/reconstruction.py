@@ -619,8 +619,7 @@ class FeatureCSCReconstructor:
                 zarr_rows_arr = group_cells["_zarr_row"].to_numpy().astype(np.int64)
                 max_zr = int(zarr_rows_arr.max()) + 1 if len(zarr_rows_arr) > 0 else 0
                 zr_to_rank = np.full(max_zr, -1, dtype=np.int64)
-                for rank, zr in enumerate(zarr_rows_arr):
-                    zr_to_rank[int(zr)] = rank
+                zr_to_rank[zarr_rows_arr] = np.arange(len(zarr_rows_arr), dtype=np.int64)
 
                 starts = np.array(csc_starts_list, dtype=np.int64)
                 ends = np.array(csc_ends_list, dtype=np.int64)

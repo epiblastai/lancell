@@ -23,6 +23,10 @@ if TYPE_CHECKING:
     from lancell.atlas import RaggedAtlas
 
 
+def _sql_escape(s: str) -> str:
+    return s.replace("'", "''")
+
+
 def add_csc(
     atlas: "RaggedAtlas",
     zarr_group: str,
@@ -62,7 +66,7 @@ def add_csc(
     datasets_df = (
         atlas._dataset_table.search()
         .where(
-            f"zarr_group = '{zarr_group}' AND feature_space = '{feature_space}'",
+            f"zarr_group = '{_sql_escape(zarr_group)}' AND feature_space = '{_sql_escape(feature_space)}'",
             prefilter=True,
         )
         .select(["uid"])
@@ -78,7 +82,7 @@ def add_csc(
     # Query all cells in this zarr group
     cells_df = (
         atlas.cell_table.search()
-        .where(f"{feature_space}.zarr_group = '{zarr_group}'", prefilter=True)
+        .where(f"{feature_space}.zarr_group = '{_sql_escape(zarr_group)}'", prefilter=True)
         .select([feature_space])
         .to_polars()
     )

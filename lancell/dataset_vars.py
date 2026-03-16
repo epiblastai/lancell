@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from lancell.group_specs import ZarrGroupSpec
 
 
+def _sql_escape(s: str) -> str:
+    return s.replace("'", "''")
+
+
 # ---------------------------------------------------------------------------
 # Build / insert
 # ---------------------------------------------------------------------------
@@ -55,7 +59,7 @@ def build_dataset_vars_df(
     feature_uids = var_df["global_feature_uid"].to_list()
     n = len(feature_uids)
 
-    uids_sql = ", ".join(f"'{u}'" for u in feature_uids)
+    uids_sql = ", ".join(f"'{_sql_escape(u)}'" for u in feature_uids)
     registry_df = (
         registry_table.search()
         .where(f"uid IN ({uids_sql})", prefilter=True)
@@ -113,8 +117,10 @@ def read_dataset_vars(
     """Read all DatasetVar rows for a dataset, sorted by local_index."""
     return (
         table.search()
-        .where(f"dataset_uid = '{dataset_uid}'", prefilter=True)
-        .select(["feature_uid", "local_index", "global_index", "csc_start", "csc_end"])
+        .where(f"dataset_uid = '{_sql_escape(dataset_uid)}'", prefilter=True)
+        .select(
+            ["feature_uid", "dataset_uid", "local_index", "global_index", "csc_start", "csc_end"]
+        )
         .to_polars()
         .sort("local_index")
     )
@@ -253,8 +259,8 @@ def validate_dataset_vars(
 
 
 def _get_local_feature_count(
-    group: zarr.Group,
-    spec: ZarrGroupSpec,
+    group: "zarr.Group",
+    spec: "ZarrGroupSpec",
 ) -> int | None:
     """Derive the expected number of local features from the zarr group."""
     import zarr
@@ -360,8 +366,5 @@ def resolve_feature_uids_to_global_indices(
             f"(run reindex_registry first). First 5: {unindexed[:5]}"
         )
 
-    return (
-        matched["global_index"]
-        .to_numpy()
-        .astype(np.int32, copy=False)[np.argsort(matched["global_index"].to_numpy())]
-    )
+    global_index_np = matched["global_index"].to_numpy()
+    return global_index_np.astype(np.int32, copy=False)[np.argsort(global_index_np)]

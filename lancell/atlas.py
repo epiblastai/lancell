@@ -35,6 +35,11 @@ from lancell.schema import (
     LancellBaseSchema,
 )
 
+
+def _sql_escape(s: str) -> str:
+    return s.replace("'", "''")
+
+
 # ---------------------------------------------------------------------------
 # RaggedAtlas
 # ---------------------------------------------------------------------------
@@ -204,7 +209,7 @@ class RaggedAtlas:
             datasets_df = (
                 self._dataset_table.search()
                 .where(
-                    f"zarr_group = '{zarr_group}' AND feature_space = '{feature_space}'",
+                    f"zarr_group = '{_sql_escape(zarr_group)}' AND feature_space = '{_sql_escape(feature_space)}'",
                     prefilter=True,
                 )
                 .select(["uid"])
@@ -453,7 +458,7 @@ class RaggedAtlas:
 
         datasets_df = (
             self._dataset_table.search()
-            .where(f"feature_space = '{feature_space}'", prefilter=True)
+            .where(f"feature_space = '{_sql_escape(feature_space)}'", prefilter=True)
             .to_polars()
         )
 
