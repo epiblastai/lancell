@@ -67,9 +67,10 @@ def _make_sparse_adata(
 @pytest.fixture
 def two_group_atlas(tmp_path):
     """Atlas with 2 zarr groups, 10 genes, 35 total cells (20 + 15)."""
+    db_uri = str(tmp_path / "atlas.lancedb")
     store = obstore.store.LocalStore(prefix=str(tmp_path))
     atlas = RaggedAtlas.create(
-        db_uri=str(tmp_path / "atlas.lancedb"),
+        db_uri=db_uri,
         cell_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
@@ -117,15 +118,17 @@ def two_group_atlas(tmp_path):
         ),
     )
 
-    return atlas
+    atlas.snapshot()
+    return RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
 
 
 @pytest.fixture
 def single_group_atlas(tmp_path):
     """Atlas with 1 zarr group for exact round-trip comparison."""
+    db_uri = str(tmp_path / "atlas.lancedb")
     store = obstore.store.LocalStore(prefix=str(tmp_path))
     atlas = RaggedAtlas.create(
-        db_uri=str(tmp_path / "atlas.lancedb"),
+        db_uri=db_uri,
         cell_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
@@ -156,7 +159,8 @@ def single_group_atlas(tmp_path):
         ),
     )
 
-    return atlas
+    atlas.snapshot()
+    return RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
 
 
 # ---------------------------------------------------------------------------

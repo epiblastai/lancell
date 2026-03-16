@@ -75,6 +75,8 @@ class RaggedAtlas:
         self._version_table = version_table
         self._dataset_vars_table = dataset_vars_table
 
+        self._checked_out_version: int | None = None
+
         # Instance-level cache: one GroupReader per (zarr_group, feature_space)
         self._group_readers: dict[tuple[str, str], GroupReader] = {}
 
@@ -232,6 +234,13 @@ class RaggedAtlas:
         """Start building a query against this atlas."""
         from lancell.query import AtlasQuery
 
+        if self._checked_out_version is None:
+            raise RuntimeError(
+                "query() is only available on a versioned atlas. "
+                "After ingestion, call atlas.snapshot() then "
+                "RaggedAtlas.checkout(db_uri, version, schema, store) to pin to a "
+                "validated snapshot. For convenience, use RaggedAtlas.checkout_latest(...)."
+            )
         return AtlasQuery(self)
 
     # -- Feature registration -----------------------------------------------
@@ -639,7 +648,7 @@ class RaggedAtlas:
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 
-        return cls(
+        atlas = cls(
             db=db,
             cell_table=cell_table,
             cell_schema=cell_schema,
@@ -648,4 +657,46 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             dataset_vars_table=dataset_vars_table,
+        )
+        atlas._checked_out_version = version
+        return atlas
+
+    @classmethod
+    def checkout_latest(
+        cls,
+        db_uri: str,
+        cell_schema: type[LancellBaseSchema],
+        store: obstore.store.ObjectStore,
+        *,
+        version_table_name: str = "atlas_versions",
+    ) -> "RaggedAtlas":
+        """Open the most recent validated snapshot.
+
+        Convenience wrapper around :meth:`checkout` that automatically selects
+        the highest recorded version number.
+
+        Parameters
+        ----------
+        db_uri:
+            LanceDB connection URI.
+        cell_schema:
+            The schema class used when the atlas was created.
+        store:
+            An obstore ObjectStore for zarr I/O.
+        version_table_name:
+            Name of the version tracking table.
+        """
+        versions = cls.list_versions(db_uri, version_table_name=version_table_name)
+        if versions.is_empty():
+            raise ValueError(
+                f"No snapshots found in atlas at '{db_uri}'. "
+                "Call atlas.snapshot() after ingestion to create one."
+            )
+        latest_version = int(versions["version"].max())
+        return cls.checkout(
+            db_uri,
+            version=latest_version,
+            cell_schema=cell_schema,
+            store=store,
+            version_table_name=version_table_name,
         )
