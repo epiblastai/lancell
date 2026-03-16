@@ -4,8 +4,6 @@ Replaces the sidecar parquet files (var.parquet, local_to_global_index.parquet)
 and the _feature_dataset_pairs inverted index table.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import lancedb
@@ -116,7 +114,7 @@ def read_dataset_vars(
     return (
         table.search()
         .where(f"dataset_uid = '{dataset_uid}'", prefilter=True)
-        # REVIEW: Small savings, but we don't need to load `dataset_uid`
+        .select(["feature_uid", "local_index", "global_index", "csc_start", "csc_end"])
         .to_polars()
         .sort("local_index")
     )
@@ -151,8 +149,13 @@ def sync_dataset_vars_global_index(
     if registry_df.is_empty():
         return 0
 
-    # REVIEW: We shouldn't need to load all columns, do we?
-    all_rows = dataset_vars_table.search().to_polars()
+    all_rows = (
+        dataset_vars_table.search()
+        .select(
+            ["feature_uid", "dataset_uid", "local_index", "global_index", "csc_start", "csc_end"]
+        )
+        .to_polars()
+    )
     if all_rows.is_empty():
         return 0
 
@@ -187,8 +190,8 @@ def validate_dataset_vars(
     dataset_vars_table: lancedb.table.Table,
     dataset_uid: str,
     *,
-    spec: ZarrGroupSpec,
-    group: zarr.Group | None = None,
+    spec: "ZarrGroupSpec",
+    group: "zarr.Group | None" = None,
     expected_feature_count: int | None = None,
     registry_table: lancedb.table.Table | None = None,
 ) -> list[str]:

@@ -14,8 +14,16 @@ class GroupReader:
     """Encapsulates all per-(zarr_group, feature_space) read state.
 
     Used by both the reconstruction path (RaggedAtlas) and the ML training
-    path (CellDataset worker processes). Zarr handles are opened lazily and
-    zeroed on pickling; all other state is picklable.
+    path (CellDataset worker processes).
+
+    ``zarr_group`` is the string path within the object store (e.g.
+    ``"datasets/abc123/rna"``).  It is the durable, picklable identity of
+    this reader.  ``_zarr_group_handle`` is the live ``zarr.Group`` object
+    derived from that path; it is opened lazily on first array access and
+    **zeroed out on pickling** (see ``__getstate__``).  The two are kept
+    separate because ``zarr.Group`` handles are not safely picklable across
+    process boundaries — when a ``GroupReader`` is sent to a DataLoader worker
+    the handle is stripped and re-opened fresh inside the worker on first use.
 
     Create via the two factories:
     - :meth:`from_atlas_root` — atlas reconstruction path
@@ -56,7 +64,7 @@ class GroupReader:
 
         The zarr group handle is opened lazily on first array access.
         Used by ``RaggedAtlas._get_group_reader``.
-        ``dataset_vars_table`` may be ``None`` for old atlases or feature
+        ``dataset_vars_table`` may be ``None`` for feature
         spaces with ``has_var_df=False``.
         """
         return cls(
@@ -78,8 +86,7 @@ class GroupReader:
         """Create a GroupReader for a DataLoader worker.
 
         Accepts a pre-resolved remap (already version-checked at CellDataset
-        init time). Sets ``_dataset_vars_table=None`` — workers never re-check
-        table version. The zarr group handle is ``None`` until first use.
+        init time). The zarr group handle is ``None`` until first use.
         """
         return cls(
             zarr_group=zarr_group,
