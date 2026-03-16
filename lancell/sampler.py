@@ -7,7 +7,7 @@ data-access object; samplers compose on top of it.
 
 Usage::
 
-    dataset = atlas.query().to_cell_dataset(metadata_columns=["cell_type"])
+    dataset = atlas.query().to_cell_dataset("gene_expression", "counts", metadata_columns=["cell_type"])
 
     # Standard sampler: group-local, worker-aware
     sampler = CellSampler(dataset.groups_np, batch_size=256, shuffle=True,

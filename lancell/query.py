@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import mudata as mu
+    from lancedb.query import LanceQueryBuilder
 
     from lancell.dataloader import CellDataset, MultimodalCellDataset
 
 import anndata as ad
-import lancedb
 import numpy as np
 import polars as pl
 
@@ -97,6 +97,12 @@ class AtlasQuery:
 
     def feature_spaces(self, *spaces: str) -> "AtlasQuery":
         """Restrict reconstruction to specific feature spaces."""
+        known = {pf.feature_space for pf in self._atlas._pointer_fields.values()}
+        unknown = set(spaces) - known
+        if unknown:
+            raise ValueError(
+                f"Unknown feature space(s): {sorted(unknown)}. Available: {sorted(known)}"
+            )
         self._feature_spaces = list(spaces)
         return self
 
@@ -112,6 +118,9 @@ class AtlasQuery:
         requested features. The ``feature_join`` setting is ignored for
         filtered feature spaces; intersection semantics are used.
         """
+        if feature_space not in self._atlas._registry_tables:
+            known = sorted(self._atlas._registry_tables.keys())
+            raise ValueError(f"No registry for feature space '{feature_space}'. Available: {known}")
         self._feature_filter[feature_space] = list(uids)
         return self
 
@@ -126,7 +135,7 @@ class AtlasQuery:
 
     # -- Execution ----------------------------------------------------------
 
-    def _build_base_query(self) -> lancedb.table.Table:
+    def _build_base_query(self) -> "LanceQueryBuilder":
         """Build a query with search, where, and limit applied (no column selection)."""
         q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
@@ -135,7 +144,7 @@ class AtlasQuery:
             q = q.limit(self._limit_n)
         return q
 
-    def _build_scanner(self) -> lancedb.table.Table:
+    def _build_scanner(self) -> "LanceQueryBuilder":
         """Build a LanceDB query from the current state."""
         q = self._build_base_query()
         if self._select_columns is not None:
@@ -183,8 +192,8 @@ class AtlasQuery:
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of cell metadata."""
         result = self._build_scanner().to_polars()
-        if self._select_columns is not None:
-            pointer_cols = _get_pointer_columns(result)
+        pointer_cols = _get_pointer_columns(result)
+        if pointer_cols:
             keep = [c for c in result.columns if c not in pointer_cols]
             result = result.select(keep)
         return result
@@ -248,12 +257,10 @@ class AtlasQuery:
                 continue
             yield self._reconstruct_single_space_anndata(pl.from_arrow(batch), pf)
 
-    # REVIEW: We shouldn't default the feature_space and layer here.
-    # Should be more similar to `to_multimodal_dataset`
     def to_cell_dataset(
         self,
-        feature_space: str = "gene_expression",
-        layer: str = "counts",
+        feature_space: str,
+        layer: str,
         metadata_columns: list[str] | None = None,
     ) -> "CellDataset":
         """Create a CellDataset for fast ML training iteration.
@@ -363,9 +370,6 @@ class AtlasQuery:
             wanted_globals=wanted_globals,
         )
 
-    # REVIEW: We should probably remove this convenience method and instead
-    # make a similar function in `dataloader.py` that accepts a CellDataset
-    # or MultimodalCellDataset and a CellSampler
     # -- Reconstruction internals -------------------------------------------
 
     def _reconstruct_single_space_anndata(

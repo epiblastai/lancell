@@ -136,24 +136,68 @@ class DatasetRecord(LanceModel):
 
 
 class DatasetVar(LanceModel):
-    """Per-feature-per-dataset index row for the _dataset_vars table.
+    """Per-feature-per-dataset index row for the ``_dataset_vars`` table.
 
-    # REVIEW: Write a proper docstring instead of just using comments for the fields.
+    Each row maps a single feature within a single dataset to its local
+    position in the zarr group and its global position in the feature
+    registry.  The table is FTS-indexed on ``feature_uid`` and
+    ``dataset_uid`` to support fast feature-to-dataset and
+    dataset-to-feature lookups.
+
+    Parameters
+    ----------
+    feature_uid:
+        Global feature UID (FTS indexed for feature-to-dataset lookups).
+    dataset_uid:
+        Dataset record UID (FTS indexed for dataset-to-feature and remap lookups).
+    local_index:
+        0-based position of the feature within the zarr group (used as sort key for remaps).
+    global_index:
+        Position in the global feature registry. Denormalized from the registry and
+        kept in sync by ``sync_dataset_vars_global_index``.
+    csc_start:
+        Start offset in the CSC data arrays (sparse feature spaces only; populated by ``add_csc``).
+    csc_end:
+        End offset in the CSC data arrays (sparse feature spaces only; populated by ``add_csc``).
     """
 
-    feature_uid: str  # global_feature_uid (FTS indexed — feature→datasets lookup)
-    dataset_uid: str  # DatasetRecord.uid (FTS indexed — dataset→features / remap lookup)
-    local_index: int  # 0-based position within the zarr group (sort key for remap)
-    global_index: int  # denormalized from registry; updated by sync_dataset_vars_global_index
-    csc_start: int | None = None  # sparse only; populated by add_csc
-    csc_end: int | None = None  # sparse only; populated by add_csc
+    feature_uid: str
+    dataset_uid: str
+    local_index: int
+    global_index: int
+    csc_start: int | None = None
+    csc_end: int | None = None
 
 
 class AtlasVersionRecord(LanceModel):
-    """
-    One row per atlas snapshot created by RaggedAtlas.snapshot().
+    """One row per atlas snapshot created by ``RaggedAtlas.snapshot()``.
 
-    REVIEW: Write a proper docstring
+    Captures the Lance table versions for every table in the atlas at the
+    time of the snapshot, enabling reproducible point-in-time queries via
+    ``RaggedAtlas.checkout(version)``.
+
+    Parameters
+    ----------
+    version:
+        Monotonically increasing snapshot version number.
+    cell_table_name:
+        Name of the cells Lance table.
+    cell_table_version:
+        Lance version of the cells table at snapshot time.
+    dataset_table_name:
+        Name of the datasets Lance table.
+    dataset_table_version:
+        Lance version of the datasets table at snapshot time.
+    registry_table_names:
+        JSON-encoded mapping of ``{feature_space: table_name}`` for feature registries.
+    registry_table_versions:
+        JSON-encoded mapping of ``{feature_space: version_int}`` for feature registries.
+    dataset_vars_table_version:
+        Lance version of the ``_dataset_vars`` table at snapshot time.
+    total_cells:
+        Total number of cells across all datasets at snapshot time.
+    created_at:
+        ISO-8601 UTC timestamp of when the snapshot was created.
     """
 
     version: int
@@ -161,8 +205,8 @@ class AtlasVersionRecord(LanceModel):
     cell_table_version: int
     dataset_table_name: str
     dataset_table_version: int
-    registry_table_names: str  # JSON: {"feature_space": "table_name", ...}
-    registry_table_versions: str  # JSON: {"feature_space": version_int, ...}
+    registry_table_names: str
+    registry_table_versions: str
     dataset_vars_table_version: int
     total_cells: int
     created_at: str = Field(

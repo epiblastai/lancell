@@ -178,6 +178,7 @@ class GenomicFeatureSchema(LanceModel):
     contains sub-gene resolution features (e.g., isoforms). To collapse
     back to gene-level, group by `ensembl_gene_id` and aggregate (e.g., sum).
     """
+
     uid: str = Field(default_factory=make_uid)
 
     # The canonical gene this feature maps to, if applicable
@@ -209,6 +210,7 @@ class GenomicFeatureSchema(LanceModel):
 
 class SmallMoleculeSchema(LanceModel):
     """Small molecule data, either perturbations or features in themselves."""
+
     # Primary key
     uid: str = Field(default_factory=make_uid)
 
@@ -230,7 +232,9 @@ class SmallMoleculeSchema(LanceModel):
     @model_validator(mode="after")
     def validate_identifiers(self) -> Self:
         if not any([self.smiles, self.pubchem_cid, self.iupac_name, self.name]):
-            raise ValueError("At least one identifier (smiles, pubchem_cid, iupac_name, name) must be provided")
+            raise ValueError(
+                "At least one identifier (smiles, pubchem_cid, iupac_name, name) must be provided"
+            )
         return self
 
 
@@ -274,6 +278,7 @@ class GeneticPerturbationSchema(LanceModel):
     The assignment of perturbations to cells (obs) is a separate
     relationship and should not be stored here.
     """
+
     uid: str = Field(default_factory=make_uid)
 
     # Reagent type
@@ -321,6 +326,7 @@ class BiologicPerturbationSchema(LanceModel):
     Biologic perturbations are identified by the agent's name and, where
     possible, a UniProt accession for the protein involved.
     """
+
     uid: str = Field(default_factory=make_uid)
 
     # Biologic identity
@@ -467,7 +473,9 @@ class CellIndex(LanceModel):
     def generate_perturbation_search_tokens(record: Self) -> str:
         """Build perturbation search tokens from a record's perturbation fields."""
         tokens: list[str] = []
-        for uid, ptype in zip(record.perturbation_uids or [], record.perturbation_types or [], strict=False):
+        for uid, ptype in zip(
+            record.perturbation_uids or [], record.perturbation_types or [], strict=False
+        ):
             if ptype == PerturbationType.SMALL_MOLECULE:
                 tokens.append(f"SM:{uid}")
             elif ptype == PerturbationType.GENETIC_PERTURBATION:
@@ -483,19 +491,20 @@ class DatasetPerturbationIndex(LanceModel):
     Built at ingestion time. Enables queries like 'find all datasets
     where TP53 was perturbed' without scanning CellIndex.
     """
+
     dataset_uid: str
     perturbation_uid: str
     perturbation_type: PerturbationType
 
     # Denormalized for search convenience — avoids a join to the
     # perturbation tables for the most common query patterns
-    intended_gene_name: str | None = None     # for genetic
-    compound_name: str | None = None          # for small molecule
-    agent_name: str | None = None             # for biologic
+    intended_gene_name: str | None = None  # for genetic
+    compound_name: str | None = None  # for small molecule
+    agent_name: str | None = None  # for biologic
 
     # Summary stats
-    cell_count: int | None = None             # how many cells got this perturbation
-    control_cell_count: int | None = None     # how many matched controls
+    cell_count: int | None = None  # how many cells got this perturbation
+    control_cell_count: int | None = None  # how many matched controls
 
     # Autofilled
     uid: str = ""

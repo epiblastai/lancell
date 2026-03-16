@@ -10,14 +10,12 @@ import lancedb
 import numpy as np
 import polars as pl
 
+from lancell._util import sql_escape
+
 if TYPE_CHECKING:
     import zarr
 
     from lancell.group_specs import ZarrGroupSpec
-
-
-def _sql_escape(s: str) -> str:
-    return s.replace("'", "''")
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +57,7 @@ def build_dataset_vars_df(
     feature_uids = var_df["global_feature_uid"].to_list()
     n = len(feature_uids)
 
-    uids_sql = ", ".join(f"'{_sql_escape(u)}'" for u in feature_uids)
+    uids_sql = ", ".join(f"'{sql_escape(u)}'" for u in feature_uids)
     registry_df = (
         registry_table.search()
         .where(f"uid IN ({uids_sql})", prefilter=True)
@@ -85,7 +83,7 @@ def build_dataset_vars_df(
 
     if missing:
         raise ValueError(
-            f"{len(missing)} uid(s) in var_df not found in registry. First 5: {missing[:5]}"
+            f"{len(missing)} uid(s) in var_df not found in registry. First 5: {sorted(missing)[:5]}"
         )
     if unindexed:
         raise ValueError(
@@ -117,7 +115,7 @@ def read_dataset_vars(
     """Read all DatasetVar rows for a dataset, sorted by local_index."""
     return (
         table.search()
-        .where(f"dataset_uid = '{_sql_escape(dataset_uid)}'", prefilter=True)
+        .where(f"dataset_uid = '{sql_escape(dataset_uid)}'", prefilter=True)
         .select(
             ["feature_uid", "dataset_uid", "local_index", "global_index", "csc_start", "csc_end"]
         )

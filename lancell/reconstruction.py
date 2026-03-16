@@ -1,6 +1,5 @@
 """Reconstruction helpers for building AnnData from atlas query results."""
 
-import asyncio
 import functools
 from typing import TYPE_CHECKING, Literal
 
@@ -9,15 +8,25 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import scipy.sparse as sp
-from zarr.core.sync import sync
 
-from lancell.batch_array import BatchAsyncArray
 from lancell.group_specs import ZarrGroupSpec
 from lancell.obs_alignment import PointerFieldInfo
 from lancell.protocols import Reconstructor
+from lancell.read import (
+    _apply_wanted_globals_remap,
+    _prepare_dense_cells,
+    _prepare_sparse_cells,
+    _read_dense_group,
+    _read_sparse_group,
+    _sync_gather,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from lancell.atlas import RaggedAtlas
+    from lancell.batch_array import BatchAsyncArray
+    from lancell.group_reader import GroupReader
 
 # Re-export for downstream convenience
 __all__ = [
@@ -32,46 +41,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _prepare_sparse_cells(
-    cells_pl: pl.DataFrame,
-    pf: PointerFieldInfo,
-) -> tuple[pl.DataFrame, list[str]]:
-    """Unnest sparse pointer struct, filter empty, return (filtered_df, unique_groups).
-
-    Adds internal columns ``_zg``, ``_start``, ``_end``, ``_zarr_row``.
-    """
-    col = pf.field_name
-    struct_df = cells_pl[col].struct.unnest()
-    cells_pl = cells_pl.with_columns(
-        struct_df["zarr_group"].alias("_zg"),
-        struct_df["start"].alias("_start"),
-        struct_df["end"].alias("_end"),
-        struct_df["zarr_row"].alias("_zarr_row"),
-    )
-    cells_pl = cells_pl.filter(pl.col("_zg") != "")
-    groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
-    return cells_pl, groups
-
-
-def _prepare_dense_cells(
-    cells_pl: pl.DataFrame,
-    pf: PointerFieldInfo,
-) -> tuple[pl.DataFrame, list[str]]:
-    """Unnest dense pointer struct, filter empty, return (filtered_df, unique_groups).
-
-    Adds internal columns ``_zg``, ``_pos``.
-    """
-    col = pf.field_name
-    struct_df = cells_pl[col].struct.unnest()
-    cells_pl = cells_pl.with_columns(
-        struct_df["zarr_group"].alias("_zg"),
-        struct_df["position"].alias("_pos"),
-    )
-    cells_pl = cells_pl.filter(pl.col("_zg") != "")
-    groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
-    return cells_pl, groups
 
 
 def _load_remaps_and_features(
@@ -159,27 +128,6 @@ def _build_feature_space(
     return joined_globals, group_remap_to_joined
 
 
-def _apply_wanted_globals_remap(remap: np.ndarray, wanted_globals: np.ndarray) -> np.ndarray:
-    """Map local feature indices to positions in wanted_globals; -1 if absent.
-
-    Parameters
-    ----------
-    remap:
-        Array where remap[local_i] = global_index.
-    wanted_globals:
-        Sorted int32 array of desired global indices.
-
-    Returns
-    -------
-    np.ndarray
-        int32 array; result[local_i] = position in wanted_globals, or -1.
-    """
-    positions = np.searchsorted(wanted_globals, remap).astype(np.int32)
-    mask = np.isin(remap, wanted_globals)
-    positions[~mask] = -1
-    return positions
-
-
 def _build_obs_df(cells_pl: pl.DataFrame) -> pd.DataFrame:
     """Build an obs DataFrame from query results, excluding pointer/internal columns."""
     # Drop struct columns (pointer fields) and internal helper columns
@@ -205,7 +153,9 @@ def _get_pointer_columns(cells_pl: pl.DataFrame) -> list[str]:
 
 def _build_obs_only_anndata(cells_pl: pl.DataFrame) -> ad.AnnData:
     """Build an AnnData with only obs, no X."""
-    keep_cols = [c for c in cells_pl.columns if cells_pl[c].dtype != pl.Struct]
+    keep_cols = [
+        c for c in cells_pl.columns if cells_pl[c].dtype != pl.Struct and not c.startswith("_")
+    ]
     obs = cells_pl.select(keep_cols).to_pandas()
     if "uid" in obs.columns:
         obs = obs.set_index("uid")
@@ -241,33 +191,40 @@ def _build_var(
     return var
 
 
-# ---------------------------------------------------------------------------
-# Async read helpers
-# ---------------------------------------------------------------------------
+def _resolve_layers(
+    spec: ZarrGroupSpec,
+    layer_overrides: list[str] | None,
+    feature_space: str,
+) -> list[str]:
+    """Return the list of layers to read, from overrides or the spec default."""
+    if layer_overrides is not None:
+        return layer_overrides
+    layers = list(spec.required_layers)
+    if not layers:
+        raise ValueError(
+            f"No layers specified and spec for '{feature_space}' has no required layers"
+        )
+    return layers
 
 
-async def _read_sparse_group(
-    index_reader: "BatchAsyncArray",
-    layer_readers: "list[BatchAsyncArray]",
-    starts: np.ndarray,
-    ends: np.ndarray,
-) -> tuple[tuple[np.ndarray, np.ndarray], list[tuple[np.ndarray, np.ndarray]]]:
-    """Read index array and layer arrays concurrently for one zarr group."""
-    coros = [index_reader.read_ranges(starts, ends)]
-    coros.extend(r.read_ranges(starts, ends) for r in layer_readers)
+def _assemble_anndata(
+    atlas: "RaggedAtlas",
+    feature_space: str,
+    joined_globals: np.ndarray,
+    obs_parts: list[pl.DataFrame],
+    layers_to_read: list[str],
+    stacked: dict[str, "sp.csr_matrix | np.ndarray"],
+) -> ad.AnnData:
+    """Build final AnnData from stacked layer data, obs parts, and registry."""
+    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
+    obs = _build_obs_df(obs_pl)
+    var = _build_var(atlas, feature_space, joined_globals)
 
-    results = await asyncio.gather(*coros)
-    return results[0], list(results[1:])
+    first_layer = layers_to_read[0]
+    X = stacked.get(first_layer)
+    extra_layers = {ln: stacked[ln] for ln in layers_to_read[1:] if ln in stacked}
 
-
-async def _read_dense_group(
-    readers: "list[BatchAsyncArray]",
-    starts: np.ndarray,
-    ends: np.ndarray,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Read all dense arrays concurrently for one zarr group."""
-    coros = [r.read_ranges(starts, ends) for r in readers]
-    return list(await asyncio.gather(*coros))
+    return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
 
 
 # ---------------------------------------------------------------------------
@@ -288,15 +245,49 @@ class SparseCSRReconstructor:
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        """Reconstruct an AnnData object from sparse CSR zarr groups.
+
+        Reads index and layer arrays across one or more zarr groups,
+        remaps per-group local feature indices to a joined global feature
+        space, and assembles the result into an AnnData with sparse CSR
+        matrices.
+
+        When *wanted_globals* is provided and the number of requested
+        cells is small relative to the feature count, automatically
+        delegates to :class:`FeatureCSCReconstructor` for more efficient
+        column-oriented reads.
+
+        Parameters
+        ----------
+        atlas:
+            The atlas to read from.
+        cells_pl:
+            Polars DataFrame of cell rows (must include zarr pointer columns).
+        pf:
+            Pointer field info describing the feature space and zarr layout.
+        spec:
+            Zarr group spec for the feature space.
+        layer_overrides:
+            Explicit list of layers to read. Defaults to the spec's required layers.
+        feature_join:
+            How to combine features across groups: ``"union"`` (all features)
+            or ``"intersection"`` (only shared features).
+        wanted_globals:
+            If provided, pin the output feature space to these global indices.
+            Overrides *feature_join*.
+        """
         if wanted_globals is not None:
             if feature_join != "union":
                 raise ValueError(
                     "feature_join has no effect when wanted_globals is provided; "
                     "the feature space is pinned to the requested globals."
                 )
-            return FeatureCSCReconstructor().as_anndata(
-                atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
-            )
+            # CSC is optimized for few features / many cells (column-oriented reads);
+            # delegate when cells outnumber wanted features
+            if len(cells_pl) > len(wanted_globals):
+                return FeatureCSCReconstructor().as_anndata(
+                    atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
+                )
 
         # Determine index array name from spec's required_arrays
         if len(spec.required_arrays) != 1:
@@ -315,16 +306,10 @@ class SparseCSRReconstructor:
         _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
+        if n_features == 0:
+            return _build_obs_only_anndata(cells_pl_original)
 
-        # Determine which layers to read
-        if layer_overrides is not None:
-            layers_to_read = layer_overrides
-        else:
-            layers_to_read = list(spec.required_layers)
-            if not layers_to_read:
-                raise ValueError(
-                    f"No layers specified and spec for '{pf.feature_space}' has no required layers"
-                )
+        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
 
         # Prepare per-group cell data and pre-create readers (must happen
         # outside the async context to avoid nested sync() calls)
@@ -341,15 +326,12 @@ class SparseCSRReconstructor:
             group_data.append((zg, group_cells, starts, ends, idx_reader, lyr_readers))
 
         # Dispatch all groups concurrently
-        async def _read_all():
-            return await asyncio.gather(
-                *[
-                    _read_sparse_group(idx_reader, lyr_readers, starts, ends)
-                    for _, _, starts, ends, idx_reader, lyr_readers in group_data
-                ]
-            )
-
-        all_results = sync(_read_all())
+        all_results = _sync_gather(
+            [
+                _read_sparse_group(idx_reader, lyr_readers, starts, ends)
+                for _, _, starts, ends, idx_reader, lyr_readers in group_data
+            ]
+        )
 
         # Assemble CSRs
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
@@ -402,19 +384,9 @@ class SparseCSRReconstructor:
             if csr_list:
                 stacked[ln] = sp.vstack(csr_list, format="csr")
 
-        # Build obs
-        obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl)
-
-        # Build var from registry
-        var = _build_var(atlas, pf.feature_space, joined_globals)
-
-        # First layer becomes X, rest go to layers
-        first_layer = layers_to_read[0]
-        X = stacked.get(first_layer)
-        extra_layers = {ln: stacked[ln] for ln in layers_to_read[1:] if ln in stacked}
-
-        return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
+        return _assemble_anndata(
+            atlas, pf.feature_space, joined_globals, obs_parts, layers_to_read, stacked
+        )
 
 
 class DenseReconstructor:
@@ -438,12 +410,12 @@ class DenseReconstructor:
         _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
+        if n_features == 0:
+            return _build_obs_only_anndata(cells_pl_original)
 
-        # Determine which layers to read
-        if layer_overrides is not None:
-            layers_to_read = layer_overrides
-        else:
-            layers_to_read = list(spec.required_layers)
+        layers_to_read = (
+            layer_overrides if layer_overrides is not None else list(spec.required_layers)
+        )
 
         # Resolve array names: "layers/{ln}" for layered specs, "data" for plain
         array_names = [f"layers/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
@@ -470,15 +442,12 @@ class DenseReconstructor:
             offset += len(positions)
 
         # Dispatch all groups concurrently
-        async def _read_all():
-            return await asyncio.gather(
-                *[
-                    _read_dense_group(readers, starts, ends)
-                    for _, _, starts, ends, _, readers in group_data
-                ]
-            )
-
-        all_results = sync(_read_all())
+        all_results = _sync_gather(
+            [
+                _read_dense_group(readers, starts, ends)
+                for _, _, starts, ends, _, readers in group_data
+            ]
+        )
 
         # Assemble into pre-allocated arrays
         obs_parts: list[pl.DataFrame] = []
@@ -510,16 +479,164 @@ class DenseReconstructor:
 
             obs_parts.append(group_cells)
 
-        obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl)
-        var = _build_var(atlas, pf.feature_space, joined_globals)
+        return _assemble_anndata(
+            atlas, pf.feature_space, joined_globals, obs_parts, output_keys, all_layers
+        )
 
-        # First layer/array -> X, rest -> adata.layers
-        first_key = output_keys[0]
-        X = all_layers[first_key]
-        extra_layers = {k: all_layers[k] for k in output_keys[1:]}
 
-        return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
+def _prepare_csc_group(
+    gr: "GroupReader",
+    group_cells: pl.DataFrame,
+    wanted_globals: np.ndarray,
+    layers_to_read: list[str],
+) -> tuple[dict, "Coroutine"]:
+    """Prepare CSC read coroutine and metadata for one group.
+
+    Resolves which wanted features exist locally, looks up CSC byte ranges
+    from ``var_df``, builds ``zr_to_rank`` lookup, and creates readers.
+    Returns ``(group_info_dict, read_coroutine)``.
+    """
+    remap = gr.get_remap()
+
+    # Build global_index -> local_index inverse map (vectorized)
+    sort_order = np.argsort(remap)
+    sorted_remap = remap[sort_order]
+
+    positions = np.searchsorted(sorted_remap, wanted_globals)
+    in_range = positions < len(sorted_remap)
+    clipped = np.where(in_range, positions, 0)
+    matched = in_range & (sorted_remap[clipped] == wanted_globals)
+    local_indices = np.where(matched, sort_order[clipped], -1).astype(np.int64)
+
+    # Vectorized CSC range lookup: index numpy arrays instead of per-row dict calls
+    valid_mask = local_indices >= 0
+    valid_local = local_indices[valid_mask]
+    valid_col_indices = np.where(valid_mask)[0]
+
+    var_df = gr.var_df
+    csc_start_arr = var_df["csc_start"].to_numpy()
+    csc_end_arr = var_df["csc_end"].to_numpy()
+
+    starts = csc_start_arr[valid_local].astype(np.int64)
+    ends = csc_end_arr[valid_local].astype(np.int64)
+    feat_col_indices = valid_col_indices.tolist()
+
+    # Build zarr_row -> rank-within-group lookup (vectorized)
+    zarr_rows_arr = group_cells["_zarr_row"].to_numpy().astype(np.int64)
+    max_zr = int(zarr_rows_arr.max()) + 1 if len(zarr_rows_arr) > 0 else 0
+    zr_to_rank = np.full(max_zr, -1, dtype=np.int64)
+    zr_to_rank[zarr_rows_arr] = np.arange(len(zarr_rows_arr), dtype=np.int64)
+
+    idx_reader = gr.get_array_reader("csc/indices")
+    lyr_readers = [gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read]
+    coro = _read_sparse_group(idx_reader, lyr_readers, starts, ends)
+
+    info = {
+        "mode": "csc",
+        "group_cells": group_cells,
+        "feat_col_indices": feat_col_indices,
+        "zr_to_rank": zr_to_rank,
+    }
+    return info, coro
+
+
+def _assemble_csc_coo_entries(
+    flat_indices: np.ndarray,
+    lengths: np.ndarray,
+    layer_results: list[tuple[np.ndarray, np.ndarray]],
+    feat_col_indices: list[int],
+    zr_to_rank: np.ndarray,
+    cell_offset: int,
+    layers_to_read: list[str],
+) -> tuple[list[np.ndarray], list[np.ndarray], dict[str, list[np.ndarray]]]:
+    """Filter CSC read results to only queried cells, produce COO components."""
+    rows_parts: list[np.ndarray] = []
+    cols_parts: list[np.ndarray] = []
+    layer_vals_parts: dict[str, list[np.ndarray]] = {ln: [] for ln in layers_to_read}
+
+    offset = 0
+    for length, col_idx in zip(lengths, feat_col_indices, strict=True):
+        if length == 0:
+            offset += length
+            continue
+        zr_seg = flat_indices[offset : offset + length].astype(np.int64)
+        # Two-step: numpy & doesn't short-circuit, so indexing zr_to_rank
+        # with out-of-bounds zr_seg values would raise even if the bounds
+        # mask would have excluded them.
+        in_bounds = zr_seg < len(zr_to_rank)
+        valid_mask = in_bounds.copy()
+        valid_mask[in_bounds] = zr_to_rank[zr_seg[in_bounds]] >= 0
+        kept_zr = zr_seg[valid_mask]
+        if len(kept_zr) > 0:
+            ranks = zr_to_rank[kept_zr]
+            rows_parts.append((cell_offset + ranks).astype(np.int64))
+            cols_parts.append(np.full(len(kept_zr), col_idx, dtype=np.int64))
+            for ln_i, ln in enumerate(layers_to_read):
+                flat_vals, _ = layer_results[ln_i]
+                val_seg = flat_vals[offset : offset + length]
+                layer_vals_parts[ln].append(val_seg[valid_mask])
+        offset += length
+
+    return rows_parts, cols_parts, layer_vals_parts
+
+
+def _assemble_csr_fallback_coo_entries(
+    flat_indices: np.ndarray,
+    lengths: np.ndarray,
+    layer_results: list[tuple[np.ndarray, np.ndarray]],
+    joined_remap: np.ndarray | None,
+    n_cells_group: int,
+    cell_offset: int,
+    layers_to_read: list[str],
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Remap CSR local indices to joined-space positions, build COO entries for one group."""
+    if joined_remap is not None:
+        joined_indices = joined_remap[flat_indices.astype(np.intp)]
+        keep_mask = joined_indices >= 0
+        joined_indices_kept = joined_indices[keep_mask]
+    else:
+        keep_mask = None
+        joined_indices_kept = flat_indices.astype(np.int64)
+
+    if keep_mask is not None:
+        cell_ids = np.repeat(np.arange(n_cells_group, dtype=np.int64), lengths)
+        lengths_filtered = np.bincount(cell_ids[keep_mask], minlength=n_cells_group).astype(
+            np.int64
+        )
+    else:
+        lengths_filtered = lengths
+
+    cell_local_ids = np.repeat(np.arange(n_cells_group, dtype=np.int64), lengths_filtered)
+    rows = cell_offset + cell_local_ids
+    cols = joined_indices_kept.astype(np.int64)
+
+    layer_vals: dict[str, np.ndarray] = {}
+    for ln_i, ln in enumerate(layers_to_read):
+        flat_vals, _ = layer_results[ln_i]
+        layer_vals[ln] = flat_vals[keep_mask] if keep_mask is not None else flat_vals
+
+    return rows, cols, layer_vals
+
+
+def _build_coo_to_csr(
+    rows_parts: list[np.ndarray],
+    cols_parts: list[np.ndarray],
+    layer_vals_parts: dict[str, list[np.ndarray]],
+    n_total_cells: int,
+    n_features: int,
+    layers_to_read: list[str],
+) -> dict[str, sp.csr_matrix]:
+    """Concatenate accumulated COO parts and convert to per-layer CSR matrices."""
+    rows = np.concatenate(rows_parts) if rows_parts else np.array([], dtype=np.int64)
+    cols = np.concatenate(cols_parts) if cols_parts else np.array([], dtype=np.int64)
+
+    stacked: dict[str, sp.csr_matrix] = {}
+    for ln in layers_to_read:
+        vals_list = layer_vals_parts[ln]
+        vals = np.concatenate(vals_list) if vals_list else np.array([], dtype=np.float32)
+        stacked[ln] = sp.coo_matrix((vals, (rows, cols)), shape=(n_total_cells, n_features)).tocsr()
+
+    return stacked
 
 
 class FeatureCSCReconstructor:
@@ -556,7 +673,7 @@ class FeatureCSCReconstructor:
             raise NotImplementedError(
                 f"CSC reconstruction for '{pf.feature_space}' requires exactly one primary array"
             )
-        csr_index_name = spec.required_arrays[0].array_name  # e.g. "csr/indices"
+        csr_index_name = spec.required_arrays[0].array_name
 
         cells_pl_original = cells_pl
         cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
@@ -564,17 +681,13 @@ class FeatureCSCReconstructor:
             return _build_obs_only_anndata(cells_pl_original)
 
         n_features = len(wanted_globals)
-        layers_to_read = (
-            layer_overrides if layer_overrides is not None else list(spec.required_layers)
-        )
-        if not layers_to_read:
-            raise ValueError(f"No layers specified for feature space '{pf.feature_space}'")
+        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
 
         _, _, group_remap_to_joined, _ = _load_remaps_and_features(
             atlas, groups, spec, "intersection", wanted_globals
         )
 
-        # Per-group preparation: one read coroutine per group (CSC or CSR)
+        # Per-group preparation: one read coroutine per group (CSC or CSR fallback)
         group_info: list[dict] = []
         read_coroutines = []
 
@@ -583,76 +696,18 @@ class FeatureCSCReconstructor:
             gr = atlas._get_group_reader(zg, spec.feature_space)
 
             if gr.has_csc:
-                var_df = gr.var_df
-                remap = gr.get_remap()
-
-                # Build global_index -> local_index inverse map (vectorized)
-                sort_order = np.argsort(remap)  # local indices ordered by global index
-                sorted_remap = remap[sort_order]  # global indices in sorted order
-
-                # For each wanted global, find its position in the sorted remap
-                positions = np.searchsorted(sorted_remap, wanted_globals)
-                in_range = positions < len(sorted_remap)
-                clipped = np.where(in_range, positions, 0)
-                matched = in_range & (sorted_remap[clipped] == wanted_globals)
-                local_indices = np.where(matched, sort_order[clipped], -1).astype(np.int64)
-
-                # Find CSC ranges for each wanted global feature present in this group
-                csc_starts_list: list[int] = []
-                csc_ends_list: list[int] = []
-                feat_col_indices: list[int] = []
-
-                for col_idx in range(len(wanted_globals)):
-                    local_f = int(local_indices[col_idx])
-                    if local_f == -1:
-                        continue
-                    row = var_df.row(local_f, named=True)
-                    cs = row.get("csc_start")
-                    ce = row.get("csc_end")
-                    if cs is None or ce is None:
-                        continue
-                    csc_starts_list.append(int(cs))
-                    csc_ends_list.append(int(ce))
-                    feat_col_indices.append(col_idx)
-
-                # Build zarr_row -> rank-within-group lookup (vectorized)
-                zarr_rows_arr = group_cells["_zarr_row"].to_numpy().astype(np.int64)
-                max_zr = int(zarr_rows_arr.max()) + 1 if len(zarr_rows_arr) > 0 else 0
-                zr_to_rank = np.full(max_zr, -1, dtype=np.int64)
-                zr_to_rank[zarr_rows_arr] = np.arange(len(zarr_rows_arr), dtype=np.int64)
-
-                starts = np.array(csc_starts_list, dtype=np.int64)
-                ends = np.array(csc_ends_list, dtype=np.int64)
-                idx_reader = gr.get_array_reader("csc/indices")
-                lyr_readers = [gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read]
-                read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
-                group_info.append(
-                    {
-                        "mode": "csc",
-                        "group_cells": group_cells,
-                        "feat_col_indices": feat_col_indices,
-                        "zr_to_rank": zr_to_rank,
-                    }
-                )
-
+                info, coro = _prepare_csc_group(gr, group_cells, wanted_globals, layers_to_read)
+                group_info.append(info)
+                read_coroutines.append(coro)
             else:
                 starts = group_cells["_start"].to_numpy().astype(np.int64)
                 ends = group_cells["_end"].to_numpy().astype(np.int64)
                 idx_reader = gr.get_array_reader(csr_index_name)
                 lyr_readers = [gr.get_array_reader(f"csr/layers/{ln}") for ln in layers_to_read]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
-                group_info.append(
-                    {
-                        "mode": "csr",
-                        "group_cells": group_cells,
-                        "zg": zg,
-                    }
-                )
+                group_info.append({"mode": "csr", "group_cells": group_cells, "zg": zg})
 
-        async def _read_all():
-            return await asyncio.gather(*read_coroutines)
-
-        all_results = sync(_read_all())
+        all_results = _sync_gather(read_coroutines)
 
         # Assemble COO entries across all groups
         rows_parts: list[np.ndarray] = []
@@ -667,84 +722,46 @@ class FeatureCSCReconstructor:
             flat_indices, lengths = idx_result
 
             if info["mode"] == "csc":
-                feat_col_indices = info["feat_col_indices"]
-                zr_to_rank = info["zr_to_rank"]
-
-                offset = 0
-                for length, col_idx in zip(lengths, feat_col_indices, strict=True):
-                    if length == 0:
-                        offset += length
-                        continue
-                    zr_seg = flat_indices[offset : offset + length].astype(np.int64)
-                    # Two-step: numpy & doesn't short-circuit, so indexing zr_to_rank
-                    # with out-of-bounds zr_seg values would raise even if the bounds
-                    # mask would have excluded them.
-                    in_bounds = zr_seg < len(zr_to_rank)
-                    valid_mask = in_bounds.copy()
-                    valid_mask[in_bounds] = zr_to_rank[zr_seg[in_bounds]] >= 0
-                    kept_zr = zr_seg[valid_mask]
-                    if len(kept_zr) > 0:
-                        ranks = zr_to_rank[kept_zr]
-                        rows_parts.append((cell_offset + ranks).astype(np.int64))
-                        cols_parts.append(np.full(len(kept_zr), col_idx, dtype=np.int64))
-                        for ln_i, ln in enumerate(layers_to_read):
-                            flat_vals, _ = layer_results[ln_i]
-                            val_seg = flat_vals[offset : offset + length]
-                            layer_vals_parts[ln].append(val_seg[valid_mask])
-                    offset += length
-
-            else:
-                zg = info["zg"]
-                joined_remap = group_remap_to_joined.get(zg)
-                if joined_remap is not None:
-                    joined_indices = joined_remap[flat_indices.astype(np.intp)]
-                    keep_mask = joined_indices >= 0
-                    joined_indices_kept = joined_indices[keep_mask]
-                else:
-                    keep_mask = None
-                    joined_indices_kept = flat_indices.astype(np.int64)
-
-                if keep_mask is not None:
-                    cell_ids = np.repeat(np.arange(n_cells_group, dtype=np.int64), lengths)
-                    lengths_filtered = np.bincount(
-                        cell_ids[keep_mask], minlength=n_cells_group
-                    ).astype(np.int64)
-                else:
-                    lengths_filtered = lengths
-
-                cell_local_ids = np.repeat(
-                    np.arange(n_cells_group, dtype=np.int64), lengths_filtered
+                r, c, lv = _assemble_csc_coo_entries(
+                    flat_indices,
+                    lengths,
+                    layer_results,
+                    info["feat_col_indices"],
+                    info["zr_to_rank"],
+                    cell_offset,
+                    layers_to_read,
                 )
-                rows_parts.append(cell_offset + cell_local_ids)
-                cols_parts.append(joined_indices_kept.astype(np.int64))
-                for ln_i, ln in enumerate(layers_to_read):
-                    flat_vals, _ = layer_results[ln_i]
-                    layer_vals_parts[ln].append(
-                        flat_vals[keep_mask] if keep_mask is not None else flat_vals
-                    )
+                rows_parts.extend(r)
+                cols_parts.extend(c)
+                for ln in layers_to_read:
+                    layer_vals_parts[ln].extend(lv[ln])
+            else:
+                r, c, lv = _assemble_csr_fallback_coo_entries(
+                    flat_indices,
+                    lengths,
+                    layer_results,
+                    group_remap_to_joined.get(info["zg"]),
+                    n_cells_group,
+                    cell_offset,
+                    layers_to_read,
+                )
+                rows_parts.append(r)
+                cols_parts.append(c)
+                for ln in layers_to_read:
+                    layer_vals_parts[ln].append(lv[ln])
 
             obs_parts.append(group_cells)
             cell_offset += n_cells_group
 
-        n_total_cells = cell_offset
+        stacked = _build_coo_to_csr(
+            rows_parts,
+            cols_parts,
+            layer_vals_parts,
+            cell_offset,
+            n_features,
+            layers_to_read,
+        )
 
-        rows = np.concatenate(rows_parts) if rows_parts else np.array([], dtype=np.int64)
-        cols = np.concatenate(cols_parts) if cols_parts else np.array([], dtype=np.int64)
-
-        stacked: dict[str, sp.csr_matrix] = {}
-        for ln in layers_to_read:
-            vals_list = layer_vals_parts[ln]
-            vals = np.concatenate(vals_list) if vals_list else np.array([], dtype=np.float32)
-            stacked[ln] = sp.coo_matrix(
-                (vals, (rows, cols)), shape=(n_total_cells, n_features)
-            ).tocsr()
-
-        obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl)
-        var = _build_var(atlas, pf.feature_space, wanted_globals)
-
-        first_layer = layers_to_read[0]
-        X = stacked.get(first_layer)
-        extra_layers = {ln: stacked[ln] for ln in layers_to_read[1:] if ln in stacked}
-
-        return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
+        return _assemble_anndata(
+            atlas, pf.feature_space, wanted_globals, obs_parts, layers_to_read, stacked
+        )

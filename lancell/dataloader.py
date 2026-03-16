@@ -12,7 +12,7 @@ multiprocessing.
 
 Usage::
 
-    dataset = atlas.query().to_cell_dataset(metadata_columns=["cell_type"])
+    dataset = atlas.query().to_cell_dataset("gene_expression", "counts", metadata_columns=["cell_type"])
     sampler = CellSampler(dataset.groups_np, batch_size=256,
                           shuffle=True, seed=42, num_workers=4)
 
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 from lancell.batch_array import BatchAsyncArray
 from lancell.group_reader import GroupReader
 from lancell.group_specs import PointerKind, get_spec
-from lancell.reconstruction import (
+from lancell.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_cells,
     _prepare_sparse_cells,
@@ -59,8 +59,8 @@ def _extract_metadata_arrays(
 
 def _build_groups_np(zg_series: pl.Series, groups: list[str]) -> np.ndarray:
     """Map group-name strings to contiguous integer IDs (groups must be sorted)."""
-    group_to_id = {g: i for i, g in enumerate(groups)}
-    return np.array([group_to_id[v] for v in zg_series.to_list()], dtype=np.int32)
+    mapping = pl.DataFrame({"_zg": groups, "_gid": np.arange(len(groups), dtype=np.int32)})
+    return zg_series.to_frame("_zg").join(mapping, on="_zg", how="left")["_gid"].to_numpy()
 
 
 def _build_present_arrays(
@@ -116,13 +116,17 @@ def _build_sparse_modality_data(
     spec,
     fs: str,
     layer: str,
-    wanted_globals: "dict[str, np.ndarray] | None",
+    wanted_globals_for_fs: np.ndarray | None,
     n_cells: int,
-) -> "_ModalityData":
-    """Build ``_ModalityData`` for a sparse feature space modality."""
+) -> "tuple[pl.DataFrame, _ModalityData]":
+    """Build ``_ModalityData`` for a sparse feature space modality.
+
+    Returns ``(filtered_cells, modality_data)`` where *filtered_cells* is the
+    DataFrame after empty-cell removal (with internal columns added).
+    """
     if len(spec.required_arrays) != 1:
         raise NotImplementedError(
-            f"MultimodalCellDataset requires exactly 1 index array, "
+            f"Sparse modality requires exactly 1 index array, "
             f"got {len(spec.required_arrays)} for '{fs}'"
         )
     index_array_name = spec.required_arrays[0].array_name
@@ -142,7 +146,6 @@ def _build_sparse_modality_data(
         starts = np.array([], dtype=np.int64)
         ends = np.array([], dtype=np.int64)
 
-    wanted_globals_for_fs = wanted_globals.get(fs) if wanted_globals is not None else None
     group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
     n_features = (
@@ -156,7 +159,7 @@ def _build_sparse_modality_data(
         else np.dtype(np.float32)
     )
 
-    return _ModalityData(
+    mod_data = _ModalityData(
         kind=PointerKind.SPARSE,
         groups_np=groups_np,
         starts=starts,
@@ -170,6 +173,7 @@ def _build_sparse_modality_data(
         present_mask=present_mask,
         cell_positions=cell_positions,
     )
+    return filtered, mod_data
 
 
 def _build_dense_modality_data(
@@ -659,7 +663,6 @@ class CellDataset(_AsyncDataset):
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
     ) -> None:
-        # Resolve feature space
         pf = atlas._pointer_fields[feature_space]
         spec = get_spec(feature_space)
 
@@ -669,72 +672,24 @@ class CellDataset(_AsyncDataset):
                 f"got {spec.pointer_kind.value} for '{feature_space}'"
             )
 
-        if len(spec.required_arrays) != 1:
-            raise NotImplementedError(
-                f"CellDataset requires exactly 1 index array, "
-                f"got {len(spec.required_arrays)} for '{feature_space}'"
-            )
-        index_array_name = spec.required_arrays[0].array_name
-
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
         # Workers reconstruct the zarr root lazily from this store.
         self._store = atlas._store
 
-        # Unnest pointers and filter empty cells
-        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
-        groups = sorted(groups)  # Deterministic group ordering
-
-        self._n_cells = cells_pl.height
-        self.cells_pl = cells_pl
-
-        if self._n_cells == 0:
-            self._mod_data = _ModalityData(
-                kind=PointerKind.SPARSE,
-                groups_np=np.array([], dtype=np.int32),
-                starts=np.array([], dtype=np.int64),
-                ends=np.array([], dtype=np.int64),
-                unique_groups=[],
-                group_readers={},
-                n_features=len(wanted_globals) if wanted_globals is not None else 0,
-                index_array_name=index_array_name,
-                layer=layer,
-                layer_dtype=np.dtype(np.float32),
-            )
-            self._metadata_arrays: dict[str, np.ndarray] | None = None
-        else:
-            # Map group strings to integer ids for fast numpy operations
-            groups_np = _build_groups_np(cells_pl["_zg"], groups)
-            starts = cells_pl["_start"].to_numpy().astype(np.int64)
-            ends = cells_pl["_end"].to_numpy().astype(np.int64)
-
-            # Per-group: load remap (local->global), wrap in GroupReader for workers
-            group_readers = _build_sparse_group_readers(
-                atlas, groups, feature_space, wanted_globals
-            )
-
-            # Global feature count from registry (stable across batches/epochs)
-            if wanted_globals is not None:
-                n_features = len(wanted_globals)
-            else:
-                n_features = atlas._registry_tables[feature_space].count_rows()
-
-            # Layer dtype from first group reader
-            first_gr = group_readers[groups[0]]
-            layer_dtype = first_gr.get_array_reader(f"csr/layers/{layer}")._native_dtype
-
-            self._mod_data = _ModalityData(
-                kind=PointerKind.SPARSE,
-                groups_np=groups_np,
-                starts=starts,
-                ends=ends,
-                unique_groups=groups,
-                group_readers=group_readers,
-                n_features=n_features,
-                index_array_name=index_array_name,
-                layer=layer,
-                layer_dtype=layer_dtype,
-            )
-            self._metadata_arrays = _extract_metadata_arrays(cells_pl, metadata_columns)
+        # Build modality data (filters empty cells, builds remaps & readers)
+        cells_indexed = cells_pl.with_row_index("_orig_idx")
+        self.cells_pl, self._mod_data = _build_sparse_modality_data(
+            atlas,
+            cells_indexed,
+            pf,
+            spec,
+            feature_space,
+            layer,
+            wanted_globals,
+            cells_pl.height,
+        )
+        self._n_cells = self.cells_pl.height
+        self._metadata_arrays = _extract_metadata_arrays(self.cells_pl, metadata_columns)
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -859,8 +814,9 @@ class MultimodalCellDataset(_AsyncDataset):
             layer = layers.get(fs, "counts")
 
             if spec.pointer_kind is PointerKind.SPARSE:
-                modality_data[fs] = _build_sparse_modality_data(
-                    atlas, cells_indexed, pf, spec, fs, layer, wanted_globals, self._n_cells
+                wg = wanted_globals.get(fs) if wanted_globals is not None else None
+                _, modality_data[fs] = _build_sparse_modality_data(
+                    atlas, cells_indexed, pf, spec, fs, layer, wg, self._n_cells
                 )
             else:
                 modality_data[fs] = _build_dense_modality_data(

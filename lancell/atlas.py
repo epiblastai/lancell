@@ -19,6 +19,7 @@ import obstore
 import polars as pl
 import zarr
 
+from lancell._util import sql_escape
 from lancell.dataset_vars import (
     build_dataset_vars_df,
     reindex_registry,
@@ -34,11 +35,6 @@ from lancell.schema import (
     FeatureBaseSchema,
     LancellBaseSchema,
 )
-
-
-def _sql_escape(s: str) -> str:
-    return s.replace("'", "''")
-
 
 # ---------------------------------------------------------------------------
 # RaggedAtlas
@@ -211,7 +207,7 @@ class RaggedAtlas:
             datasets_df = (
                 self._dataset_table.search()
                 .where(
-                    f"zarr_group = '{_sql_escape(zarr_group)}' AND feature_space = '{_sql_escape(feature_space)}'",
+                    f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
                     prefilter=True,
                 )
                 .select(["uid"])
@@ -467,7 +463,7 @@ class RaggedAtlas:
 
         datasets_df = (
             self._dataset_table.search()
-            .where(f"feature_space = '{_sql_escape(feature_space)}'", prefilter=True)
+            .where(f"feature_space = '{sql_escape(feature_space)}'", prefilter=True)
             .to_polars()
         )
 
