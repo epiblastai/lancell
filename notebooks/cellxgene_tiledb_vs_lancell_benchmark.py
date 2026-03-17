@@ -133,7 +133,10 @@ def _(os, time):
 
     LANCELL_DIR = "s3://epiblast-public/cellxgene_mouse_lancell/"
 
-    store = obstore.store.S3Store.from_url(os.path.join(LANCELL_DIR, "zarr_store"))
+    store = obstore.store.S3Store.from_url(
+        os.path.join(LANCELL_DIR, "zarr_store"),
+        config={"skip_signature": True, "region": "us-east-2"},
+    )
     _t0 = time.perf_counter()
     atlas = RaggedAtlas.checkout_latest(
         db_uri=os.path.join(LANCELL_DIR, "lance_db"),

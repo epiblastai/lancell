@@ -35,6 +35,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             manylinux: auto
+            extra-args: -i python3.12
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-14
@@ -47,7 +48,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --out dist ${{ matrix.extra-args || '' }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
 
       - uses: actions/upload-artifact@v4
@@ -70,6 +71,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   publish-pypi:
     name: Publish to PyPI

@@ -112,7 +112,10 @@ def _(obstore):
     ATLAS_DIR = "s3://epiblast-public/scbasecount_mini_lancell/"
 
     db_uri = ATLAS_DIR.rstrip("/") + "/lance_db"
-    store = obstore.store.S3Store.from_url(ATLAS_DIR.rstrip("/") + "/zarr_store")
+    store = obstore.store.S3Store.from_url(
+        ATLAS_DIR.rstrip("/") + "/zarr_store",
+        config={"skip_signature": True, "region": "us-east-2"},
+    )
     return db_uri, store
 
 
