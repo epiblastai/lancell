@@ -7,13 +7,13 @@ There are two distinct families:
 - **Cell schemas** — subclasses of `LancellBaseSchema`. One table per atlas; rows represent individual cells (or nuclei, spatial tiles, etc.).
 - **Feature schemas** — subclasses of `FeatureBaseSchema`. One table per feature space; rows represent features (genes, proteins, peaks, etc.) that have a stable identity across datasets.
 
-Beyond those two user-extensible families, lancell maintains several internal tables — `DatasetRecord`, `DatasetVar`, and `AtlasVersionRecord` — that you interact with indirectly during ingestion and versioning. All are described below.
+Beyond those two user-extensible families, lancell maintains several internal tables — `DatasetRecord`, `FeatureLayout`, and `AtlasVersionRecord` — that you interact with indirectly during ingestion and versioning. All are described below.
 
 ```python
 from lancell.schema import (
     LancellBaseSchema, FeatureBaseSchema,
     SparseZarrPointer, DenseZarrPointer,
-    DatasetRecord, DatasetVar, AtlasVersionRecord,
+    DatasetRecord, FeatureLayout, AtlasVersionRecord,
 )
 ```
 
@@ -244,6 +244,7 @@ The `uid` field carries the canonical identifier for the modality. For genes, us
 | `zarr_group` | `str` | Path to the zarr group within the object store. This is the same path stored in pointer fields on cell rows, so the two can be joined. |
 | `feature_space` | `str` | The registered feature space name for this group (e.g. `"gene_expression"`, `"protein_abundance"`). |
 | `n_cells` | `int` | Number of cells in the dataset. Recorded at ingest time; used by `validate()` when checking consistency between the cell table and the zarr arrays. |
+| `layout_uid` | `str` | Content-hash identifying the feature ordering for this dataset. Set by `add_or_reuse_layout()` during ingestion; empty string until that call completes. Used to join datasets against `_feature_layouts` rows. |
 | `created_at` | `str` | UTC ISO 8601 timestamp, set automatically at instantiation. |
 
 You construct a `DatasetRecord` explicitly when calling `add_from_anndata()` or the lower-level ingestion functions. If you need to attach provenance fields (source database accession, DOI, release date, etc.), subclass `DatasetRecord` and pass your subclass to `RaggedAtlas.create()` as the `dataset_schema` argument:
@@ -260,25 +261,23 @@ class CensusDatasetRecord(DatasetRecord):
 
 ---
 
-## `DatasetVar`
+## `FeatureLayout`
 
-`DatasetVar` is the inverted index that bridges the datasets table and the feature registries. One row is written per (feature, dataset) pair at ingestion time.
+`FeatureLayout` stores feature orderings shared across datasets. Each unique feature ordering is stored once as a "layout" identified by a content-hash `layout_uid`. Datasets with identical feature orderings reference the same layout, dramatically reducing row count.
 
 | Field | Type | Description |
 |---|---|---|
-| `feature_uid` | `str` | The `uid` from the feature registry. FTS-indexed for feature → datasets lookup. |
-| `dataset_uid` | `str` | The `uid` from `DatasetRecord`. FTS-indexed for dataset → features lookup. |
-| `local_index` | `int` | 0-based position of this feature in the dataset's zarr array (i.e. the column index stored in `csr/indices`). Used as the sort key when building the local→global remap for a dataset. |
+| `layout_uid` | `str` | Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. FTS-indexed for layout → features lookup. |
+| `feature_uid` | `str` | The `uid` from the feature registry. FTS-indexed for feature → layouts lookup. |
+| `local_index` | `int` | 0-based position of this feature in the layout's zarr array (i.e. the column index stored in `csr/indices`). Used as the sort key when building the local→global remap. |
 | `global_index` | `int` | Denormalized copy of the feature's `global_index` from the registry. Written by `optimize()` after `reindex_registry()` has run. Used as the scatter/gather key in the reconstruction hot path — no database lookup needed during training. |
-| `csc_start` | `int \| None` | Start position into `csc/indices` for this feature's column. Populated by `add_csc()`; null until then. |
-| `csc_end` | `int \| None` | End position into `csc/indices` for this feature's column. Populated by `add_csc()`; null until then. |
 
-The `_dataset_vars` table supports two query directions efficiently via FTS indexes on both `feature_uid` and `dataset_uid`:
+The `_feature_layouts` table supports two query directions efficiently via FTS indexes on both `feature_uid` and `layout_uid`:
 
-- **Feature → datasets**: given a feature `uid`, which datasets measured it? This drives queries like `find_datasets_with_features`.
-- **Dataset → features**: given a `dataset_uid`, reconstruct the full `local_index → global_index` remap array for vectorized scatter/gather during batch assembly.
+- **Feature → datasets**: given a feature `uid`, which layouts (and thus datasets) include it? This drives queries like `find_datasets_with_features`.
+- **Layout → features**: given a `layout_uid`, reconstruct the full `local_index → global_index` remap array for vectorized scatter/gather during batch assembly.
 
-`DatasetVar` rows are written by the ingestion layer and updated by `optimize()`. You will rarely construct or query them directly — they are an internal implementation detail of the reconstruction and sampling pipeline.
+`FeatureLayout` rows are written by the ingestion layer and updated by `optimize()`. You will rarely construct or query them directly — they are an internal implementation detail of the reconstruction and sampling pipeline. For the Python API that builds, queries, and validates layouts, see [Feature Layouts](feature_layouts.md).
 
 ---
 
@@ -295,7 +294,7 @@ The `_dataset_vars` table supports two query directions efficiently via FTS inde
 | `dataset_table_version` | `int` | Lance internal version number for the datasets table. |
 | `registry_table_names` | `str` | JSON object mapping feature space name to registry table name, e.g. `{"gene_expression": "gene_expression_registry"}`. |
 | `registry_table_versions` | `str` | JSON object mapping feature space name to the Lance version integer for that table. |
-| `dataset_vars_table_version` | `int` | Lance internal version for the `_dataset_vars` table. |
+| `feature_layouts_table_version` | `int` | Lance internal version for the `_feature_layouts` table. |
 | `total_cells` | `int` | Total cell count across all datasets at snapshot time. Written for quick inspection without opening the cell table. |
 | `created_at` | `str` | UTC ISO 8601 timestamp. |
 

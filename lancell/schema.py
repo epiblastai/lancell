@@ -130,43 +130,38 @@ class DatasetRecord(LanceModel):
     zarr_group: str
     feature_space: str  # FeatureSpace value
     n_cells: int
+    layout_uid: str = ""
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
 
 
-class DatasetVar(LanceModel):
-    """Per-feature-per-dataset index row for the ``_dataset_vars`` table.
+class FeatureLayout(LanceModel):
+    """Per-feature-per-layout index row for the ``_feature_layouts`` table.
 
-    Each row maps a single feature within a single dataset to its local
-    position in the zarr group and its global position in the feature
-    registry.  The table is FTS-indexed on ``feature_uid`` and
-    ``dataset_uid`` to support fast feature-to-dataset and
-    dataset-to-feature lookups.
+    Each row maps a single feature within a unique feature ordering (layout)
+    to its local position and its global position in the feature registry.
+    Multiple datasets sharing the same feature ordering reference the same
+    layout_uid, dramatically reducing row count.
 
     Parameters
     ----------
+    layout_uid:
+        Content-hash of the ordered feature list (shared across datasets
+        with identical feature orderings).
     feature_uid:
-        Global feature UID (FTS indexed for feature-to-dataset lookups).
-    dataset_uid:
-        Dataset record UID (FTS indexed for dataset-to-feature and remap lookups).
+        Global feature UID (FTS indexed for feature-to-layout lookups).
     local_index:
-        0-based position of the feature within the zarr group (used as sort key for remaps).
+        0-based position of the feature within this layout.
     global_index:
         Position in the global feature registry. Denormalized from the registry and
-        kept in sync by ``sync_dataset_vars_global_index``.
-    csc_start:
-        Start offset in the CSC data arrays (sparse feature spaces only; populated by ``add_csc``).
-    csc_end:
-        End offset in the CSC data arrays (sparse feature spaces only; populated by ``add_csc``).
+        kept in sync by ``sync_layouts_global_index``.
     """
 
+    layout_uid: str
     feature_uid: str
-    dataset_uid: str
     local_index: int
-    global_index: int
-    csc_start: int | None = None
-    csc_end: int | None = None
+    global_index: int | None = None
 
 
 class AtlasVersionRecord(LanceModel):
@@ -192,8 +187,8 @@ class AtlasVersionRecord(LanceModel):
         JSON-encoded mapping of ``{feature_space: table_name}`` for feature registries.
     registry_table_versions:
         JSON-encoded mapping of ``{feature_space: version_int}`` for feature registries.
-    dataset_vars_table_version:
-        Lance version of the ``_dataset_vars`` table at snapshot time.
+    feature_layouts_table_version:
+        Lance version of the ``_feature_layouts`` table at snapshot time.
     total_cells:
         Total number of cells across all datasets at snapshot time.
     created_at:
@@ -207,7 +202,7 @@ class AtlasVersionRecord(LanceModel):
     dataset_table_version: int
     registry_table_names: str
     registry_table_versions: str
-    dataset_vars_table_version: int
+    feature_layouts_table_version: int
     total_cells: int
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()

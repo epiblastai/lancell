@@ -72,7 +72,7 @@ See the Reconstructors page for guidance on choosing between these.
 
 ### `has_var_df`
 
-`bool`. When `True`, this feature space has a feature registry table and a `_dataset_vars` inverted index. The registry table schema must be supplied to `RaggedAtlas.create()` via `registry_schemas`. Set to `False` for spaces with no stable feature axis — for example, arbitrary-length embedding vectors where the column count varies by dataset and no cross-dataset feature identity is meaningful.
+`bool`. When `True`, this feature space has a feature registry table and entries in the `_feature_layouts` table (see [Feature Layouts](feature_layouts.md)). The registry table schema must be supplied to `RaggedAtlas.create()` via `registry_schemas`. Set to `False` for spaces with no stable feature axis — for example, arbitrary-length embedding vectors where the column count varies by dataset and no cross-dataset feature identity is meaningful.
 
 ### `required_arrays`
 

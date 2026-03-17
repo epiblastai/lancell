@@ -58,6 +58,17 @@ atlas_r.query().limit(100).to_anndata()
 
 `limit` applies after filtering, so `.where(...).limit(100)` returns the first 100 cells matching the predicate rather than 100 random cells from the full atlas.
 
+### `.balanced_limit(n: int, column: str)`
+
+Cap the number of cells returned, drawing equally from each unique value of `column`. The result contains at most `n` cells split evenly across each unique value of `column` that passes any `.where()` filter.
+
+```python
+# Return at most 1000 cells, ~equal numbers per cell_type
+atlas_r.query().balanced_limit(1000, "cell_type").to_anndata()
+```
+
+This is useful for quickly building balanced evaluation sets without manually querying each category. Cannot be combined with `.limit()` — using both on the same query raises a `ValueError`.
+
 ### `.search(...)`
 
 Run a vector similarity search or full-text search, forwarded directly to LanceDB's `Table.search()`. Pair with `.limit()` to control how many nearest neighbors are retrieved.

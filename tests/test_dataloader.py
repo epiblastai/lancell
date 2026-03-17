@@ -13,7 +13,7 @@ from lancell.dataloader import (
     SparseBatch,
     sparse_to_dense_collate,
 )
-from lancell.dataset_vars import reindex_registry
+from lancell.feature_layouts import reindex_registry
 from lancell.ingestion import add_from_anndata
 from lancell.obs_alignment import align_obs_to_schema
 from lancell.sampler import BalancedCellSampler, CellSampler

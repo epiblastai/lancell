@@ -155,6 +155,11 @@ class CellSampler(_TorchSampler):
                     yield batch
 
 
+# TODO: BalancedCellSampler doesn't respect the requested batch_size exactly —
+# it rounds down to cells_per_cat * n_cats.  The real goal is more equal
+# representation across an epoch, not perfectly balanced individual batches.
+# Rework to always emit the requested batch_size (e.g. top up with extra
+# cells from larger categories).
 class BalancedCellSampler(_TorchSampler):
     """Batch sampler that draws equal cells per category each batch.
 

@@ -32,7 +32,7 @@ print(f"ingested {n} cells")
 2. Locates the pointer field for this feature space in the cell schema.
 3. Pre-allocates zarr arrays with the configured chunk and shard shapes, then streams data in shard-sized batches.
 4. For backed `.h5ad` files, reads directly from HDF5 `indptr`, `indices`, and `data` datasets without materializing the full matrix into memory.
-5. Writes the `_dataset_vars` feature mapping (one row per feature, recording `local_index` and `global_index`).
+5. Writes the `_feature_layouts` feature mapping (one row per feature, recording `local_index` and `global_index`).
 6. Inserts cell records with `SparseZarrPointer` fields (`start`, `end`, `zarr_row`) derived from the CSR `indptr` array.
 
 For sparse assays, ingest produces the CSR layout under the zarr group:
@@ -97,24 +97,22 @@ For dense arrays, AnnData handles backed vs in-memory transparently — `adata.X
 
 ---
 
-## The `_dataset_vars` feature mapping
+## The `_feature_layouts` feature mapping
 
-At ingest time, `add_from_anndata` writes one `DatasetVar` row per feature in the dataset into the `_dataset_vars` LanceDB table. Each row records:
+At ingest time, `add_from_anndata` writes one `FeatureLayout` row per feature into the `_feature_layouts` LanceDB table (or reuses an existing layout if the feature ordering matches). The full function reference is on the [Feature Layouts](feature_layouts.md) page. Each row records:
 
 | Field | Description |
 |---|---|
+| `layout_uid` | Content-hash of the ordered feature list; shared across datasets with identical feature orderings |
 | `feature_uid` | Stable global feature identifier (from `adata.var["global_feature_uid"]`) |
-| `dataset_uid` | The `DatasetRecord.uid` for this dataset |
 | `local_index` | 0-based column index in this dataset's zarr array — i.e. the value stored in `csr/indices` |
 | `global_index` | The feature's position in the shared global feature space; used for scatter/gather at query time |
-| `csc_start` | `null` until `add_csc()` is called |
-| `csc_end` | `null` until `add_csc()` is called |
 
-The `local_index → global_index` mapping is what allows the reconstruction layer to correctly align features from different datasets into a single output matrix. Each dataset may have measured a different subset of features, in a different order. The remap array (`remap[local_i] = global_index`) derived from `_dataset_vars` drives the scatter step.
+The `local_index → global_index` mapping is what allows the reconstruction layer to correctly align features from different datasets into a single output matrix. Each dataset may have measured a different subset of features, in a different order. The remap array (`remap[local_i] = global_index`) derived from `_feature_layouts` drives the scatter step.
 
 ### Prerequisite: `global_index` assignment
 
-Before `add_from_anndata` can write `_dataset_vars`, features must have a non-null `global_index` in the registry. `global_index` is assigned by `atlas.optimize()`, which runs `reindex_registry` as part of its maintenance pass. If any feature in `adata.var` has `global_index = None` in the registry, `add_from_anndata` raises a `ValueError` reporting the offending UIDs.
+Before `add_from_anndata` can write `_feature_layouts`, features must have a non-null `global_index` in the registry. `global_index` is assigned by `atlas.optimize()`, which runs `reindex_registry` as part of its maintenance pass. If any feature in `adata.var` has `global_index = None` in the registry, `add_from_anndata` raises a `ValueError` reporting the offending UIDs.
 
 The typical pattern is to batch-register features across all datasets first, call `optimize()` once to assign indices, and then ingest:
 
@@ -137,7 +135,7 @@ n_b = add_from_anndata(atlas, adata_b, ...)
 
 CSC is a transposed view of the CSR data, sorted by local feature index. Where CSR stores entries in cell order (all non-zeros for cell 0, then all for cell 1, …), CSC stores them in feature order (all non-zeros for feature 0 across all cells, then feature 1, …).
 
-After CSC is built, `_dataset_vars` gains byte-range pointers (`csc_start`/`csc_end`) for each feature. A feature-filtered query can then read exactly `csc/indices[csc_start:csc_end]` to get the cell row IDs that expressed that feature, without touching any other data.
+After CSC is built, the zarr group contains a `csc/indptr` array with byte-range pointers for each feature. A feature-filtered query can then read exactly `csc/indices[indptr[i]:indptr[i+1]]` to get the cell row IDs that expressed that feature, without touching any other data.
 
 ```python
 from lancell.ingestion import add_csc
@@ -157,7 +155,7 @@ add_csc(
 3. Reads the full `csr/indices` and `csr/layers/<layer>` flat arrays via `BatchArray.read_ranges`.
 4. Reconstructs `(cell_row, feature_idx)` pairs for every non-zero entry, then sorts by `feature_idx` (stable sort, so cell order is preserved within each feature column).
 5. Writes `csc/indices` (sorted cell row IDs, `uint32`) and `csc/layers/<layer>` (corresponding values) as sharded zarr arrays.
-6. Computes `csc_start`/`csc_end` for each feature via `np.searchsorted`, then updates `_dataset_vars` with a `merge_insert`.
+6. Computes CSC `indptr` for each feature via `np.searchsorted` and writes it as a zarr array in the group.
 
 After this call, the zarr group contains:
 
@@ -169,6 +167,7 @@ After this call, the zarr group contains:
 │       └── counts
 └── csc/
     ├── indices          # col-sorted: cell row IDs in feature order
+    ├── indptr           # (n_features + 1,) int64 — byte-range boundaries per feature
     └── layers/
         └── counts
 ```
@@ -219,7 +218,7 @@ add_csc(atlas, zarr_group="large_dataset_2", feature_space="gene_expression", la
 # small_dataset_3 stays CSR-only — reconstructors fall back automatically
 ```
 
-`GroupReader.has_csc` is the property that drives this decision at read time. It returns `True` only when all `csc_start`/`csc_end` values in `_dataset_vars` for the group are non-null — meaning `add_csc()` completed successfully for that group.
+`GroupReader.has_csc` is the property that drives this decision at read time. It returns `True` only when the zarr group contains a `csc/` subgroup — meaning `add_csc()` completed successfully for that group.
 
 ---
 

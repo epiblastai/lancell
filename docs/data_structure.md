@@ -14,7 +14,7 @@ graph TD
     subgraph LanceDB
         cells["cell table\n(LancellBaseSchema subclass)"]
         datasets["datasets table\n(DatasetRecord)"]
-        dvars["_dataset_vars table\n(DatasetVar)"]
+        layouts["_feature_layouts table\n(FeatureLayout)"]
         reg["registry tables\n(FeatureBaseSchema subclasses)"]
         versions["atlas_versions table\n(AtlasVersionRecord)"]
     end
@@ -26,8 +26,8 @@ graph TD
 
     cells -- "pointer fields" --> Zarr
     datasets -- "zarr_group" --> Zarr
-    dvars -. "feature_uid" .-> reg
-    dvars -. "dataset_uid" .-> datasets
+    layouts -. "feature_uid" .-> reg
+    layouts -. "layout_uid" .-> datasets
 ```
 
 ---
@@ -114,7 +114,7 @@ Used for gene expression, chromatin peaks, and other high-dimensional sparse ass
         └── counts       # (N_entries,)  dtype  — values
 ```
 
-`indices` holds **local** column indices (0-based within this dataset's feature ordering). The mapping from local to global feature index is stored in `_dataset_vars.global_index` and used at read time for scatter/gather operations.
+`indices` holds **local** column indices (0-based within this dataset's feature ordering). The mapping from local to global feature index is stored in `_feature_layouts.global_index` and used at read time for scatter/gather operations.
 
 A cell's data is at `csr/indices[start:end]` (and the matching slice from each layer), where `start`/`end` come from the cell's `SparseZarrPointer`.
 
@@ -169,22 +169,21 @@ The datasets table is the authoritative inventory of what zarr groups exist. `va
 
 ---
 
-## `_dataset_vars` table
+## `_feature_layouts` table
 
-`_dataset_vars` is an inverted index bridging datasets and features. Each `DatasetVar` row records one (feature, dataset) pair:
+`_feature_layouts` stores feature orderings ("layouts") shared across datasets. Each `FeatureLayout` row records one (layout, feature) pair. Datasets with identical feature orderings share the same `layout_uid`, dramatically reducing row count compared to a per-dataset approach. For the Python API, see [Feature Layouts](feature_layouts.md).
 
 | Field | Description |
 |---|---|
-| `feature_uid` | `global_feature_uid` from the registry. FTS-indexed for feature → datasets lookup. |
-| `dataset_uid` | `DatasetRecord.uid`. FTS-indexed for dataset → features lookup. |
-| `local_index` | 0-based position of this feature in the dataset's zarr array (i.e. the column index stored in `csr/indices`). |
+| `layout_uid` | Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. FTS-indexed for layout → features lookup. |
+| `feature_uid` | `global_feature_uid` from the registry. FTS-indexed for feature → layouts lookup. |
+| `local_index` | 0-based position of this feature in the layout's zarr array (i.e. the column index stored in `csr/indices`). |
 | `global_index` | Denormalized from the registry. Used as a scatter/gather key at training time — no database lookup needed in the hot path. |
-| `csc_start` / `csc_end` | Element range for this feature's column in `csc/indices`. Populated by `add_csc()`; null until then. |
 
-FTS indices on both `feature_uid` and `dataset_uid` make two queries efficient:
+FTS indices on both `feature_uid` and `layout_uid` make two queries efficient:
 
-- **Feature → datasets**: which datasets measured feature X? (`find_datasets_with_features`)
-- **Dataset → features**: given a dataset, reconstruct the `local → global` index remap for vectorized scatter/gather
+- **Feature → datasets**: which layouts (and thus datasets) include feature X? (`find_datasets_with_features`)
+- **Layout → features**: given a `layout_uid`, reconstruct the `local → global` index remap for vectorized scatter/gather
 
 ```mermaid
 erDiagram
@@ -193,21 +192,20 @@ erDiagram
         str zarr_group
         str feature_space
         int n_cells
+        str layout_uid FK
     }
     FeatureRegistry {
         str uid PK
         int global_index
     }
-    DatasetVar {
+    FeatureLayout {
+        str layout_uid FK
         str feature_uid FK
-        str dataset_uid FK
         int local_index
         int global_index
-        int csc_start
-        int csc_end
     }
-    DatasetRecord ||--o{ DatasetVar : "has features"
-    FeatureRegistry ||--o{ DatasetVar : "referenced by"
+    DatasetRecord }o--|| FeatureLayout : "references layout"
+    FeatureRegistry ||--o{ FeatureLayout : "referenced by"
 ```
 
 ---

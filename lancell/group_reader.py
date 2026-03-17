@@ -7,7 +7,7 @@ import polars as pl
 import zarr
 
 from lancell.batch_array import BatchAsyncArray
-from lancell.dataset_vars import read_dataset_vars
+from lancell.feature_layouts import read_feature_layout
 
 
 class GroupReader:
@@ -35,8 +35,8 @@ class GroupReader:
         zarr_group: str,
         feature_space: str,
         store: obstore.store.ObjectStore,
-        dataset_vars_table: lancedb.table.Table | None,
-        dataset_uid: str | None,
+        feature_layouts_table: lancedb.table.Table | None,
+        layout_uid: str | None,
         _remap: np.ndarray | None = None,
         _var_df: pl.DataFrame | None = None,
         zarr_group_handle: zarr.Group | None = None,
@@ -44,11 +44,12 @@ class GroupReader:
         self.zarr_group = zarr_group
         self.feature_space = feature_space
         self._store = store
-        self._dataset_vars_table = dataset_vars_table
-        self._dataset_uid = dataset_uid
+        self._feature_layouts_table = feature_layouts_table
+        self._layout_uid = layout_uid
         self._remap = _remap
         self._var_df = _var_df
         self._zarr_group_handle = zarr_group_handle
+        self._csc_indptr: np.ndarray | None = None
         self._array_reader_cache: dict[str, BatchAsyncArray] = {}
 
     @classmethod
@@ -57,22 +58,22 @@ class GroupReader:
         zarr_group: str,
         feature_space: str,
         store: obstore.store.ObjectStore,
-        dataset_vars_table: lancedb.table.Table | None,
-        dataset_uid: str | None,
+        feature_layouts_table: lancedb.table.Table | None,
+        layout_uid: str | None,
     ) -> "GroupReader":
         """Create a GroupReader for an atlas.
 
         The zarr group handle is opened lazily on first array access.
         Used by ``RaggedAtlas._get_group_reader``.
-        ``dataset_vars_table`` may be ``None`` for feature
+        ``feature_layouts_table`` may be ``None`` for feature
         spaces with ``has_var_df=False``.
         """
         return cls(
             zarr_group=zarr_group,
             feature_space=feature_space,
             store=store,
-            dataset_vars_table=dataset_vars_table,
-            dataset_uid=dataset_uid,
+            feature_layouts_table=feature_layouts_table,
+            layout_uid=layout_uid,
         )
 
     @classmethod
@@ -92,8 +93,8 @@ class GroupReader:
             zarr_group=zarr_group,
             feature_space=feature_space,
             store=store,
-            dataset_vars_table=None,
-            dataset_uid=None,
+            feature_layouts_table=None,
+            layout_uid=None,
             _remap=remap,
         )
 
@@ -101,11 +102,15 @@ class GroupReader:
         """Return the local-to-global-index remap array (load-once)."""
         if self._remap is not None:
             return self._remap
-        if self._dataset_vars_table is None or self._dataset_uid is None:
+        if self._feature_layouts_table is None or self._layout_uid is None:
             raise ValueError(
                 f"GroupReader for {self.zarr_group!r} has no remap and no table to load from."
             )
-        rows = read_dataset_vars(self._dataset_vars_table, self._dataset_uid)
+        rows = read_feature_layout(self._feature_layouts_table, self._layout_uid)
+        if rows["global_index"].null_count() > 0:
+            raise ValueError(
+                f"Layout '{self._layout_uid}' has null global_index values; run optimize() first."
+            )
         self._remap = rows["global_index"].to_numpy().astype(np.int32, copy=False)
         return self._remap
 
@@ -113,34 +118,38 @@ class GroupReader:
     def var_df(self) -> pl.DataFrame:
         """Load and cache var_df for this zarr group (load-once).
 
-        Returns a DataFrame with columns ``global_feature_uid``, ``csc_start``,
-        ``csc_end`` in local feature order (row i = local feature i).
+        Returns a DataFrame with column ``global_feature_uid`` in local
+        feature order (row i = local feature i).
         """
         if self._var_df is not None:
             return self._var_df
-        if self._dataset_vars_table is None or self._dataset_uid is None:
+        if self._feature_layouts_table is None or self._layout_uid is None:
             return pl.DataFrame(
                 schema={
                     "global_feature_uid": pl.Utf8,
-                    "csc_start": pl.Int64,
-                    "csc_end": pl.Int64,
                 }
             )
-        rows = read_dataset_vars(self._dataset_vars_table, self._dataset_uid)
+        rows = read_feature_layout(self._feature_layouts_table, self._layout_uid)
         self._var_df = rows.select(
             [
                 pl.col("feature_uid").alias("global_feature_uid"),
-                pl.col("csc_start"),
-                pl.col("csc_end"),
             ]
         )
         return self._var_df
 
     @property
     def has_csc(self) -> bool:
-        """Return True if this zarr group has CSC data."""
-        df = self.var_df
-        return len(df) > 0 and df["csc_start"].null_count() == 0 and df["csc_end"].null_count() == 0
+        """Return True if this zarr group has CSC data (indptr in zarr)."""
+        self._ensure_initialized()
+        return "csc" in self._zarr_group_handle and "indptr" in self._zarr_group_handle["csc"]
+
+    def get_csc_indptr(self) -> np.ndarray:
+        """Lazily load and cache the CSC indptr array from zarr."""
+        if self._csc_indptr is not None:
+            return self._csc_indptr
+        self._ensure_initialized()
+        self._csc_indptr = np.asarray(self._zarr_group_handle["csc"]["indptr"][:])
+        return self._csc_indptr
 
     def get_array_reader(self, array_name: str) -> BatchAsyncArray:
         """Return a cached BatchAsyncArray reader for a zarr array."""

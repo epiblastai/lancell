@@ -513,9 +513,9 @@ def _prepare_csc_group(
     valid_local = local_indices[valid_mask]
     valid_col_indices = np.where(valid_mask)[0]
 
-    var_df = gr.var_df
-    csc_start_arr = var_df["csc_start"].to_numpy()
-    csc_end_arr = var_df["csc_end"].to_numpy()
+    indptr = gr.get_csc_indptr()
+    csc_start_arr = indptr[:-1]
+    csc_end_arr = indptr[1:]
 
     starts = csc_start_arr[valid_local].astype(np.int64)
     ends = csc_end_arr[valid_local].astype(np.int64)

@@ -73,7 +73,7 @@ from lancell.reconstruction import DenseReconstructor
 LOGNORM_RNA_SPEC = ZarrGroupSpec(
     feature_space="lognorm_rna",
     pointer_kind=PointerKind.DENSE,   # each cell stores a row index, not a byte range
-    has_var_df=True,                  # this space has a feature registry + _dataset_vars rows
+    has_var_df=True,                  # this space has a feature registry + _feature_layouts rows
     required_subgroups=[SubgroupSpec(subgroup_name="layers", uniform_shape=True)],
     required_layers=["log_normalized"],
     allowed_layers=["log_normalized"],
@@ -146,17 +146,15 @@ atlas.register_features("lognorm_rna", features)
 # register_features uses merge_insert — safe to call concurrently from multiple processes
 ```
 
-`register_features` inserts new rows but does not assign `global_index`. That step must be done explicitly before ingestion, because assigning contiguous indices in a concurrent-write scenario requires a single writer.
+`register_features` inserts new rows but does not assign `global_index`. That happens when you call `atlas.optimize()`, which assigns contiguous indices in a single-writer pass.
 
 ```python
-from lancell.dataset_vars import reindex_registry
-
-# Assigns global_index = 0..N-1 to any features that don't have one yet.
-# Must be called after all register_features() calls and before add_from_anndata().
-reindex_registry(atlas._registry_tables["lognorm_rna"])
+# Assigns global_index = 0..N-1 to any features that don't have one yet,
+# and runs other maintenance tasks (compaction, FTS rebuild).
+atlas.optimize()
 ```
 
-**Annotate var with `global_feature_uid`.** The ingestion function looks for this column to build the `_dataset_vars` feature mapping.
+**Annotate var with `global_feature_uid`.** The ingestion function looks for this column to build the `_feature_layouts` feature mapping.
 
 ```python
 # uid == gene symbol in this example; use Ensembl IDs in production
@@ -197,7 +195,7 @@ print(f"ingested {n} cells")  # ingested 2638 cells
 
 ### 6. Optimize, snapshot, and query
 
-`optimize()` compacts Lance fragments, syncs `global_index` from the registry to `_dataset_vars`, and rebuilds the FTS indexes. Call it after bulk ingestion and before snapshotting.
+`optimize()` compacts Lance fragments, syncs `global_index` from the registry to `_feature_layouts`, and rebuilds the FTS indexes. Call it after bulk ingestion and before snapshotting.
 
 ```python
 atlas.optimize()
@@ -250,7 +248,7 @@ features_68k = [
 atlas.register_features("lognorm_rna", features_68k)
 
 # 557 genes are new (765 - 208 shared); they get the next available global_index values
-reindex_registry(atlas._registry_tables["lognorm_rna"])
+atlas.optimize()
 
 pbmc68k.var["global_feature_uid"] = pbmc68k.var.index
 
@@ -310,7 +308,7 @@ print(full)
 # 2395 = 1838 + 765 - 208 (union of gene sets)
 ```
 
-Cells from pbmc3k have zeros for the 557 genes unique to pbmc68k, and vice versa — the reconstruction layer handles the union automatically using the `_dataset_vars` global index remap.
+Cells from pbmc3k have zeros for the 557 genes unique to pbmc68k, and vice versa — the reconstruction layer handles the union automatically using the `_feature_layouts` global index remap.
 
 ```python
 # Restrict to features measured in every dataset (intersection)

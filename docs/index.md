@@ -62,7 +62,7 @@ graph TD
     subgraph LanceDB
         cells["cell table\n(LancellBaseSchema)"]
         registry["feature registry\n(FeatureBaseSchema)"]
-        dvars["_dataset_vars\n(local→global index map)"]
+        layouts["_feature_layouts\n(local→global index map)"]
         datasets["datasets table\n(DatasetRecord)"]
         versions["atlas_versions\n(AtlasVersionRecord)"]
     end
@@ -79,8 +79,7 @@ graph TD
     end
 
     cells -- "SparseZarrPointer\nDenseZarrPointer" --> Zarr
-    dvars -. "local_index → global_index" .-> registry
-    dvars -- "csc_start / csc_end" --> csc
+    layouts -. "local_index → global_index" .-> registry
     Zarr --> ds
     ds --> loader
 ```
@@ -91,16 +90,17 @@ graph TD
 
 ### Concepts
 
-- **[Data Structure](data_structure.md)** — the LanceDB + zarr layout, pointer types, `_dataset_vars` feature mapping, and versioning model.
+- **[Data Structure](data_structure.md)** — the LanceDB + zarr layout, pointer types, `_feature_layouts` feature mapping, and versioning model.
 - **[Building an Atlas](atlas.md)** — end-to-end walkthrough: register a spec, define schemas, ingest two datasets with different feature panels, snapshot, and run union/intersection queries.
 
 ### Reference
 
-- **[Schemas](schemas.md)** — all LanceDB schema classes: `LancellBaseSchema`, `SparseZarrPointer`, `DenseZarrPointer`, `FeatureBaseSchema`, `DatasetRecord`, `DatasetVar`, `AtlasVersionRecord`. Covers the `uid`/`global_index` split and how pointer fields are validated.
+- **[Schemas](schemas.md)** — all LanceDB schema classes: `LancellBaseSchema`, `SparseZarrPointer`, `DenseZarrPointer`, `FeatureBaseSchema`, `DatasetRecord`, `FeatureLayout`, `AtlasVersionRecord`. Covers the `uid`/`global_index` split and how pointer fields are validated.
+- **[Feature Layouts](feature_layouts.md)** — Python API for the `_feature_layouts` table: computing layout UIDs, building layout DataFrames, reindexing the registry, syncing global indices, and resolving feature UIDs to global positions.
 - **[Group Specs](group_specs.md)** — `ZarrGroupSpec`, `PointerKind`, `ArraySpec`, `SubgroupSpec`, built-in specs, and how to define custom specs for new assay types.
 - **[Querying](querying.md)** — the `AtlasQuery` fluent builder: filtering cells, controlling feature reconstruction, union/intersection joins, feature-filtered queries, and all terminal methods (`.to_anndata()`, `.to_mudata()`, `.to_batches()`, `.count()`).
 - **[Reconstructors](reconstructors.md)** — `SparseCSRReconstructor`, `DenseReconstructor`, `FeatureCSCReconstructor`; choosing between them; the `Reconstructor` protocol for custom implementations.
-- **[Array Storage](array_storage.md)** — `add_from_anndata` internals: streaming from backed `.h5ad` files, chunk/shard sizing, BP-128 bitpacking, the `_dataset_vars` feature mapping. Building the optional CSC column index with `add_csc()` for fast feature-filtered reads.
+- **[Array Storage](array_storage.md)** — `add_from_anndata` internals: streaming from backed `.h5ad` files, chunk/shard sizing, BP-128 bitpacking, the `_feature_layouts` feature mapping. Building the optional CSC column index with `add_csc()` for fast feature-filtered reads.
 - **[PyTorch Data Loading](dataloader.md)** — `CellDataset` and `MultimodalCellDataset`; `CellSampler` (locality-aware bin-packing) and `BalancedCellSampler`; collate functions; `make_loader` with spawn parallelism.
 
 ---

@@ -26,8 +26,8 @@ from lancell.schema import make_uid
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"
-CHUNK_SIZE = 5_000
-SHARD_SIZE = 50_000_000
+CHUNK_SIZE = 40_960
+SHARD_SIZE = 1024 * CHUNK_SIZE
 
 
 def make_store(atlas_dir: str) -> obstore.store.ObjectStore:
@@ -155,7 +155,7 @@ def ingest_backed(
     cellxgene_dataset_id = Path(h5ad_path).stem
     zarr_group = make_uid()
 
-    # Attach global_feature_uid to adata.var so write_dataset_vars can use it
+    # Attach global_feature_uid to adata.var for feature layout registration
     ensembl_ids = list(adata.var.index)
     adata.var["global_feature_uid"] = [ensembl_to_uid[eid] for eid in ensembl_ids]
 

@@ -8,7 +8,7 @@ import pytest
 import scipy.sparse as sp
 
 from lancell.atlas import RaggedAtlas
-from lancell.dataset_vars import reindex_registry
+from lancell.feature_layouts import read_feature_layout, reindex_registry
 from lancell.ingestion import add_from_anndata
 from lancell.obs_alignment import align_obs_to_schema
 from lancell.schema import (
@@ -311,7 +311,7 @@ class TestCheckout:
                 store=store,
             )
 
-    def test_checkout_dataset_vars_pinned(self, tmp_path):
+    def test_checkout_feature_layouts_pinned(self, tmp_path):
         store = obstore.store.LocalStore(prefix=str(tmp_path))
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
@@ -323,29 +323,27 @@ class TestCheckout:
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
-        atlas.snapshot()  # v0 — pins dataset_vars at current version
+        atlas.snapshot()  # v0 — pins feature_layouts at current version
 
         # Record the remap as it was at snapshot time
-        from lancell.dataset_vars import read_dataset_vars
-
         ds_rows = (
             atlas._dataset_table.search()
             .where("zarr_group = 'ds1/gene_expression'", prefilter=True)
             .to_polars()
         )
-        dataset_uid = ds_rows["uid"][0]
-        rows_at_v0 = read_dataset_vars(atlas._dataset_vars_table, dataset_uid)
+        layout_uid = ds_rows["layout_uid"][0]
+        rows_at_v0 = read_feature_layout(atlas._feature_layouts_table, layout_uid)
         remap_at_v0 = rows_at_v0["global_index"].to_numpy().astype(np.int32, copy=False).copy()
 
-        # Mutate _dataset_vars on the live atlas: reverse global_index for ds1
+        # Mutate _feature_layouts on the live atlas: reverse global_index
         reversed_rows = rows_at_v0.with_columns(pl.col("global_index").reverse())
         (
-            atlas._dataset_vars_table.merge_insert(on=["feature_uid", "dataset_uid"])
+            atlas._feature_layouts_table.merge_insert(on=["layout_uid", "feature_uid"])
             .when_matched_update_all()
             .execute(reversed_rows)
         )
 
-        # Checkout v0 — _dataset_vars must be pinned to the snapshot version
+        # Checkout v0 — _feature_layouts must be pinned to the snapshot version
         pinned = RaggedAtlas.checkout(
             db_uri=str(tmp_path / "atlas.lancedb"),
             version=0,

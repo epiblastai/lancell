@@ -20,19 +20,20 @@ import polars as pl
 import zarr
 
 from lancell._util import sql_escape
-from lancell.dataset_vars import (
-    build_dataset_vars_df,
+from lancell.feature_layouts import (
+    build_feature_layout_df,
+    layout_exists,
     reindex_registry,
-    sync_dataset_vars_global_index,
-    validate_dataset_vars,
+    sync_layouts_global_index,
+    validate_feature_layout,
 )
 from lancell.group_specs import get_spec
 from lancell.obs_alignment import _extract_pointer_fields
 from lancell.schema import (
     AtlasVersionRecord,
     DatasetRecord,
-    DatasetVar,
     FeatureBaseSchema,
+    FeatureLayout,
     LancellBaseSchema,
 )
 
@@ -58,7 +59,7 @@ class RaggedAtlas:
         dataset_table: lancedb.table.Table,
         *,
         version_table: lancedb.table.Table,
-        dataset_vars_table: lancedb.table.Table,
+        feature_layouts_table: lancedb.table.Table,
     ) -> None:
         self.db = db
         self.cell_table = cell_table
@@ -69,7 +70,7 @@ class RaggedAtlas:
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
-        self._dataset_vars_table = dataset_vars_table
+        self._feature_layouts_table = feature_layouts_table
 
         self._checked_out_version: int | None = None
 
@@ -124,9 +125,9 @@ class RaggedAtlas:
 
         version_table = db.create_table(version_table_name, schema=AtlasVersionRecord)
 
-        dataset_vars_table = db.create_table("_dataset_vars", schema=DatasetVar)
-        dataset_vars_table.create_fts_index("feature_uid")
-        dataset_vars_table.create_fts_index("dataset_uid")
+        feature_layouts_table = db.create_table("_feature_layouts", schema=FeatureLayout)
+        feature_layouts_table.create_fts_index("feature_uid")
+        feature_layouts_table.create_fts_index("layout_uid")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
 
@@ -138,7 +139,7 @@ class RaggedAtlas:
             registry_tables=registry_tables,
             dataset_table=dataset_table,
             version_table=version_table,
-            dataset_vars_table=dataset_vars_table,
+            feature_layouts_table=feature_layouts_table,
         )
 
     @classmethod
@@ -181,7 +182,7 @@ class RaggedAtlas:
             resolved_registries[fs] = db.open_table(table_name)
 
         version_table = db.open_table(version_table_name)
-        dataset_vars_table = db.open_table("_dataset_vars")
+        feature_layouts_table = db.open_table("_feature_layouts")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
 
@@ -193,7 +194,7 @@ class RaggedAtlas:
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
             version_table=version_table,
-            dataset_vars_table=dataset_vars_table,
+            feature_layouts_table=feature_layouts_table,
         )
 
     # -- Store helpers ------------------------------------------------------
@@ -210,17 +211,21 @@ class RaggedAtlas:
                     f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
                     prefilter=True,
                 )
-                .select(["uid"])
+                .select(["uid", "layout_uid"])
                 .to_polars()
             )
-            dataset_uid: str | None = datasets_df["uid"][0] if not datasets_df.is_empty() else None
+            layout_uid: str | None = None
+            if not datasets_df.is_empty():
+                layout_uid = datasets_df["layout_uid"][0]
+                if layout_uid == "":
+                    layout_uid = None
 
             self._group_readers[key] = GroupReader.from_atlas_root(
                 zarr_group=zarr_group,
                 feature_space=feature_space,
                 store=self._store,
-                dataset_vars_table=self._dataset_vars_table,
-                dataset_uid=dataset_uid,
+                feature_layouts_table=self._feature_layouts_table,
+                layout_uid=layout_uid,
             )
         return self._group_readers[key]
 
@@ -251,11 +256,9 @@ class RaggedAtlas:
         Must be called before ingestion for feature spaces that
         have a registry (``has_var_df=True``).
 
-        This method only inserts new feature rows — it does **not** assign
-        ``global_index``.  Call :func:`~lancell.dataset_vars.reindex_registry`
-        on the registry table after all registrations are complete to assign
-        contiguous indices.  This two-step approach avoids index races when
-        multiple writers register features concurrently.
+        Features are inserted with ``global_index = None``.  The index is
+        assigned later by ``optimize()`` / ``reindex_registry()`` which is
+        designed to run after ingestion completes.
 
         Parameters
         ----------
@@ -286,28 +289,26 @@ class RaggedAtlas:
 
         # Deduplicate within the input batch; merge_insert(on="uid") with
         # when_not_matched_insert_all handles skipping rows that already
-        # exist in the registry.  global_index is NOT assigned here — call
-        # reindex_registry() after all registrations to assign contiguous
-        # indices, avoiding races between concurrent writers.
+        # exist in the registry.
         new_records = features_df.unique(subset=["uid"], keep="first")
 
         n_before = registry_table.count_rows()
         (registry_table.merge_insert(on="uid").when_not_matched_insert_all().execute(new_records))
         return registry_table.count_rows() - n_before
 
-    # -- Dataset vars -------------------------------------------------------
+    # -- Feature layouts ----------------------------------------------------
 
-    def add_dataset_vars(
+    def add_or_reuse_layout(
         self,
         var_df: pl.DataFrame,
         dataset_uid: str,
         feature_space: str,
-    ) -> None:
-        """Index all feature-level metadata for a newly ingested dataset.
+    ) -> str:
+        """Compute or reuse a feature layout for a dataset.
 
-        Call once per dataset after zarr data is written.
-        var_df must contain a 'global_feature_uid' column.
-        No-op if this atlas has no _dataset_vars table.
+        Computes the layout_uid from the feature ordering in var_df. If
+        the layout already exists in the table, skips insertion. Otherwise
+        inserts the layout rows. Updates the DatasetRecord to set layout_uid.
 
         Parameters
         ----------
@@ -318,6 +319,11 @@ class RaggedAtlas:
             The DatasetRecord uid for this dataset.
         feature_space:
             Which feature space this dataset belongs to (used to look up registry).
+
+        Returns
+        -------
+        str
+            The layout_uid assigned to this dataset.
         """
         registry_table = self._registry_tables.get(feature_space)
         if registry_table is None:
@@ -325,8 +331,30 @@ class RaggedAtlas:
                 f"No registry table for feature space '{feature_space}'. "
                 f"Ensure a registry schema was provided at create() time."
             )
-        df = build_dataset_vars_df(var_df, dataset_uid, registry_table)
-        self._dataset_vars_table.add(df)
+        layout_uid, layout_df = build_feature_layout_df(var_df, registry_table)
+
+        if not layout_exists(self._feature_layouts_table, layout_uid):
+            # Use merge_insert for concurrency safety: if two parallel
+            # ingestions compute the same layout, the second is a no-op.
+            (
+                self._feature_layouts_table.merge_insert(on=["layout_uid", "feature_uid"])
+                .when_not_matched_insert_all()
+                .execute(layout_df)
+            )
+
+        # Update DatasetRecord with layout_uid
+        (
+            self._dataset_table.merge_insert(on="uid")
+            .when_matched_update_all()
+            .execute(
+                self._dataset_table.search()
+                .where(f"uid = '{sql_escape(dataset_uid)}'", prefilter=True)
+                .to_polars()
+                .with_columns(pl.lit(layout_uid).alias("layout_uid"))
+            )
+        )
+
+        return layout_uid
 
     # -- Maintenance --------------------------------------------------------
 
@@ -336,9 +364,9 @@ class RaggedAtlas:
         Calls ``table.optimize()`` on the cell, dataset, and registry tables
         to compact small Lance fragments, then assigns ``global_index`` to any
         unindexed registry features via
-        :func:`~lancell.dataset_vars.reindex_registry`, and propagates updated
-        indices to ``_dataset_vars`` via
-        :func:`~lancell.dataset_vars.sync_dataset_vars_global_index`.
+        :func:`~lancell.feature_layouts.reindex_registry`, and propagates
+        updated indices to ``_feature_layouts`` via
+        :func:`~lancell.feature_layouts.sync_layouts_global_index`.
         """
         self.cell_table.optimize()
         self._dataset_table.optimize()
@@ -346,11 +374,11 @@ class RaggedAtlas:
             reindex_registry(table)
             table.create_scalar_index("uid", replace=True)
             table.optimize()
-            sync_dataset_vars_global_index(self._dataset_vars_table, table)
+            sync_layouts_global_index(self._feature_layouts_table, table)
 
-        self._dataset_vars_table.create_fts_index("feature_uid", replace=True)
-        self._dataset_vars_table.create_fts_index("dataset_uid", replace=True)
-        self._dataset_vars_table.optimize()
+        self._feature_layouts_table.create_fts_index("feature_uid", replace=True)
+        self._feature_layouts_table.create_fts_index("layout_uid", replace=True)
+        self._feature_layouts_table.optimize()
 
     # -- Validation ---------------------------------------------------------
 
@@ -368,7 +396,7 @@ class RaggedAtlas:
         check_zarr:
             Open each unique zarr group and validate against its spec.
         check_var_dfs:
-            For feature spaces with var_df, validate _dataset_vars rows.
+            For feature spaces with var_df, validate _feature_layouts rows.
         check_registries:
             Check that all registry rows have a global_index assigned.
         """
@@ -393,7 +421,7 @@ class RaggedAtlas:
             errors.extend(self._validate_zarr_groups(zarr_groups_by_space))
 
         if check_var_dfs:
-            errors.extend(self._validate_dataset_vars(zarr_groups_by_space))
+            errors.extend(self._validate_feature_layouts(zarr_groups_by_space))
 
         return errors
 
@@ -420,7 +448,8 @@ class RaggedAtlas:
     ) -> pl.DataFrame:
         """Find datasets that measured specific features.
 
-        Uses the LanceDB FTS index on ``_dataset_vars.feature_uid``.
+        Uses a two-step join: FTS on ``_feature_layouts.feature_uid`` to find
+        layout_uids, then join against ``_dataset_table.layout_uid``.
         Note: rows added after the last FTS index build are not yet indexed;
         call ``optimize()`` after bulk ingestion to refresh.
 
@@ -447,19 +476,20 @@ class RaggedAtlas:
         from lancedb.query import MatchQuery
 
         query_str = " ".join(feature_uids)
-        n_datasets = self._dataset_table.count_rows()
-        limit = max(len(feature_uids) * n_datasets, 1)
+        # Estimate limit: each feature could appear in every layout
+        n_layouts = self._feature_layouts_table.count_rows()
+        limit = max(len(feature_uids) * max(n_layouts, 1), 1)
 
         pairs = (
-            self._dataset_vars_table.search(MatchQuery(query_str), query_type="fts")
-            .select(["feature_uid", "dataset_uid"])
+            self._feature_layouts_table.search(MatchQuery(query_str), query_type="fts")
+            .select(["feature_uid", "layout_uid"])
             .limit(limit)
             .to_polars()
         )
         if pairs.is_empty():
             return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
 
-        pairs = pairs.unique(subset=["feature_uid", "dataset_uid"])
+        pairs = pairs.unique(subset=["feature_uid", "layout_uid"])
 
         datasets_df = (
             self._dataset_table.search()
@@ -469,8 +499,8 @@ class RaggedAtlas:
 
         return (
             pairs.rename({"feature_uid": "global_feature_uid"})
-            .join(datasets_df, left_on="dataset_uid", right_on="uid", how="inner")
-            .drop("dataset_uid")
+            .join(datasets_df, on="layout_uid", how="inner")
+            .drop("layout_uid")
         )
 
     def _validate_registries(self) -> list[str]:
@@ -498,12 +528,15 @@ class RaggedAtlas:
                     errors.append(f"zarr group '{zg}': {e}")
         return errors
 
-    def _validate_dataset_vars(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
+    def _validate_feature_layouts(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
         errors: list[str] = []
-        # Build a lookup: (zarr_group, feature_space) -> dataset_uid
         datasets_df = (
-            self._dataset_table.search().select(["uid", "zarr_group", "feature_space"]).to_polars()
+            self._dataset_table.search()
+            .select(["uid", "zarr_group", "feature_space", "layout_uid"])
+            .to_polars()
         )
+        # Validate per unique layout_uid (not per dataset)
+        validated_layouts: set[str] = set()
         for fs, groups in zarr_groups_by_space.items():
             spec = get_spec(fs)
             if not spec.has_var_df:
@@ -516,17 +549,20 @@ class RaggedAtlas:
                 if matched.is_empty():
                     errors.append(f"No dataset record for zarr_group='{zg}', feature_space='{fs}'")
                     continue
-                dataset_uid = matched["uid"][0]
+                lid = matched["layout_uid"][0]
+                if not lid or lid in validated_layouts:
+                    continue
+                validated_layouts.add(lid)
                 group = self._root[zg]
-                dv_errors = validate_dataset_vars(
-                    self._dataset_vars_table,
-                    dataset_uid,
+                fl_errors = validate_feature_layout(
+                    self._feature_layouts_table,
+                    lid,
                     spec=spec,
                     group=group,
                     registry_table=registry,
                 )
-                for e in dv_errors:
-                    errors.append(f"_dataset_vars '{zg}': {e}")
+                for e in fl_errors:
+                    errors.append(f"_feature_layouts '{lid}': {e}")
         return errors
 
     # -- Versioning ---------------------------------------------------------
@@ -563,7 +599,7 @@ class RaggedAtlas:
             dataset_table_version=self._dataset_table.version,
             registry_table_names=json.dumps(registry_names),
             registry_table_versions=json.dumps(registry_versions),
-            dataset_vars_table_version=self._dataset_vars_table.version,
+            feature_layouts_table_version=self._feature_layouts_table.version,
             total_cells=self.cell_table.count_rows(),
         )
         self._version_table.add([record])
@@ -639,8 +675,8 @@ class RaggedAtlas:
             t.checkout(registry_versions[fs])
             resolved_registries[fs] = t
 
-        dataset_vars_table = db.open_table("_dataset_vars")
-        dataset_vars_table.checkout(row["dataset_vars_table_version"])
+        feature_layouts_table = db.open_table("_feature_layouts")
+        feature_layouts_table.checkout(row["feature_layouts_table_version"])
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 
@@ -652,7 +688,7 @@ class RaggedAtlas:
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
             version_table=version_table,
-            dataset_vars_table=dataset_vars_table,
+            feature_layouts_table=feature_layouts_table,
         )
         atlas._checked_out_version = version
         return atlas

@@ -42,6 +42,7 @@ nav:
     - Building an Atlas: atlas.md
   - Reference:
     - Schemas: schemas.md
+    - Feature Layouts: feature_layouts.md
     - Group Specs: group_specs.md
     - Querying: querying.md
     - Reconstructors: reconstructors.md

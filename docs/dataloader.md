@@ -37,26 +37,22 @@ print(dataset.n_features)  # width of the feature space (global index range)
 
 ### Feature-filtered datasets
 
-When training on a fixed gene panel — a set of marker genes, a pre-selected HVG list, or a model-specific vocabulary — pass a list of global feature indices to `.features()` before calling the terminal method. The dataset will only load and return those features, and `n_features` will equal the length of the list.
+When training on a fixed gene panel — a set of marker genes, a pre-selected HVG list, or a model-specific vocabulary — pass the feature UIDs to `.features()` before calling the terminal method. The dataset will only load and return those features, and `n_features` will equal the length of the list.
 
 ```python
-from lancell.dataset_vars import resolve_feature_uids_to_global_indices
-
-wanted = resolve_feature_uids_to_global_indices(
-    atlas_r._registry_tables["gene_expression"],
-    feature_uids=["ENSG00000010610", "ENSG00000156738", "ENSG00000105369"],
-)
-
 dataset = (
     atlas_r.query()
-    .features(wanted, feature_space="gene_expression")
+    .features(
+        ["ENSG00000010610", "ENSG00000156738", "ENSG00000105369"],
+        feature_space="gene_expression",
+    )
     .to_cell_dataset(feature_space="gene_expression", layer="counts")
 )
 
 print(dataset.n_features)  # 3
 ```
 
-`resolve_feature_uids_to_global_indices` looks up Ensembl IDs (or any UID your schema uses) in the feature registry and returns their positions in the global feature index. The resulting indices are what the zarr reader uses to slice data — no coordinate translation happens at batch time.
+`.features()` accepts the same UID strings stored in the feature registry (Ensembl IDs, gene symbols, or whatever canonical identifier your schema uses). Internally it calls [`resolve_feature_uids_to_global_indices`](feature_layouts.md#resolve_feature_uids_to_global_indices) to translate them into the integer positions used by the zarr reader — no coordinate translation happens at batch time.
 
 ---
 
@@ -126,7 +122,7 @@ Draws an equal number of cells from each category per batch. This is useful when
 from lancell.sampler import BalancedCellSampler
 
 sampler = BalancedCellSampler.from_column(
-    cells_pl=dataset._cells_pl,    # Polars DataFrame of cells, from the dataset
+    cells_pl=dataset.cells_pl,     # Polars DataFrame of cells, from the dataset
     column="cell_type",
     batch_size=512,
     shuffle=True,

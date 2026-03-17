@@ -13,6 +13,7 @@ import anndata as ad
 import numpy as np
 import polars as pl
 
+from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
 from lancell.group_specs import get_spec
 from lancell.obs_alignment import PointerFieldInfo
@@ -36,6 +37,8 @@ class AtlasQuery:
         self._layer_overrides: dict[str, list[str]] = {}
         self._feature_join: Literal["union", "intersection"] = "union"
         self._feature_filter: dict[str, list[str]] = {}
+        self._balanced_limit_n: int | None = None
+        self._balanced_limit_column: str | None = None
 
     def search(
         self,
@@ -92,7 +95,23 @@ class AtlasQuery:
 
     def limit(self, n: int) -> "AtlasQuery":
         """Limit the number of cells returned."""
+        if self._balanced_limit_n is not None:
+            raise ValueError("Cannot use both limit() and balanced_limit() on the same query")
         self._limit_n = n
+        return self
+
+    def balanced_limit(self, n: int, column: str) -> "AtlasQuery":
+        """Limit cells, drawing equally from each unique value of *column*.
+
+        The result contains at most *n* cells, split evenly across each
+        unique value of *column* that passes any ``.where()`` filter.
+
+        Cannot be combined with ``.limit()``.
+        """
+        if self._limit_n is not None:
+            raise ValueError("Cannot use both limit() and balanced_limit() on the same query")
+        self._balanced_limit_n = n
+        self._balanced_limit_column = column
         return self
 
     def feature_spaces(self, *spaces: str) -> "AtlasQuery":
@@ -153,6 +172,48 @@ class AtlasQuery:
             q = q.select(columns)
         return q
 
+    def _materialize_cells(self) -> pl.DataFrame:
+        """Materialise the cell DataFrame, respecting balanced_limit if set."""
+        if self._balanced_limit_n is not None:
+            return self._materialize_balanced()
+        return self._build_scanner().to_polars()
+
+    def _materialize_balanced(self) -> pl.DataFrame:
+        """Two-phase balanced materialisation."""
+        column = self._balanced_limit_column
+        assert column is not None
+
+        # Phase 1: discover unique values (fetch only the balance column)
+        discovery_q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+        if self._where_clause is not None:
+            discovery_q = discovery_q.where(self._where_clause)
+        unique_values = discovery_q.select([column]).to_polars()[column].unique().to_list()
+        n_groups = len(unique_values)
+        if n_groups == 0:
+            return self._build_scanner().to_polars().head(0)
+
+        per_group = self._balanced_limit_n // n_groups
+
+        # Phase 2: one sub-query per group
+        frames: list[pl.DataFrame] = []
+        for val in unique_values:
+            escaped = sql_escape(str(val))
+            group_filter = f"{column} = '{escaped}'"
+            if self._where_clause is not None:
+                combined = f"({self._where_clause}) AND ({group_filter})"
+            else:
+                combined = group_filter
+
+            q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+            q = q.where(combined).limit(per_group)
+            if self._select_columns is not None:
+                pointer_cols = list(self._atlas._pointer_fields.keys())
+                columns = list(dict.fromkeys(self._select_columns + pointer_cols))
+                q = q.select(columns)
+            frames.append(q.to_polars())
+
+        return pl.concat(frames)
+
     def _active_pointer_fields(self) -> dict[str, PointerFieldInfo]:
         """Return pointer fields filtered by requested feature spaces."""
         pfs = self._atlas._pointer_fields
@@ -191,7 +252,7 @@ class AtlasQuery:
 
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of cell metadata."""
-        result = self._build_scanner().to_polars()
+        result = self._materialize_cells()
         pointer_cols = _get_pointer_columns(result)
         if pointer_cols:
             keep = [c for c in result.columns if c not in pointer_cols]
@@ -204,7 +265,7 @@ class AtlasQuery:
         If multiple feature spaces are active, only the first sparse feature
         space is used for X. Use :meth:`to_mudata` for multi-modal.
         """
-        cells_pl = self._build_scanner().to_polars()
+        cells_pl = self._materialize_cells()
         if cells_pl.is_empty():
             return _build_obs_only_anndata(cells_pl)
 
@@ -221,7 +282,7 @@ class AtlasQuery:
         """Execute the query and return a MuData with one modality per feature space."""
         import mudata as mu
 
-        cells_pl = self._build_scanner().to_polars()
+        cells_pl = self._materialize_cells()
         if cells_pl.is_empty():
             return mu.MuData({})
 
@@ -239,19 +300,35 @@ class AtlasQuery:
 
         Each batch contains up to ``batch_size`` cells. BatchArray readers
         and remap arrays are cached on the atlas for reuse across batches.
+
+        When ``balanced_limit`` is active, the full balanced result is
+        materialised first and then chunked in Python.
         """
+        active_pfs = self._active_pointer_fields()
+        pf = next(iter(active_pfs.values())) if active_pfs else None
+
+        if self._balanced_limit_n is not None:
+            cells_pl = self._materialize_cells()
+            for offset in range(0, len(cells_pl), batch_size):
+                chunk = cells_pl.slice(offset, batch_size)
+                if chunk.is_empty():
+                    continue
+                if pf is None:
+                    yield _build_obs_only_anndata(chunk)
+                else:
+                    yield self._reconstruct_single_space_anndata(chunk, pf)
+            return
+
         q = self._build_scanner()
         reader = q.to_batches(batch_size=batch_size)
 
-        active_pfs = self._active_pointer_fields()
-        if not active_pfs:
+        if pf is None:
             for batch in reader:
                 if batch.num_rows == 0:
                     continue
                 yield _build_obs_only_anndata(pl.from_arrow(batch))
             return
 
-        pf = next(iter(active_pfs.values()))
         for batch in reader:
             if batch.num_rows == 0:
                 continue
@@ -293,11 +370,11 @@ class AtlasQuery:
         """
         from lancell.dataloader import CellDataset
 
-        cells_pl = self._build_scanner().to_polars()
+        cells_pl = self._materialize_cells()
 
         wanted_globals = None
         if feature_space in self._feature_filter:
-            from lancell.dataset_vars import resolve_feature_uids_to_global_indices
+            from lancell.feature_layouts import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
                 self._atlas._registry_tables[feature_space],
@@ -343,7 +420,7 @@ class AtlasQuery:
         """
         from lancell.dataloader import MultimodalCellDataset
 
-        cells_pl = self._build_scanner().to_polars()
+        cells_pl = self._materialize_cells()
 
         if layers is None:
             layers = {fs: "counts" for fs in feature_spaces}
@@ -351,7 +428,7 @@ class AtlasQuery:
         wanted_globals: dict[str, np.ndarray] | None = None
         for fs in feature_spaces:
             if fs in self._feature_filter:
-                from lancell.dataset_vars import resolve_feature_uids_to_global_indices
+                from lancell.feature_layouts import resolve_feature_uids_to_global_indices
 
                 wg = resolve_feature_uids_to_global_indices(
                     self._atlas._registry_tables[fs],
@@ -384,7 +461,7 @@ class AtlasQuery:
 
         wanted_globals = None
         if pf.feature_space in self._feature_filter:
-            from lancell.dataset_vars import resolve_feature_uids_to_global_indices
+            from lancell.feature_layouts import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
                 self._atlas._registry_tables[pf.feature_space],

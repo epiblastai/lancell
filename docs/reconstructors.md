@@ -4,7 +4,7 @@ A reconstructor converts raw zarr data into an `AnnData` object. Every `ZarrGrou
 
 The reconstructor is responsible for:
 
-- Loading the per-group local-to-global feature index remap from `_dataset_vars`
+- Loading the per-group local-to-global feature index remap from [`_feature_layouts`](feature_layouts.md)
 - Reading zarr arrays for each dataset group
 - Remapping per-group local feature indices to the global feature space
 - Assembling the final `AnnData` with obs, var, and X (and any additional layers)
@@ -63,7 +63,7 @@ ZarrGroupSpec(
 )
 ```
 
-Each sparse cell pointer encodes a byte range `[_start, _end)` into the `csr/indices` array and the corresponding layer arrays. The reconstructor reads the flat index and value segments for each cell, remaps the local feature indices to their global positions using the `_dataset_vars` remap, builds a `scipy.sparse.csr_matrix` per layer, and stacks them vertically across groups.
+Each sparse cell pointer encodes a byte range `[_start, _end)` into the `csr/indices` array and the corresponding layer arrays. The reconstructor reads the flat index and value segments for each cell, remaps the local feature indices to their global positions using the `_feature_layouts` remap, builds a `scipy.sparse.csr_matrix` per layer, and stacks them vertically across groups.
 
 For union queries, cells from groups that don't measure a given feature simply have no entries in that column; the sparse format represents this without any fill. For intersection queries, the reconstructor masks out any feature index that does not appear in every group's remap before building the CSR, effectively discarding non-shared features.
 
@@ -105,9 +105,9 @@ ZarrGroupSpec(
 )
 ```
 
-When `wanted_globals` is provided, the reconstructor looks up the CSC byte ranges stored in `_dataset_vars` (`csc_start`, `csc_end` per local feature) for each requested feature. It then reads only those column segments from `csc/indices` and the corresponding `csc/layers/{layer}` arrays — O(nnz for wanted features) instead of O(nnz across all cells). This is a significant win when the atlas is large and only a handful of features are requested.
+When `wanted_globals` is provided, the reconstructor looks up the CSC byte ranges from the zarr `csc/indptr` array for each requested feature. It then reads only those column segments from `csc/indices` and the corresponding `csc/layers/{layer}` arrays — O(nnz for wanted features) instead of O(nnz across all cells). This is a significant win when the atlas is large and only a handful of features are requested.
 
-For groups that do not yet have CSC data — groups where `add_csc()` has not been called, identified by null `csc_start`/`csc_end` values in `_dataset_vars` — the reconstructor falls back to reading CSR and filtering columns. This fallback produces the same output as `SparseCSRReconstructor` for those groups. The fallback means CSC is optional on a per-group basis: you can add it incrementally to existing groups without breaking reconstruction for groups that don't have it yet.
+For groups that do not yet have CSC data — groups where `add_csc()` has not been called — the reconstructor falls back to reading CSR and filtering columns. This fallback produces the same output as `SparseCSRReconstructor` for those groups. The fallback means CSC is optional on a per-group basis: you can add it incrementally to existing groups without breaking reconstruction for groups that don't have it yet.
 
 When `wanted_globals` is not provided, `FeatureCSCReconstructor` delegates entirely to `SparseCSRReconstructor`. The CSC path only activates when a feature filter is in play.
 
@@ -177,7 +177,7 @@ The following helpers from `lancell.reconstruction` handle the parts that are id
 
 ### `_load_remaps_and_features(atlas, groups, spec, feature_join, wanted_globals)`
 
-Loads the per-group local-to-global remap arrays from `_dataset_vars` and computes the joined feature space. Returns a four-tuple:
+Loads the per-group local-to-global remap arrays from `_feature_layouts` and computes the joined feature space. Returns a four-tuple:
 
 - `group_remaps` — `{zarr_group: remap_array}` where `remap[local_i] = global_index`.
 - `joined_globals` — sorted array of unique global indices in the output feature space.

@@ -18,6 +18,7 @@ const BLOCK_LEN: usize = BitPacker4x::BLOCK_LEN; // 128
 pub enum Transform {
     None = 0,
     Delta = 1,
+    DeltaZigzag = 2,
 }
 
 impl Transform {
@@ -25,6 +26,7 @@ impl Transform {
         match b {
             0 => Ok(Self::None),
             1 => Ok(Self::Delta),
+            2 => Ok(Self::DeltaZigzag),
             _ => Err(format!("unknown bitpacking transform byte: {b}")),
         }
     }
@@ -33,6 +35,7 @@ impl Transform {
         match s {
             "none" => Ok(Self::None),
             "delta" => Ok(Self::Delta),
+            "delta_zigzag" => Ok(Self::DeltaZigzag),
             _ => Err(format!("unknown bitpacking transform: {s}")),
         }
     }
@@ -41,6 +44,7 @@ impl Transform {
         match self {
             Self::None => "none",
             Self::Delta => "delta",
+            Self::DeltaZigzag => "delta_zigzag",
         }
     }
 }
@@ -67,12 +71,16 @@ pub fn encode(values: &[u32], transform: Transform) -> Vec<u8> {
     out.push(transform as u8);
     out.extend_from_slice(&(n as u32).to_le_bytes());
 
-    // Apply delta transform to a working copy if needed
+    // Apply transform to a working copy if needed
     let work: Vec<u32>;
     let src = match transform {
         Transform::None => values,
         Transform::Delta => {
             work = delta_encode(values);
+            &work
+        }
+        Transform::DeltaZigzag => {
+            work = delta_zigzag_encode(values);
             &work
         }
     };
@@ -148,9 +156,11 @@ pub fn decode(encoded: &[u8]) -> Result<Vec<u32>, String> {
     // Truncate to actual element count (remove tail padding)
     result.truncate(element_count);
 
-    // Undo delta transform if needed
-    if transform == Transform::Delta {
-        delta_decode_in_place(&mut result);
+    // Undo transform if needed
+    match transform {
+        Transform::Delta => delta_decode_in_place(&mut result),
+        Transform::DeltaZigzag => delta_zigzag_decode_in_place(&mut result),
+        Transform::None => {}
     }
 
     Ok(result)
@@ -173,6 +183,45 @@ fn delta_encode(values: &[u32]) -> Vec<u32> {
 fn delta_decode_in_place(values: &mut [u32]) {
     for i in 1..values.len() {
         values[i] = values[i].wrapping_add(values[i - 1]);
+    }
+}
+
+/// Zigzag-encode a signed delta (stored as u32) to unsigned.
+/// Maps: 0 -> 0, -1 -> 1, 1 -> 2, -2 -> 3, 2 -> 4, ...
+#[inline]
+fn zigzag_encode(v: u32) -> u32 {
+    let s = v as i32;
+    ((s << 1) ^ (s >> 31)) as u32
+}
+
+/// Zigzag-decode unsigned back to signed delta (stored as u32).
+#[inline]
+fn zigzag_decode(v: u32) -> u32 {
+    (v >> 1) ^ (v & 1).wrapping_neg()
+}
+
+/// Delta-zigzag encode: compute deltas then zigzag-encode each.
+fn delta_zigzag_encode(values: &[u32]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(values.len());
+    if values.is_empty() {
+        return out;
+    }
+    out.push(zigzag_encode(values[0]));
+    for i in 1..values.len() {
+        let delta = values[i].wrapping_sub(values[i - 1]);
+        out.push(zigzag_encode(delta));
+    }
+    out
+}
+
+/// Delta-zigzag decode in place: zigzag-decode each, then prefix-sum.
+fn delta_zigzag_decode_in_place(values: &mut [u32]) {
+    if values.is_empty() {
+        return;
+    }
+    values[0] = zigzag_decode(values[0]);
+    for i in 1..values.len() {
+        values[i] = values[i - 1].wrapping_add(zigzag_decode(values[i]));
     }
 }
 
@@ -266,5 +315,60 @@ mod tests {
         let enc_none = encode(&data, Transform::None);
         let enc_delta = encode(&data, Transform::Delta);
         assert!(enc_delta.len() < enc_none.len());
+    }
+
+    #[test]
+    fn zigzag_round_trip_values() {
+        // Test specific zigzag values
+        assert_eq!(super::zigzag_encode(0), 0);
+        assert_eq!(super::zigzag_decode(0), 0);
+        // wrapping: u32::MAX as i32 is -1, zigzag(-1) = 1
+        assert_eq!(super::zigzag_encode(u32::MAX), 1); // -1 -> 1
+        assert_eq!(super::zigzag_decode(1), u32::MAX); // 1 -> -1 as u32
+        assert_eq!(super::zigzag_encode(1), 2);
+        assert_eq!(super::zigzag_decode(2), 1);
+        // Round-trip arbitrary values
+        for v in [0u32, 1, 2, 100, 0xFFFFFFFF, 0x80000000, 0x7FFFFFFF] {
+            assert_eq!(super::zigzag_decode(super::zigzag_encode(v)), v);
+        }
+    }
+
+    #[test]
+    fn round_trip_delta_zigzag() {
+        // Cell IDs sorted within features but resetting across features
+        // Simulates CSC intermediate block data
+        let mut data = Vec::new();
+        for _feature in 0..10 {
+            let mut cells: Vec<u32> = (0..50).collect();
+            data.append(&mut cells);
+        }
+        let encoded = encode(&data, Transform::DeltaZigzag);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_delta_zigzag_resets() {
+        // Ascending then dropping back to 0 (like sorted cell_ids across feature boundaries)
+        let data: Vec<u32> = vec![0, 1, 2, 3, 100, 0, 1, 2, 50, 0, 5, 10];
+        let encoded = encode(&data, Transform::DeltaZigzag);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_delta_zigzag_empty() {
+        let data: Vec<u32> = vec![];
+        let encoded = encode(&data, Transform::DeltaZigzag);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_delta_zigzag_single() {
+        let data = vec![42u32];
+        let encoded = encode(&data, Transform::DeltaZigzag);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(data, decoded);
     }
 }
