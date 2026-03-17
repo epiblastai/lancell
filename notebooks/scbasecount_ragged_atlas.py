@@ -58,15 +58,51 @@ def _(mo):
 
 @app.cell
 def _():
-    from pathlib import Path
-
-    import os
     import obstore.store
     import polars as pl
     from tqdm.auto import tqdm
 
-    from examples.scbasecount.schema import CellObs, GeneFeatureSpace
     from lancell.atlas import RaggedAtlas
+    from lancell.group_specs import (
+        ArraySpec,
+        DTypeKind,
+        PointerKind,
+        SubgroupSpec,
+        ZarrGroupSpec,
+        register_spec,
+    )
+    from lancell.reconstruction import SparseCSRReconstructor
+    from lancell.schema import FeatureBaseSchema, LancellBaseSchema, SparseZarrPointer
+
+    GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
+        feature_space="genefull_expression",
+        pointer_kind=PointerKind.SPARSE,
+        has_var_df=True,
+        required_arrays=[
+            ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
+        ],
+        required_subgroups=[
+            SubgroupSpec(subgroup_name="csr/layers", uniform_shape=True, match_shape_of="csr/indices"),
+        ],
+        required_layers=["Unique"],
+        allowed_layers=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+        reconstructor=SparseCSRReconstructor(),
+    )
+    register_spec(GENEFULL_EXPRESSION_SPEC)
+
+    class GeneFeatureSpace(FeatureBaseSchema):
+        gene_id: str
+        gene_name: str
+        organism: str
+
+    class CellObs(LancellBaseSchema):
+        genefull_expression: SparseZarrPointer | None = None
+        cell_barcode: str | None = None
+        srx_accession: str | None = None
+        gene_count_unique: int | None = None
+        umi_count_unique: int | None = None
+        cell_type: str | None = None
+        cell_ontology_term_id: str | None = None
 
     return CellObs, RaggedAtlas, obstore, pl, tqdm
 

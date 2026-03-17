@@ -23,7 +23,6 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import os
-    import sys
     import time
 
     import altair as alt
@@ -33,9 +32,6 @@ def _():
     import tiledbsoma
     from tqdm.auto import tqdm
 
-    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _repo_root not in sys.path:
-        sys.path.insert(0, _repo_root)
     return alt, mo, np, os, pl, tiledbsoma, time, tqdm
 
 
@@ -103,8 +99,37 @@ def _(tiledbsoma, time):
 def _(os, time):
     import obstore.store
 
-    from examples.cellxgene_census_tiledb.schema import CellObs
     from lancell.atlas import RaggedAtlas
+    from lancell.schema import LancellBaseSchema, SparseZarrPointer
+
+    class CellObs(LancellBaseSchema):
+        gene_expression: SparseZarrPointer | None = None
+        assay: str | None = None
+        cell_type: str | None = None
+        disease: str | None = None
+        sex: str | None = None
+        tissue: str | None = None
+        self_reported_ethnicity: str | None = None
+        development_stage: str | None = None
+        tissue_type: str | None = None
+        tissue_general: str | None = None
+        suspension_type: str | None = None
+        donor_id: str | None = None
+        is_primary_data: bool | None = None
+        observation_joinid: str | None = None
+        assay_ontology_term_id: str | None = None
+        cell_type_ontology_term_id: str | None = None
+        disease_ontology_term_id: str | None = None
+        sex_ontology_term_id: str | None = None
+        tissue_ontology_term_id: str | None = None
+        self_reported_ethnicity_ontology_term_id: str | None = None
+        development_stage_ontology_term_id: str | None = None
+        tissue_general_ontology_term_id: str | None = None
+        raw_sum: float | None = None
+        nnz: int | None = None
+        raw_mean_nnz: float | None = None
+        raw_variance_nnz: float | None = None
+        n_measured_vars: int | None = None
 
     LANCELL_DIR = "s3://epiblast-public/cellxgene_mouse_lancell/"
 
