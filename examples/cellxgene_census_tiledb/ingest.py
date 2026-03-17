@@ -189,11 +189,7 @@ def ingest_dataset(
     print(f"  Dataset {dataset_id}: {n_cells:,} cells -> zarr_group {zarr_group}")
 
     # --- Read obs metadata for these cells ---
-    obs_table = (
-        experiment.obs.read(coords=(obs_joinids,))
-        .concat()
-        .to_pandas()
-    )
+    obs_table = experiment.obs.read(coords=(obs_joinids,)).concat().to_pandas()
     obs_table = obs_table.sort_values("soma_joinid").reset_index(drop=True)
 
     # --- Create zarr group and arrays ---
@@ -210,7 +206,9 @@ def ingest_dataset(
     sparse_read = query.X("raw")
     # blockwise along axis=0 (obs), keep var soma_joinids as-is for column indices
     blockwise = sparse_read.blockwise(
-        axis=0, size=blockwise_size, reindex_disable_on_axis=1,
+        axis=0,
+        size=blockwise_size,
+        reindex_disable_on_axis=1,
     )
 
     all_indices = []
@@ -277,10 +275,18 @@ def ingest_dataset(
     else:
         # Empty dataset - create zero-length arrays
         csr_group.create_array(
-            "indices", shape=(0,), dtype=np.uint32, chunks=(1,), shards=(1,),
+            "indices",
+            shape=(0,),
+            dtype=np.uint32,
+            chunks=(1,),
+            shards=(1,),
         )
         layers_group.create_array(
-            LAYER_NAME, shape=(0,), dtype=np.float32, chunks=(1,), shards=(1,),
+            LAYER_NAME,
+            shape=(0,),
+            dtype=np.float32,
+            chunks=(1,),
+            shards=(1,),
         )
 
     starts = indptr[:-1]
@@ -372,13 +378,16 @@ def main():
         description="Ingest CellxGene Census TileDB-SOMA store into a lancell atlas"
     )
     parser.add_argument(
-        "--soma-path", required=True,
+        "--soma-path",
+        required=True,
         help="Path to the local TileDB-SOMA experiment (e.g. ~/datasets/mus_musculus)",
     )
     parser.add_argument("--atlas-dir", required=True, help="Path to atlas directory")
     parser.add_argument("--no-csc", action="store_true", help="Skip adding CSC layout")
     parser.add_argument(
-        "--batch-size", type=int, default=BLOCKWISE_SIZE,
+        "--batch-size",
+        type=int,
+        default=BLOCKWISE_SIZE,
         help=f"Cells per tiledbsoma read block (default: {BLOCKWISE_SIZE})",
     )
     args = parser.parse_args()
@@ -403,9 +412,7 @@ def main():
     n_total_cells = len(obs_df)
     print(f"  {n_total_cells:,} total cells")
 
-    dataset_groups = obs_df.groupby("dataset_id")["soma_joinid"].apply(
-        lambda x: np.sort(x.values)
-    )
+    dataset_groups = obs_df.groupby("dataset_id")["soma_joinid"].apply(lambda x: np.sort(x.values))
     n_datasets = len(dataset_groups)
     print(f"  {n_datasets} datasets")
 

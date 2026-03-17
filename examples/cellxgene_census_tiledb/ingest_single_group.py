@@ -201,7 +201,9 @@ def ingest_all(
     )
     sparse_read = query.X("raw")
     blockwise = sparse_read.blockwise(
-        axis=0, size=blockwise_size, reindex_disable_on_axis=1,
+        axis=0,
+        size=blockwise_size,
+        reindex_disable_on_axis=1,
     )
 
     # We'll build indptr incrementally
@@ -215,8 +217,8 @@ def ingest_all(
     # complete shards, so each shard file is only opened once.
     _buf_indices: list[np.ndarray] = []
     _buf_values: list[np.ndarray] = []
-    _buf_nnz = 0           # nnz currently sitting in the buffer
-    _flush_offset = 0      # global nnz offset of the buffer start
+    _buf_nnz = 0  # nnz currently sitting in the buffer
+    _flush_offset = 0  # global nnz offset of the buffer start
     _shards_flushed = 0
     _total_shards = (total_nnz + SHARD_SIZE - 1) // SHARD_SIZE
 
@@ -239,8 +241,10 @@ def ingest_all(
         elapsed = time.perf_counter() - t0
 
         _shards_flushed += n_complete
-        print(f"    Flushed {n_complete} shard(s) "
-              f"({_shards_flushed}/{_total_shards}) in {elapsed:.1f}s")
+        print(
+            f"    Flushed {n_complete} shard(s) "
+            f"({_shards_flushed}/{_total_shards}) in {elapsed:.1f}s"
+        )
 
         if write_end < _buf_nnz:
             _buf_indices = [all_idx[write_end:]]
@@ -269,9 +273,7 @@ def ingest_all(
 
         # Fill indptr for this block's cells
         block_indptr = block_csr.indptr.astype(np.int64)
-        indptr[cells_written + 1 : cells_written + block_n + 1] = (
-            block_indptr[1:] + nnz_written
-        )
+        indptr[cells_written + 1 : cells_written + block_n + 1] = block_indptr[1:] + nnz_written
 
         nnz_written += block_nnz
         cells_written += block_n
@@ -283,9 +285,11 @@ def ingest_all(
             elapsed = time.perf_counter() - t_stream_start
             rate = cells_written / elapsed if elapsed > 0 else 0
             pct = 100.0 * cells_written / n_cells
-            print(f"    [{pct:5.1f}%] {cells_written:,} / {n_cells:,} cells "
-                  f"({nnz_written:,} nnz) | {rate:,.0f} cells/s | "
-                  f"buf {_buf_nnz:,} nnz")
+            print(
+                f"    [{pct:5.1f}%] {cells_written:,} / {n_cells:,} cells "
+                f"({nnz_written:,} nnz) | {rate:,.0f} cells/s | "
+                f"buf {_buf_nnz:,} nnz"
+            )
             last_progress = cells_written
 
     # Flush any remaining partial shard
@@ -296,21 +300,18 @@ def ingest_all(
         zarr_indices[_flush_offset : _flush_offset + _buf_nnz] = remaining_idx
         zarr_values[_flush_offset : _flush_offset + _buf_nnz] = remaining_val
         elapsed = time.perf_counter() - t0
-        print(f"    Flushed final partial shard "
-              f"({_buf_nnz:,} nnz) in {elapsed:.1f}s")
+        print(f"    Flushed final partial shard ({_buf_nnz:,} nnz) in {elapsed:.1f}s")
 
     query.close()
 
     stream_elapsed = time.perf_counter() - t_stream_start
-    print(f"  Streaming complete: {cells_written:,} cells, "
-          f"{nnz_written:,} nnz in {stream_elapsed:.1f}s")
+    print(
+        f"  Streaming complete: {cells_written:,} cells, "
+        f"{nnz_written:,} nnz in {stream_elapsed:.1f}s"
+    )
 
-    assert cells_written == n_cells, (
-        f"Expected {n_cells} cells, wrote {cells_written}"
-    )
-    assert nnz_written == total_nnz, (
-        f"Expected {total_nnz} nnz, wrote {nnz_written}"
-    )
+    assert cells_written == n_cells, f"Expected {n_cells} cells, wrote {cells_written}"
+    assert nnz_written == total_nnz, f"Expected {total_nnz} nnz, wrote {nnz_written}"
 
     starts = indptr[:-1]
     ends = indptr[1:]
@@ -367,12 +368,8 @@ def ingest_all(
         )
 
         columns: dict[str, pa.Array] = {
-            "uid": pa.array(
-                [make_uid() for _ in range(batch_n)], type=pa.string()
-            ),
-            "dataset_uid": pa.array(
-                [zarr_group] * batch_n, type=pa.string()
-            ),
+            "uid": pa.array([make_uid() for _ in range(batch_n)], type=pa.string()),
+            "dataset_uid": pa.array([zarr_group] * batch_n, type=pa.string()),
             pointer_field.field_name: pointer_struct,
         }
 
@@ -385,16 +382,13 @@ def ingest_all(
 
         for col in schema_fields:
             if col not in columns:
-                columns[col] = pa.nulls(
-                    batch_n, type=arrow_schema.field(col).type
-                )
+                columns[col] = pa.nulls(batch_n, type=arrow_schema.field(col).type)
 
         atlas.cell_table.add(pa.table(columns, schema=arrow_schema))
 
         pct = 100.0 * batch_end / n_cells
         elapsed = time.perf_counter() - t_cells_start
-        print(f"    [{pct:5.1f}%] Cell records: {batch_end:,} / {n_cells:,} "
-              f"({elapsed:.1f}s)")
+        print(f"    [{pct:5.1f}%] Cell records: {batch_end:,} / {n_cells:,} ({elapsed:.1f}s)")
 
     # --- Optionally build CSC ---
     if not no_csc:
@@ -424,13 +418,16 @@ def main():
         description="Ingest CellxGene Census TileDB-SOMA into a single-group lancell atlas"
     )
     parser.add_argument(
-        "--soma-path", required=True,
+        "--soma-path",
+        required=True,
         help="Path to the local TileDB-SOMA experiment (e.g. ~/datasets/mus_musculus)",
     )
     parser.add_argument("--atlas-dir", required=True, help="Path to atlas directory")
     parser.add_argument("--no-csc", action="store_true", help="Skip adding CSC layout")
     parser.add_argument(
-        "--batch-size", type=int, default=BLOCKWISE_SIZE,
+        "--batch-size",
+        type=int,
+        default=BLOCKWISE_SIZE,
         help=f"Cells per tiledbsoma read block (default: {BLOCKWISE_SIZE})",
     )
     args = parser.parse_args()

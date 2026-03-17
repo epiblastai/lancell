@@ -48,8 +48,7 @@ def build_file_list(
     for row in rows:
         srx = row.get("srx_accession") or row["SRX_accession"]
         gcs_uri = (
-            f"{GCS_BASE}/{release_date}/h5ad/{feature_type}"
-            f"/Homo_sapiens/{srx}.h5ad"
+            f"{GCS_BASE}/{release_date}/h5ad/{feature_type}/Homo_sapiens/{srx}.h5ad"
             # f"/Caenorhabditis_elegans/{srx}.h5ad"
         )
         local_path = output_dir / f"{srx}.h5ad"
@@ -72,12 +71,14 @@ def download_files(pairs: list[tuple[str, Path]]) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Download scBaseCount h5ad files from GCS"
-    )
+    parser = argparse.ArgumentParser(description="Download scBaseCount h5ad files from GCS")
     parser.add_argument("--output-dir", required=True, help="Local download directory")
-    parser.add_argument("--feature-type", default="Velocyto", help="Feature type (default: Velocyto)")
-    parser.add_argument("--release-date", default="2026-01-12", help="Release date (default: 2026-01-12)")
+    parser.add_argument(
+        "--feature-type", default="Velocyto", help="Feature type (default: Velocyto)"
+    )
+    parser.add_argument(
+        "--release-date", default="2026-01-12", help="Release date (default: 2026-01-12)"
+    )
     parser.add_argument("--max-download", type=int, default=None, help="Limit number of h5ad files")
     parser.add_argument("--dry-run", action="store_true", help="List files without downloading")
     args = parser.parse_args()
@@ -86,7 +87,9 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not args.dry_run and shutil.which("gcloud") is None:
-        raise RuntimeError("gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install")
+        raise RuntimeError(
+            "gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install"
+        )
 
     print(f"Reading sample metadata for {args.feature_type} / {args.release_date}...")
     rows = read_sample_metadata(args.release_date, args.feature_type)
@@ -100,7 +103,9 @@ def main():
         pa.parquet.write_table(pa.Table.from_pylist(rows), str(metadata_path))
         print(f"  Saved sample metadata to {metadata_path}")
 
-    pairs = build_file_list(rows, args.release_date, args.feature_type, output_dir, args.max_download)
+    pairs = build_file_list(
+        rows, args.release_date, args.feature_type, output_dir, args.max_download
+    )
     print(f"  {len(pairs)} files to download")
 
     if args.dry_run:

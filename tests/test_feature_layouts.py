@@ -485,7 +485,9 @@ class TestGroupReaderRemap:
         zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
         grp = zarr_root.create_group("my_group")
 
-        gr = GroupReader.for_worker("my_group", "gene_expression", store, np.array([0], dtype=np.int32))
+        gr = GroupReader.for_worker(
+            "my_group", "gene_expression", store, np.array([0], dtype=np.int32)
+        )
         assert not gr.has_csc
 
         # Create csc/indptr
@@ -493,7 +495,9 @@ class TestGroupReaderRemap:
         csc.create_array("indptr", data=np.array([0, 5, 10], dtype=np.int64))
 
         # Need fresh GroupReader since zarr handle is cached
-        gr2 = GroupReader.for_worker("my_group", "gene_expression", store, np.array([0], dtype=np.int32))
+        gr2 = GroupReader.for_worker(
+            "my_group", "gene_expression", store, np.array([0], dtype=np.int32)
+        )
         assert gr2.has_csc
 
     def test_get_csc_indptr(self, tmp_path):
@@ -509,7 +513,9 @@ class TestGroupReaderRemap:
         expected_indptr = np.array([0, 3, 7, 10], dtype=np.int64)
         csc.create_array("indptr", data=expected_indptr)
 
-        gr = GroupReader.for_worker("my_group", "gene_expression", store, np.array([0, 1, 2], dtype=np.int32))
+        gr = GroupReader.for_worker(
+            "my_group", "gene_expression", store, np.array([0, 1, 2], dtype=np.int32)
+        )
         indptr = gr.get_csc_indptr()
         np.testing.assert_array_equal(indptr, expected_indptr)
         # Cached

@@ -92,12 +92,8 @@ class TestAddCsc:
         add_csc(atlas, zarr_group, feature_space="gene_expression", layer_name="counts")
 
         # Read back CSC indices and values
-        csc_indices_arr = BatchArray.from_array(
-            atlas._root[f"{zarr_group}/csc/indices"]
-        )
-        csc_values_arr = BatchArray.from_array(
-            atlas._root[f"{zarr_group}/csc/layers/counts"]
-        )
+        csc_indices_arr = BatchArray.from_array(atlas._root[f"{zarr_group}/csc/indices"])
+        csc_values_arr = BatchArray.from_array(atlas._root[f"{zarr_group}/csc/layers/counts"])
 
         # Get indptr from zarr
         indptr = np.asarray(atlas._root[f"{zarr_group}/csc/indptr"][:])
@@ -146,15 +142,14 @@ class TestAddCsc:
             our_cell_ids = all_indices[our_start:our_end]
             exp_cell_ids = expected_indices[exp_start:exp_end]
             np.testing.assert_array_equal(
-                our_cell_ids, exp_cell_ids,
+                our_cell_ids,
+                exp_cell_ids,
                 err_msg=f"Feature {j} cell IDs mismatch",
             )
 
     def test_single_cell(self, tmp_path):
         """Edge case: single cell."""
-        atlas, zarr_group, expected_csc = _create_atlas_with_data(
-            tmp_path, n_obs=1, n_vars=10
-        )
+        atlas, zarr_group, expected_csc = _create_atlas_with_data(tmp_path, n_obs=1, n_vars=10)
         add_csc(atlas, zarr_group, feature_space="gene_expression", layer_name="counts")
 
         # Verify nnz matches via zarr indptr
@@ -164,9 +159,7 @@ class TestAddCsc:
 
     def test_single_feature(self, tmp_path):
         """Edge case: single feature."""
-        atlas, zarr_group, expected_csc = _create_atlas_with_data(
-            tmp_path, n_obs=20, n_vars=1
-        )
+        atlas, zarr_group, expected_csc = _create_atlas_with_data(tmp_path, n_obs=20, n_vars=1)
         add_csc(atlas, zarr_group, feature_space="gene_expression", layer_name="counts")
 
         indptr = np.asarray(atlas._root[f"{zarr_group}/csc/indptr"][:])

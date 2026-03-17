@@ -128,7 +128,11 @@ def register_genes(atlas: RaggedAtlas, adata: ad.AnnData, organism: str) -> dict
         if gene_id in existing_gene_to_uid:
             gene_to_uid[gene_id] = existing_gene_to_uid[gene_id]
         else:
-            gene_name = str(var_deduped.iloc[i]["gene_symbols"]) if "gene_symbols" in var_deduped.columns else gene_id
+            gene_name = (
+                str(var_deduped.iloc[i]["gene_symbols"])
+                if "gene_symbols" in var_deduped.columns
+                else gene_id
+            )
             feature = GeneFeatureSpace(gene_id=gene_id, gene_name=gene_name, organism=organism)
             new_features.append(feature)
             gene_to_uid[gene_id] = feature.uid
@@ -145,7 +149,9 @@ def register_genes(atlas: RaggedAtlas, adata: ad.AnnData, organism: str) -> dict
     return gene_to_uid
 
 
-def _union_sparsity(matrices: list[sp.csr_matrix]) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+def _union_sparsity(
+    matrices: list[sp.csr_matrix],
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
     """Compute union sparsity pattern across multiple CSR matrices.
 
     Returns
@@ -178,7 +184,11 @@ def _union_sparsity(matrices: list[sp.csr_matrix]) -> tuple[np.ndarray, np.ndarr
             row_col_sets.append(all_indices[k][s:e])
 
         # Union of column indices, sorted
-        union_cols = np.unique(np.concatenate(row_col_sets)) if any(len(c) > 0 for c in row_col_sets) else np.array([], dtype=np.int32)
+        union_cols = (
+            np.unique(np.concatenate(row_col_sets))
+            if any(len(c) > 0 for c in row_col_sets)
+            else np.array([], dtype=np.int32)
+        )
         union_indices_parts.append(union_cols)
         union_indptr[i + 1] = union_indptr[i] + len(union_cols)
 
@@ -194,7 +204,9 @@ def _union_sparsity(matrices: list[sp.csr_matrix]) -> tuple[np.ndarray, np.ndarr
                 vals[pos] = data_k
             reindexed_parts[k].append(vals)
 
-    indices = np.concatenate(union_indices_parts) if union_indices_parts else np.array([], dtype=np.int32)
+    indices = (
+        np.concatenate(union_indices_parts) if union_indices_parts else np.array([], dtype=np.int32)
+    )
     reindexed_values = [
         np.concatenate(parts) if parts else np.array([], dtype=matrices[k].data.dtype)
         for k, parts in enumerate(reindexed_parts)
@@ -227,8 +239,16 @@ def ingest_genefull(
 
     # Get sparse matrices for all 3 layers
     unique = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
-    em = adata.layers["UniqueAndMult-EM"] if isinstance(adata.layers["UniqueAndMult-EM"], sp.csr_matrix) else sp.csr_matrix(adata.layers["UniqueAndMult-EM"])
-    uniform = adata.layers["UniqueAndMult-Uniform"] if isinstance(adata.layers["UniqueAndMult-Uniform"], sp.csr_matrix) else sp.csr_matrix(adata.layers["UniqueAndMult-Uniform"])
+    em = (
+        adata.layers["UniqueAndMult-EM"]
+        if isinstance(adata.layers["UniqueAndMult-EM"], sp.csr_matrix)
+        else sp.csr_matrix(adata.layers["UniqueAndMult-EM"])
+    )
+    uniform = (
+        adata.layers["UniqueAndMult-Uniform"]
+        if isinstance(adata.layers["UniqueAndMult-Uniform"], sp.csr_matrix)
+        else sp.csr_matrix(adata.layers["UniqueAndMult-Uniform"])
+    )
 
     # Cast float to int32 if values are raw integer counts
     for mat in (unique, em, uniform):
@@ -241,7 +261,12 @@ def ingest_genefull(
 
     # Determine if data is integer for bitpacking
     data_dtype = unique.data.dtype
-    use_bitpacking = data_dtype in {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
+    use_bitpacking = data_dtype in {
+        np.dtype("int32"),
+        np.dtype("int64"),
+        np.dtype("uint32"),
+        np.dtype("uint64"),
+    }
     indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
     layer_kwargs: dict = {}
     if use_bitpacking:
@@ -301,10 +326,19 @@ def ingest_genefull(
     }
     # Copy sample metadata fields that exist
     sample_fields = [
-        "lib_prep", "tech_10x", "cell_prep", "organism", "tissue",
-        "tissue_ontology_term_id", "disease", "disease_ontology_term_id",
-        "perturbation", "cell_line", "antibody_derived_tag",
-        "czi_collection_id", "czi_collection_name",
+        "lib_prep",
+        "tech_10x",
+        "cell_prep",
+        "organism",
+        "tissue",
+        "tissue_ontology_term_id",
+        "disease",
+        "disease_ontology_term_id",
+        "perturbation",
+        "cell_line",
+        "antibody_derived_tag",
+        "czi_collection_id",
+        "czi_collection_name",
     ]
     for field in sample_fields:
         if field in sample_row:
@@ -365,14 +399,18 @@ def ingest_genefull(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Ingest a scBaseCount h5ad into a lancell atlas"
-    )
+    parser = argparse.ArgumentParser(description="Ingest a scBaseCount h5ad into a lancell atlas")
     parser.add_argument("--h5ad", required=True, help="Path to .h5ad file")
     parser.add_argument("--atlas-dir", required=True, help="Path to atlas directory")
     parser.add_argument("--sample-metadata", required=True, help="Path to sample_metadata.parquet")
-    parser.add_argument("--feature-type", default="GeneFull_Ex50pAS", help="Feature type (default: GeneFull_Ex50pAS)")
-    parser.add_argument("--release-date", default="2026-01-12", help="Release date (default: 2026-01-12)")
+    parser.add_argument(
+        "--feature-type",
+        default="GeneFull_Ex50pAS",
+        help="Feature type (default: GeneFull_Ex50pAS)",
+    )
+    parser.add_argument(
+        "--release-date", default="2026-01-12", help="Release date (default: 2026-01-12)"
+    )
     parser.add_argument("--no-csc", action="store_true", help="Skip CSC layout")
     args = parser.parse_args()
 
@@ -403,8 +441,13 @@ def main():
 
     print("Ingesting genefull data...")
     n_cells, zarr_group = ingest_genefull(
-        atlas, adata, h5ad_path, gene_to_uid, sample_row,
-        args.feature_type, args.release_date,
+        atlas,
+        adata,
+        h5ad_path,
+        gene_to_uid,
+        sample_row,
+        args.feature_type,
+        args.release_date,
     )
 
     if not args.no_csc:

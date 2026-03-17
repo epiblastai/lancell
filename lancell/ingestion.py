@@ -408,7 +408,6 @@ def write_feature_layout(
     atlas.add_or_reuse_layout(var_df, dataset_uid, feature_space)
 
 
-
 def add_csc(
     atlas: RaggedAtlas,
     zarr_group: str,
@@ -509,8 +508,16 @@ def add_csc(
     n_features = len(rows)
 
     _add_csc_scipy(
-        atlas, zarr_group, layer_name, starts, ends,
-        n_cells, n_features, chunk_size, shard_size, feature_space,
+        atlas,
+        zarr_group,
+        layer_name,
+        starts,
+        ends,
+        n_cells,
+        n_features,
+        chunk_size,
+        shard_size,
+        feature_space,
     )
 
 
@@ -576,5 +583,3 @@ def _add_csc_scipy(
 
     # Cache invalidation
     atlas._group_readers.pop((zarr_group, feature_space), None)
-
-

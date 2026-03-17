@@ -83,17 +83,16 @@ def migrate(
         dataset_to_layout[ds_uid] = layout_uid
 
         if layout_uid not in layout_dfs:
-            layout_dfs[layout_uid] = pl.DataFrame({
-                "layout_uid": [layout_uid] * len(feature_uids),
-                "feature_uid": feature_uids,
-                "local_index": list(range(len(feature_uids))),
-                "global_index": ds_rows["global_index"].to_list(),
-            })
+            layout_dfs[layout_uid] = pl.DataFrame(
+                {
+                    "layout_uid": [layout_uid] * len(feature_uids),
+                    "feature_uid": feature_uids,
+                    "local_index": list(range(len(feature_uids))),
+                    "global_index": ds_rows["global_index"].to_list(),
+                }
+            )
 
-    print(
-        f"Computed {len(layout_dfs)} unique layout(s) from "
-        f"{len(dataset_uids)} dataset(s)"
-    )
+    print(f"Computed {len(layout_dfs)} unique layout(s) from {len(dataset_uids)} dataset(s)")
     for layout_uid, ldf in layout_dfs.items():
         print(f"  layout {layout_uid}: {len(ldf)} features")
 
@@ -119,10 +118,7 @@ def migrate(
         db.drop_table("_dataset_vars")
         print("Dropped old _dataset_vars table")
     else:
-        print(
-            "Old _dataset_vars table retained. "
-            "Re-run with --drop-old to remove it."
-        )
+        print("Old _dataset_vars table retained. Re-run with --drop-old to remove it.")
 
     # ── Verify ────────────────────────────────────────────────────────
     verify_table = db.open_table("_feature_layouts")
@@ -146,10 +142,12 @@ def _migrate_datasets_table(
         # Column exists, just update values
         if dataset_to_layout:
             ds_df = ds_df.with_columns(
-                pl.col("uid").map_elements(
+                pl.col("uid")
+                .map_elements(
                     lambda uid: dataset_to_layout.get(uid, ""),
                     return_dtype=pl.Utf8,
-                ).alias("layout_uid")
+                )
+                .alias("layout_uid")
             )
             ds_table.merge_insert(on="uid").when_matched_update_all().execute(ds_df)
             print(f"Updated layout_uid for {len(ds_df)} dataset(s)")
@@ -157,10 +155,12 @@ def _migrate_datasets_table(
         # Need to add the column — drop and recreate with new data
         if dataset_to_layout:
             ds_df = ds_df.with_columns(
-                pl.col("uid").map_elements(
+                pl.col("uid")
+                .map_elements(
                     lambda uid: dataset_to_layout.get(uid, ""),
                     return_dtype=pl.Utf8,
-                ).alias("layout_uid")
+                )
+                .alias("layout_uid")
             )
         else:
             ds_df = ds_df.with_columns(pl.lit("").alias("layout_uid"))
@@ -206,9 +206,7 @@ def _migrate_csc_to_zarr(
     if "csc_start" not in old_df.columns or "csc_end" not in old_df.columns:
         return
 
-    has_csc = old_df.filter(
-        pl.col("csc_start").is_not_null() & pl.col("csc_end").is_not_null()
-    )
+    has_csc = old_df.filter(pl.col("csc_start").is_not_null() & pl.col("csc_end").is_not_null())
     if has_csc.is_empty():
         print("No CSC data found in _dataset_vars (csc_start/csc_end all null)")
         return

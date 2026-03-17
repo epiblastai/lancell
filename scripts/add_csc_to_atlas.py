@@ -46,7 +46,9 @@ def main():
     )
 
     # Find the zarr group(s) from the dataset table
-    datasets_df = atlas._dataset_table.search().select(["zarr_group", "feature_space", "n_cells"]).to_polars()
+    datasets_df = (
+        atlas._dataset_table.search().select(["zarr_group", "feature_space", "n_cells"]).to_polars()
+    )
     print(f"Found {len(datasets_df)} dataset(s):")
     print(datasets_df)
 
