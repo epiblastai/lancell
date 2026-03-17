@@ -4,6 +4,8 @@ Multimodal single-cell database built on [LanceDB](https://lancedb.com) and [Zar
 
 Cell metadata lives in LanceDB — queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr. A PyTorch-native data loading layer reads directly from those stores without intermediate copies or format conversions.
 
+- **[Documentation](https://epiblastai.github.io/lancell/)**
+
 ---
 
 ## Installation
