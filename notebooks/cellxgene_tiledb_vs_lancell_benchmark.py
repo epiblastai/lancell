@@ -47,8 +47,8 @@ def _(mo):
 
     | System | Dataset path |
     |--------|-------------|
-    | **TileDB-SOMA** (`tiledbsoma-ml`) | `~/datasets/mus_musculus/` |
-    | **lancell** (`CellDataset` + `CellSampler`) | `~/datasets/mus_musculus_lancell/` |
+    | **TileDB-SOMA** (`tiledbsoma-ml`) | `s3://epiblast-public/cellxgene_mouse_tiledb/` |
+    | **lancell** (`CellDataset` + `CellSampler`) | `s3://epiblast-public/cellxgene_mouse_lancell/` |
 
     Both atlases contain the same ~44M cell mouse atlas from CellxGene Census.
     We benchmark random-shuffle streaming throughput for single-worker and
@@ -86,8 +86,8 @@ def _(batch_size_slider, n_cells_slider, n_epochs_slider):
 
 
 @app.cell
-def _(os, tiledbsoma, time):
-    TILEDB_URI = os.path.expanduser("~/datasets/mus_musculus/")
+def _(tiledbsoma, time):
+    TILEDB_URI = "s3://epiblast-public/cellxgene_mouse_tiledb/"
 
     _t0 = time.perf_counter()
     experiment = tiledbsoma.Experiment.open(TILEDB_URI)
@@ -109,9 +109,9 @@ def _(os, time):
     from examples.cellxgene_census_tiledb.schema import CellObs
     from lancell.atlas import RaggedAtlas
 
-    LANCELL_DIR = os.path.expanduser("~/datasets/mus_musculus_lancell/")
+    LANCELL_DIR = "s3://epiblast-public/cellxgene_mouse_lancell/"
 
-    store = obstore.store.LocalStore(os.path.join(LANCELL_DIR, "zarr_store"))
+    store = obstore.store.S3Store.from_url(os.path.join(LANCELL_DIR, "zarr_store"))
     _t0 = time.perf_counter()
     atlas = RaggedAtlas.checkout_latest(
         db_uri=os.path.join(LANCELL_DIR, "lance_db"),
@@ -356,7 +356,7 @@ def _(mo):
 def _(mo):
     worker_counts_input = mo.ui.array(
         [
-            mo.ui.checkbox(value=True, label="0 (in-process)"),
+            mo.ui.checkbox(value=False, label="0 (in-process)"),
             mo.ui.checkbox(value=True, label="2 workers"),
             mo.ui.checkbox(value=True, label="4 workers"),
             mo.ui.checkbox(value=False, label="8 workers"),
@@ -782,9 +782,9 @@ def _(
         max_cells = n_query_cells_slider.value
         N_RUNS = 3
         gene_filter = "feature_name in ('" + "', '".join(selected_gene_names) + "')"
-    
+
         print(f"Combined: cell_type = '{cell_type}', {len(selected_gene_names)} genes, limit = {max_cells:,}")
-    
+
         lancell_times = []
         for _i in range(N_RUNS):
             t0 = time.perf_counter()
@@ -797,7 +797,7 @@ def _(
             )
             lancell_times.append(time.perf_counter() - t0)
             print(f"  lancell     run {_i+1}: {lancell_times[-1]:.2f}s -> {adata_l.shape}")
-    
+
         tiledb_times = []
         for _i in range(N_RUNS):
             t0 = time.perf_counter()

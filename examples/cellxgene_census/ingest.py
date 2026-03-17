@@ -26,8 +26,8 @@ from lancell.schema import make_uid
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"
-CHUNK_SIZE = 5_000
-SHARD_SIZE = 50_000_000
+CHUNK_SIZE = 40_960
+SHARD_SIZE = 1024 * CHUNK_SIZE
 
 
 def make_store(atlas_dir: str) -> obstore.store.ObjectStore:
