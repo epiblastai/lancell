@@ -19,7 +19,6 @@ import obstore
 import polars as pl
 import zarr
 
-from lancell._util import sql_escape
 from lancell.feature_layouts import (
     build_feature_layout_df,
     layout_exists,
@@ -36,6 +35,7 @@ from lancell.schema import (
     FeatureLayout,
     LancellBaseSchema,
 )
+from lancell.util import sql_escape
 
 # ---------------------------------------------------------------------------
 # RaggedAtlas

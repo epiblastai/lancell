@@ -11,7 +11,7 @@ import lancedb
 import numpy as np
 import polars as pl
 
-from lancell._util import sql_escape
+from lancell.util import sql_escape
 
 if TYPE_CHECKING:
     import zarr

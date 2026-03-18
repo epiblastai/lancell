@@ -13,7 +13,6 @@ import anndata as ad
 import numpy as np
 import polars as pl
 
-from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
 from lancell.group_specs import get_spec
 from lancell.obs_alignment import PointerFieldInfo
@@ -21,6 +20,7 @@ from lancell.reconstruction import (
     _build_obs_only_anndata,
     _get_pointer_columns,
 )
+from lancell.util import sql_escape
 
 
 class AtlasQuery:

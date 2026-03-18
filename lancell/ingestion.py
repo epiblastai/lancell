@@ -14,7 +14,6 @@ import pyarrow as pa
 import scipy.sparse as sp
 import zarr
 
-from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
 from lancell.feature_layouts import read_feature_layout
 from lancell.group_specs import PointerKind, get_spec
@@ -23,6 +22,7 @@ from lancell.schema import (
     DatasetRecord,
     make_uid,
 )
+from lancell.util import sql_escape
 
 _INTEGER_DTYPES = {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
 
