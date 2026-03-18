@@ -4,7 +4,6 @@
 #     "marimo",
 #     "lancell",
 #     "lancedb",
-#     "obstore",
 #     "polars",
 #     "numpy",
 #     "torch",
@@ -22,7 +21,6 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import os
     import time
 
     import altair as alt
@@ -32,7 +30,7 @@ def _():
     import tiledbsoma
     from tqdm.auto import tqdm
 
-    return alt, mo, np, os, pl, tiledbsoma, time, tqdm
+    return alt, mo, np, pl, tiledbsoma, time, tqdm
 
 
 @app.cell(hide_code=True)
@@ -96,52 +94,16 @@ def _(tiledbsoma, time):
 
 
 @app.cell
-def _(os, time):
-    import obstore.store
-
+def _(time):
     from lancell.atlas import RaggedAtlas
-    from lancell.schema import LancellBaseSchema, SparseZarrPointer
-
-    class CellObs(LancellBaseSchema):
-        gene_expression: SparseZarrPointer | None = None
-        assay: str | None = None
-        cell_type: str | None = None
-        disease: str | None = None
-        sex: str | None = None
-        tissue: str | None = None
-        self_reported_ethnicity: str | None = None
-        development_stage: str | None = None
-        tissue_type: str | None = None
-        tissue_general: str | None = None
-        suspension_type: str | None = None
-        donor_id: str | None = None
-        is_primary_data: bool | None = None
-        observation_joinid: str | None = None
-        assay_ontology_term_id: str | None = None
-        cell_type_ontology_term_id: str | None = None
-        disease_ontology_term_id: str | None = None
-        sex_ontology_term_id: str | None = None
-        tissue_ontology_term_id: str | None = None
-        self_reported_ethnicity_ontology_term_id: str | None = None
-        development_stage_ontology_term_id: str | None = None
-        tissue_general_ontology_term_id: str | None = None
-        raw_sum: float | None = None
-        nnz: int | None = None
-        raw_mean_nnz: float | None = None
-        raw_variance_nnz: float | None = None
-        n_measured_vars: int | None = None
 
     LANCELL_DIR = "s3://epiblast-public/cellxgene_mouse_lancell/"
+    S3_KWARGS = {"config": {"skip_signature": True, "region": "us-east-2"}}
 
-    store = obstore.store.S3Store.from_url(
-        os.path.join(LANCELL_DIR, "zarr_store"),
-        config={"skip_signature": True, "region": "us-east-2"},
-    )
     _t0 = time.perf_counter()
     atlas = RaggedAtlas.checkout_latest(
-        db_uri=os.path.join(LANCELL_DIR, "lance_db"),
-        cell_schema=CellObs,
-        store=store,
+        db_uri=LANCELL_DIR + "lance_db",
+        store_kwargs=S3_KWARGS,
     )
     lancell_open_s = time.perf_counter() - _t0
 
@@ -233,7 +195,7 @@ def _(np, tiledbsoma, time, tqdm):
             "cells_per_s": total_cells / total_s if total_s > 0 else 0,
         }
 
-    return
+    return (run_tiledb_epoch,)
 
 
 @app.cell
@@ -327,9 +289,11 @@ def _(
     N_CELLS,
     SEED,
     atlas,
+    experiment,
     mo,
     pl,
     run_lancell_epoch,
+    run_tiledb_epoch,
     worker_counts,
 ):
     multi_rows = []
@@ -346,7 +310,7 @@ def _(
 
         # TileDB
         print(f"  TileDB-SOMA ...", end=" ", flush=True)
-        res_t = res_l # run_tiledb_epoch(experiment, N_CELLS, BATCH_SIZE, SEED, num_workers=nw)
+        res_t = run_tiledb_epoch(experiment, N_CELLS, BATCH_SIZE, SEED, num_workers=nw)
         print(
             f"{res_t['total_s']:.2f}s, {res_t['cells_per_s']:,.0f} cells/s"
         )

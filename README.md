@@ -78,8 +78,25 @@ add_from_anndata(atlas, adata, feature_space="gene_expression",
 atlas.optimize()
 atlas.snapshot()
 
-atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", CellSchema, store)
+atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", store=store)
 adata = atlas_r.query().where("cell_type = 'T cells'").to_anndata()
+```
+
+### Opening a public atlas
+
+The CellxGene Census mouse atlas (~44M cells) is available on S3.
+No schema class or store construction needed — just `db_uri` and S3 config:
+
+```python
+from lancell.atlas import RaggedAtlas
+
+atlas = RaggedAtlas.checkout_latest(
+    db_uri="s3://epiblast-public/cellxgene_mouse_lancell/lance_db",
+    store_kwargs={"config": {"skip_signature": True, "region": "us-east-2"}},
+)
+
+atlas.query().count()                                           # 43,969,325
+adata = atlas.query().where("cell_type = 'neural cell'").limit(5000).to_anndata()
 ```
 
 ### Querying
@@ -169,7 +186,7 @@ atlas.optimize()
 v0 = atlas.snapshot()       # validate + commit; returns version int
 
 # read-only handle pinned to v0 — concurrent ingestion won't affect it
-atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", CellSchema, store)
+atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", store=store)
 
 # inspect available snapshots
 RaggedAtlas.list_versions("/data/atlas/db")

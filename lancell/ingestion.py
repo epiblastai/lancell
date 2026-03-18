@@ -14,15 +14,15 @@ import pyarrow as pa
 import scipy.sparse as sp
 import zarr
 
-from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
 from lancell.feature_layouts import read_feature_layout
-from lancell.group_specs import PointerKind, get_spec
+from lancell.group_specs import PointerKind, ZarrGroupSpec, get_spec
 from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields, validate_obs_columns
 from lancell.schema import (
     DatasetRecord,
     make_uid,
 )
+from lancell.util import sql_escape
 
 _INTEGER_DTYPES = {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
 
@@ -43,6 +43,7 @@ def _write_sparse_batched(
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
     use_bitpacking: bool,
+    spec: ZarrGroupSpec,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pre-allocate and stream-write CSR data in shard-sized batches.
 
@@ -79,17 +80,29 @@ def _write_sparse_batched(
         src_data = csr.data
         data_dtype = csr.data.dtype
 
-    csr_group = group.create_group("csr")
-    zarr_indices = csr_group.create_array(
-        "indices",
-        shape=(nnz,),
-        dtype=np.uint32,
-        chunks=chunk_shape,
-        shards=shard_shape,
-        **indices_kwargs,
-    )
-    layers = csr_group.create_group("layers")
-    zarr_values = layers.create_array(
+    prefix = spec.layers.prefix
+    if prefix:
+        prefix_group = group.create_group(prefix)
+        zarr_indices = prefix_group.create_array(
+            "indices",
+            shape=(nnz,),
+            dtype=np.uint32,
+            chunks=chunk_shape,
+            shards=shard_shape,
+            **indices_kwargs,
+        )
+        layers_group = prefix_group.create_group("layers")
+    else:
+        zarr_indices = group.create_array(
+            "indices",
+            shape=(nnz,),
+            dtype=np.uint32,
+            chunks=chunk_shape,
+            shards=shard_shape,
+            **indices_kwargs,
+        )
+        layers_group = group.create_group("layers")
+    zarr_values = layers_group.create_array(
         zarr_layer,
         shape=(nnz,),
         dtype=data_dtype,
@@ -113,9 +126,10 @@ def _write_sparse_batched(
 def _write_dense_batched(
     group: zarr.Group,
     adata: ad.AnnData,
-    zarr_layer: str | None,
+    zarr_layer: str,
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
+    spec: ZarrGroupSpec,
 ) -> None:
     """Pre-allocate and stream-write dense 2D data in shard-sized cell batches.
 
@@ -126,23 +140,15 @@ def _write_dense_batched(
     batch_size = shard_shape[0]
     data_dtype = adata.X.dtype
 
-    if zarr_layer is not None:
-        layers_group = group.create_group("layers")
-        zarr_arr = layers_group.create_array(
-            zarr_layer,
-            shape=(n_cells, n_vars),
-            dtype=data_dtype,
-            chunks=chunk_shape,
-            shards=shard_shape,
-        )
-    else:
-        zarr_arr = group.create_array(
-            "data",
-            shape=(n_cells, n_vars),
-            dtype=data_dtype,
-            chunks=chunk_shape,
-            shards=shard_shape,
-        )
+    layers_path = spec.find_layers_path()
+    layers_group = group.create_group(layers_path)
+    zarr_arr = layers_group.create_array(
+        zarr_layer,
+        shape=(n_cells, n_vars),
+        dtype=data_dtype,
+        chunks=chunk_shape,
+        shards=shard_shape,
+    )
 
     written = 0
     while written < n_cells:
@@ -156,7 +162,7 @@ def add_anndata_batch(
     adata: ad.AnnData,
     *,
     feature_space: str,
-    zarr_layer: str | None,
+    zarr_layer: str,
     dataset_record: DatasetRecord,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
@@ -182,9 +188,9 @@ def add_anndata_batch(
     feature_space:
         Which feature space this data belongs to.
     zarr_layer:
-        Destination layer name within the zarr CSR ``layers/`` group
-        (e.g. ``"counts"``). Required for feature spaces with
-        ``allowed_layers``; pass ``None`` for feature spaces without layers.
+        Destination layer name within the zarr ``layers/`` group
+        (e.g. ``"counts"``). Must be one of the allowed values for the
+        feature space.
     dataset_record:
         Dataset record to register. ``dataset_record.zarr_group`` is used as
         the zarr group path (relative to the atlas store). Construct with
@@ -205,17 +211,18 @@ def add_anndata_batch(
     int
         Number of cells ingested.
     """
+    if atlas._cell_schema is None:
+        raise ValueError(
+            "Cannot ingest data into an atlas opened without a cell schema. "
+            "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
+        )
+
     spec = get_spec(feature_space)
 
-    if spec.allowed_layers and zarr_layer is None:
-        raise ValueError(
-            f"zarr_layer is required for feature space '{feature_space}'. "
-            f"Allowed values: {spec.allowed_layers}"
-        )
-    if zarr_layer is not None and spec.allowed_layers and zarr_layer not in spec.allowed_layers:
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.allowed_layers}"
+            f"'{feature_space}'. Allowed: {spec.layers.allowed}"
         )
 
     obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
@@ -276,9 +283,10 @@ def add_anndata_batch(
             chunk_shape,
             shard_shape,
             use_bitpacking,
+            spec,
         )
     else:
-        _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape)
+        _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
 
     if spec.has_var_df:
         write_feature_layout(atlas, adata, feature_space, zarr_group, dataset_record.uid)
@@ -359,7 +367,7 @@ def add_from_anndata(
     adata: ad.AnnData | str | Path,
     *,
     feature_space: str,
-    zarr_layer: str | None,
+    zarr_layer: str,
     dataset_record: DatasetRecord,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
@@ -413,8 +421,8 @@ def add_csc(
     zarr_group: str,
     feature_space: str,
     layer_name: str = "counts",
-    chunk_size: int = 4096,
-    shard_size: int = 65536,
+    chunk_size: int = _CHUNK_ELEMS,
+    shard_size: int = _SHARD_ELEMS,
 ) -> None:
     """Read existing CSR group and write CSC alongside it.
 
@@ -507,6 +515,7 @@ def add_csc(
     rows = read_feature_layout(atlas._feature_layouts_table, layout_uid)
     n_features = len(rows)
 
+    spec = get_spec(feature_space)
     _add_csc_scipy(
         atlas,
         zarr_group,
@@ -518,6 +527,7 @@ def add_csc(
         chunk_size,
         shard_size,
         feature_space,
+        spec,
     )
 
 
@@ -532,11 +542,15 @@ def _add_csc_scipy(
     chunk_size: int,
     shard_size: int,
     feature_space: str,
+    spec: ZarrGroupSpec,
 ) -> None:
     """CSR-to-CSC using scipy (fast, but loads full matrix into RAM)."""
+    csr_prefix = spec.layers.prefix
+    csr_layers_path = spec.find_layers_path()
+
     root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="r")
-    csr_indices = root[f"{zarr_group}/csr/indices"][:]
-    csr_values = root[f"{zarr_group}/csr/layers/{layer_name}"][:]
+    csr_indices = root[f"{zarr_group}/{csr_prefix}/indices"][:]
+    csr_values = root[f"{zarr_group}/{csr_layers_path}/{layer_name}"][:]
 
     indptr = np.empty(n_cells + 1, dtype=np.int64)
     indptr[0] = 0

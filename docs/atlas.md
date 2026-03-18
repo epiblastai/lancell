@@ -66,7 +66,7 @@ A `ZarrGroupSpec` declares the expected zarr layout for a feature space. Registe
 
 ```python
 from lancell.group_specs import (
-    ZarrGroupSpec, PointerKind, SubgroupSpec, register_spec,
+    ZarrGroupSpec, PointerKind, LayersSpec, register_spec,
 )
 from lancell.reconstruction import DenseReconstructor
 
@@ -74,9 +74,11 @@ LOGNORM_RNA_SPEC = ZarrGroupSpec(
     feature_space="lognorm_rna",
     pointer_kind=PointerKind.DENSE,   # each cell stores a row index, not a byte range
     has_var_df=True,                  # this space has a feature registry + _feature_layouts rows
-    required_subgroups=[SubgroupSpec(subgroup_name="layers", uniform_shape=True)],
-    required_layers=["log_normalized"],
-    allowed_layers=["log_normalized"],
+    layers=LayersSpec(
+        uniform_shape=True,
+        required=["log_normalized"],
+        allowed=["log_normalized"],
+    ),
     reconstructor=DenseReconstructor(),
 )
 register_spec(LOGNORM_RNA_SPEC)

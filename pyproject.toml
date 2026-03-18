@@ -1,6 +1,6 @@
 [project]
 name = "lancell"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cell-centric ML training backend on LanceDB and sharded zarr"
 readme = "README.md"
 requires-python = ">=3.12"

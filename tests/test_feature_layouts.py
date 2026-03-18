@@ -222,10 +222,18 @@ class TestLayoutReuse:
 
 class TestSyncLayoutsGlobalIndex:
     def test_basic_sync(self, tmp_path):
+        """Sync fills NULL global_index from registry (the post-reindex_registry path)."""
         uids = ["uid_c", "uid_a", "uid_b"]
         registry = _make_registry(tmp_path, uids, indexed=False)
         table = _make_feature_layouts_table(tmp_path)
 
+        # Build layout BEFORE reindex — global_index will be NULL
+        var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
+        layout_uid, df = build_feature_layout_df(var_df, registry)
+        assert df["global_index"].null_count() == 2
+        table.add(df)
+
+        # Now index the registry
         reindex_registry(registry)
 
         # Look up actual assigned indices
@@ -233,20 +241,7 @@ class TestSyncLayoutsGlobalIndex:
         gi_c = int(reg_df.filter(pl.col("uid") == "uid_c")["global_index"][0])
         gi_a = int(reg_df.filter(pl.col("uid") == "uid_a")["global_index"][0])
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
-        layout_uid, df = build_feature_layout_df(var_df, registry)
-        table.add(df)
-
-        # Manually mess up global_index then sync
-        rows = read_feature_layout(table, layout_uid)
-        stale = rows.with_columns(pl.Series("global_index", [-1, -1]))
-        (
-            table.merge_insert(on=["layout_uid", "feature_uid"])
-            .when_matched_update_all()
-            .execute(stale)
-        )
-
-        # Sync restores correct values
+        # Sync propagates the new indices to NULL layout rows
         n = sync_layouts_global_index(table, registry)
         assert n == 2
 

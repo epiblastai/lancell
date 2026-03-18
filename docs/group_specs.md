@@ -4,7 +4,7 @@ A `ZarrGroupSpec` is a declaration: it tells lancell what zarr arrays to expect 
 
 ```python
 from lancell.group_specs import (
-    ZarrGroupSpec, PointerKind, SubgroupSpec, ArraySpec,
+    ZarrGroupSpec, PointerKind, LayersSpec, ArraySpec,
     DTypeKind, register_spec, get_spec, registered_feature_spaces,
 )
 from lancell.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
@@ -35,16 +35,19 @@ The `PointerKind` declared in the spec must match the pointer field types used i
 | `dtype_kind` | `DTypeKind \| None` | Expected numeric category: `BOOL`, `SIGNED_INTEGER`, `UNSIGNED_INTEGER`, or `FLOAT`. `None` means any dtype is accepted. |
 | `ndim` | `int \| None` | Expected number of dimensions. `None` means any dimensionality is accepted. |
 
-### SubgroupSpec
+### LayersSpec
 
-`SubgroupSpec` declares expected properties of a zarr subgroup:
+`LayersSpec` declares the layers zarr subgroup for a feature space:
 
 | Field | Type | Description |
 |---|---|---|
-| `subgroup_name` | `str` | Path of the subgroup relative to the group root (e.g. `"csr/layers"`). |
-| `required_arrays` | `list[ArraySpec] \| None` | Specific named arrays that must exist in this subgroup. |
-| `uniform_shape` | `bool` | When `True`, all arrays in this subgroup must share the same shape. Useful for asserting that all layers have identical cell and feature counts. |
-| `match_shape_of` | `str \| None` | When set, every array in this subgroup must have the same shape as the sibling array named here (resolved relative to the parent group). |
+| `prefix` | `str` | Path prefix before `layers/`. Empty string means `"layers/"` at the group root; `"csr"` means `"csr/layers/"`. |
+| `uniform_shape` | `bool` | When `True`, all arrays in the layers subgroup must share the same shape. Useful for asserting that all layers have identical cell and feature counts. |
+| `match_shape_of` | `str \| None` | When set, every array in the layers subgroup must have the same shape as the sibling array named here (resolved relative to the parent group). |
+| `required` | `list[str]` | Layer names that must exist in the layers subgroup. Also used as the default layers to read at query time. |
+| `allowed` | `list[str]` | Whitelist of valid layer names for ingestion validation. |
+
+The `path` property returns the resolved layers path: `f"{prefix}/layers"` if `prefix` is non-empty, otherwise `"layers"`.
 
 ---
 
@@ -78,17 +81,9 @@ See the Reconstructors page for guidance on choosing between these.
 
 `list[ArraySpec]`. Arrays that must exist directly under the group root. The `validate_group` method checks that each named array is present and (if specified) has the right `dtype_kind` and `ndim`. Missing or mistyped arrays are reported as errors.
 
-### `required_subgroups`
+### `layers`
 
-`list[SubgroupSpec]`. Subgroups that must exist under the group root. Each `SubgroupSpec` can further declare required arrays, shape uniformity, and shape matching constraints against sibling arrays.
-
-### `required_layers`
-
-`list[str]`. Layer names that the reconstruction layer loads by default at query time. These names are resolved against the `layers/` subgroup (or `csr/layers/` for sparse groups) when assembling an AnnData. Every name in `required_layers` must also appear in `allowed_layers`.
-
-### `allowed_layers`
-
-`list[str]`. Whitelist of valid layer names for ingestion validation. Attempting to ingest a layer whose name is not in this list raises an error. Use this to prevent subtle naming inconsistencies from accumulating across datasets (e.g., `"lognorm"` vs `"log_normalized"` vs `"log_norm"`).
+`LayersSpec`. Declares the layers subgroup: its path prefix, shape constraints, required layers, and allowed layers. The `layers.path` property resolves the full subgroup path (e.g. `"csr/layers"` or `"layers"`). `layers.required` lists the layer names loaded by default at query time. `layers.allowed` is a whitelist for ingestion validation — attempting to ingest a layer whose name is not in this list raises an error.
 
 ---
 
@@ -104,9 +99,13 @@ ZarrGroupSpec(
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER)],
-    required_subgroups=[SubgroupSpec(subgroup_name="csr/layers", uniform_shape=True, match_shape_of="csr/indices")],
-    required_layers=["counts"],
-    allowed_layers=["counts", "log_normalized", "tpm"],
+    layers=LayersSpec(
+        prefix="csr",
+        uniform_shape=True,
+        match_shape_of="csr/indices",
+        required=["counts"],
+        allowed=["counts", "log_normalized", "tpm"],
+    ),
     reconstructor=SparseCSRReconstructor(),
 )
 ```
@@ -120,9 +119,11 @@ ZarrGroupSpec(
     feature_space="image_features",
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
-    required_subgroups=[SubgroupSpec(subgroup_name="layers", uniform_shape=True)],
-    required_layers=["raw"],
-    allowed_layers=["raw", "log_normalized", "ctrl_standardized"],
+    layers=LayersSpec(
+        uniform_shape=True,
+        required=["raw"],
+        allowed=["raw", "log_normalized", "ctrl_standardized"],
+    ),
     reconstructor=DenseReconstructor(),
 )
 ```
@@ -143,7 +144,7 @@ This example registers a `lognorm_rna` space for dense log-normalized RNA-seq da
 
 ```python
 from lancell.group_specs import (
-    ZarrGroupSpec, PointerKind, SubgroupSpec, register_spec,
+    ZarrGroupSpec, PointerKind, LayersSpec, register_spec,
 )
 from lancell.reconstruction import DenseReconstructor
 
@@ -151,9 +152,11 @@ LOGNORM_RNA_SPEC = ZarrGroupSpec(
     feature_space="lognorm_rna",
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
-    required_subgroups=[SubgroupSpec(subgroup_name="layers", uniform_shape=True)],
-    required_layers=["log_normalized"],
-    allowed_layers=["log_normalized"],
+    layers=LayersSpec(
+        uniform_shape=True,
+        required=["log_normalized"],
+        allowed=["log_normalized"],
+    ),
     reconstructor=DenseReconstructor(),
 )
 register_spec(LOGNORM_RNA_SPEC)
@@ -166,7 +169,7 @@ After this call, `"lognorm_rna"` is a valid pointer field name for any `LancellB
 For sparse data such as chromatin accessibility, mirror the structure of `GENE_EXPRESSION_SPEC`:
 
 ```python
-from lancell.group_specs import ArraySpec, DTypeKind
+from lancell.group_specs import ArraySpec, DTypeKind, LayersSpec
 from lancell.reconstruction import SparseCSRReconstructor
 
 ATAC_SPEC = ZarrGroupSpec(
@@ -174,9 +177,13 @@ ATAC_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER)],
-    required_subgroups=[SubgroupSpec(subgroup_name="csr/layers", uniform_shape=True, match_shape_of="csr/indices")],
-    required_layers=["counts"],
-    allowed_layers=["counts"],
+    layers=LayersSpec(
+        prefix="csr",
+        uniform_shape=True,
+        match_shape_of="csr/indices",
+        required=["counts"],
+        allowed=["counts"],
+    ),
     reconstructor=SparseCSRReconstructor(),
 )
 register_spec(ATAC_SPEC)

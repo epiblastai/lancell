@@ -7,8 +7,9 @@ if TYPE_CHECKING:
     import numpy as np
     import polars as pl
 
-    from lancell.atlas import PointerFieldInfo, RaggedAtlas
+    from lancell.atlas import RaggedAtlas
     from lancell.group_specs import ZarrGroupSpec
+    from lancell.obs_alignment import PointerFieldInfo
 
 
 @runtime_checkable

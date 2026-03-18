@@ -7,8 +7,8 @@ user code defines schema subclasses or runs queries.
 from lancell.group_specs import (
     ArraySpec,
     DTypeKind,
+    LayersSpec,
     PointerKind,
-    SubgroupSpec,
     ZarrGroupSpec,
     register_spec,
 )
@@ -25,15 +25,13 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     required_arrays=[
         ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
     ],
-    required_subgroups=[
-        SubgroupSpec(
-            subgroup_name="csr/layers",
-            uniform_shape=True,
-            match_shape_of="csr/indices",
-        ),
-    ],
-    required_layers=["counts"],
-    allowed_layers=["counts", "log_normalized", "tpm"],
+    layers=LayersSpec(
+        prefix="csr",
+        uniform_shape=True,
+        match_shape_of="csr/indices",
+        required=["counts"],
+        allowed=["counts", "log_normalized", "tpm"],
+    ),
     reconstructor=SparseCSRReconstructor(),
 )
 
@@ -41,14 +39,11 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     feature_space="image_features",
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
-    required_subgroups=[
-        SubgroupSpec(
-            subgroup_name="layers",
-            uniform_shape=True,
-        ),
-    ],
-    required_layers=["raw"],
-    allowed_layers=["raw", "log_normalized", "ctrl_standardized"],
+    layers=LayersSpec(
+        uniform_shape=True,
+        required=["raw"],
+        allowed=["raw", "log_normalized", "ctrl_standardized"],
+    ),
     reconstructor=DenseReconstructor(),
 )
 

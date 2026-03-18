@@ -28,7 +28,7 @@ print(f"ingested {n} cells")
 
 ### What happens
 
-1. Validates `zarr_layer` against the spec's `allowed_layers` and validates obs columns against the cell schema.
+1. Validates `zarr_layer` against the spec's `layers.allowed` and validates obs columns against the cell schema.
 2. Locates the pointer field for this feature space in the cell schema.
 3. Pre-allocates zarr arrays with the configured chunk and shard shapes, then streams data in shard-sized batches.
 4. For backed `.h5ad` files, reads directly from HDF5 `indptr`, `indices`, and `data` datasets without materializing the full matrix into memory.

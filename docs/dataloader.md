@@ -114,25 +114,6 @@ for epoch in range(num_epochs):
         ...
 ```
 
-### `BalancedCellSampler`
-
-Draws an equal number of cells from each category per batch. This is useful when rare cell types would otherwise be underrepresented in a uniformly-sampled training run — a T-regulatory cell population at 0.5% of the atlas would appear in fewer than one in two hundred batches by default.
-
-```python
-from lancell.sampler import BalancedCellSampler
-
-sampler = BalancedCellSampler.from_column(
-    cells_pl=dataset.cells_pl,     # Polars DataFrame of cells, from the dataset
-    column="cell_type",
-    batch_size=512,
-    shuffle=True,
-    seed=0,
-    num_workers=4,
-)
-```
-
-`from_column` reads the specified column from the cell table, sorts the unique values, integer-encodes them, and constructs the sampler. Each batch contains `batch_size // n_categories` cells from each category. Epoch length is bounded by the smallest category: once any category is exhausted, the epoch ends and cells from other categories may go unused. This is intentional — the alternative of oversampling rare categories introduces duplicates, which can cause overfitting on small populations.
-
 ---
 
 ## Building the DataLoader
@@ -265,5 +246,5 @@ from lancell.dataloader import (
     multimodal_to_dense_collate,
     make_loader,
 )
-from lancell.sampler import CellSampler, BalancedCellSampler
+from lancell.sampler import CellSampler
 ```

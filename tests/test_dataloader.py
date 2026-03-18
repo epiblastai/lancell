@@ -16,7 +16,7 @@ from lancell.dataloader import (
 from lancell.feature_layouts import reindex_registry
 from lancell.ingestion import add_from_anndata
 from lancell.obs_alignment import align_obs_to_schema
-from lancell.sampler import BalancedCellSampler, CellSampler
+from lancell.sampler import CellSampler
 from lancell.schema import (
     DatasetRecord,
     FeatureBaseSchema,
@@ -330,13 +330,9 @@ def test_shuffle_different_epochs(two_group_atlas):
 
 def test_shuffle_reproducible(two_group_atlas):
     """Same seed + epoch produces same order when base cell order is identical."""
-    cells_pl = (
-        two_group_atlas.query()
-        .feature_spaces("gene_expression")
-        ._build_scanner()
-        .to_polars()
-        .sort("uid")
-    )
+    # Use _materialize_cells_for_dataset to get _rowid column
+    q = two_group_atlas.query().feature_spaces("gene_expression")
+    cells_pl = q._materialize_cells_for_dataset().sort("_rowid")
 
     ds1 = CellDataset(
         atlas=two_group_atlas,
@@ -372,13 +368,8 @@ def test_shuffle_reproducible(two_group_atlas):
 
 def test_cell_sampler_set_epoch_reproducible(two_group_atlas):
     """CellSampler with same seed+epoch produces identical batches."""
-    cells_pl = (
-        two_group_atlas.query()
-        .feature_spaces("gene_expression")
-        ._build_scanner()
-        .to_polars()
-        .sort("uid")
-    )
+    q = two_group_atlas.query().feature_spaces("gene_expression")
+    cells_pl = q._materialize_cells_for_dataset().sort("_rowid")
     ds = CellDataset(atlas=two_group_atlas, cells_pl=cells_pl)
 
     sampler1 = CellSampler(ds.groups_np, batch_size=10, shuffle=True, seed=42, num_workers=1)
@@ -395,31 +386,6 @@ def test_cell_sampler_set_epoch_reproducible(two_group_atlas):
     sampler1.set_epoch(1)
     plan_e1 = list(sampler1)
     assert plan_e0 != plan_e1
-
-
-# ---------------------------------------------------------------------------
-# Tests: BalancedCellSampler
-# ---------------------------------------------------------------------------
-
-
-def test_balanced_cell_sampler_from_column(two_group_atlas):
-    """BalancedCellSampler.from_column produces equal cells per category per batch."""
-    ds = (
-        two_group_atlas.query()
-        .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue"])
-    )
-    # 3 tissue types, batch_size=9, drop_last=True → cells_per_cat=3, all batches full
-    sampler = BalancedCellSampler.from_column(
-        ds.cells_pl, "tissue", batch_size=9, shuffle=False, drop_last=True, num_workers=1
-    )
-
-    assert len(sampler) > 0
-    for indices in sampler:
-        batch = ds.__getitems__(indices)
-        _, counts = np.unique(batch.metadata["tissue"], return_counts=True)
-        # All categories should appear equally (cells_per_cat=3 each)
-        assert counts.min() == counts.max()
 
 
 # ---------------------------------------------------------------------------
@@ -503,4 +469,39 @@ def test_collate_with_metadata(two_group_atlas):
 
 
 # ---------------------------------------------------------------------------
+# Tests: lazy loading correctness
+# ---------------------------------------------------------------------------
+
+
+def test_lazy_metadata_round_trip(two_group_atlas):
+    """Lazy metadata loading returns same values as to_anndata() obs."""
+    atlas = two_group_atlas
+    q = atlas.query().feature_spaces("gene_expression")
+
+    # Reference via AnnData
+    adata = q.to_anndata()
+    ref_uids = set(adata.obs.index.tolist())
+
+    # Lazy path: metadata loaded per-batch
+    ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
+    sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
+
+    all_uids = []
+    all_tissues = []
+    for indices in sampler:
+        batch = ds.__getitems__(indices)
+        all_uids.extend(batch.metadata["uid"].tolist())
+        all_tissues.extend(batch.metadata["tissue"].tolist())
+
+    # All UIDs from AnnData are present in the lazy path
+    assert set(all_uids) == ref_uids
+
+    # Tissue values match for each cell
+    ref_tissues = {uid: adata.obs.loc[uid, "tissue"] for uid in adata.obs.index}
+    for uid, tissue in zip(all_uids, all_tissues, strict=True):
+        assert tissue == ref_tissues[uid], f"Tissue mismatch for {uid}"
+
+
+# ---------------------------------------------------------------------------
 # Tests: DataLoader integration
+# ---------------------------------------------------------------------------
