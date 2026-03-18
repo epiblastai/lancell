@@ -32,17 +32,6 @@ maturin develop --release
 
 ---
 
-## Example Notebooks
-
-The `notebooks/` directory contains self-contained [marimo](https://marimo.io) notebooks that work after a plain `pip install lancell` — no repo clone needed.
-
-| Notebook | Description |
-|----------|-------------|
-| [`scbasecount_ragged_atlas.py`](notebooks/scbasecount_ragged_atlas.py) | Explore a ~73M-cell atlas built from [scBaseCount](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11885935/) data (human + *C. elegans*). Covers versioning, metadata queries, ragged union/intersection joins, feature selection, AnnData reconstruction, and the PyTorch dataloader. |
-| [`cellxgene_tiledb_vs_lancell_benchmark.py`](notebooks/cellxgene_tiledb_vs_lancell_benchmark.py) | Load the ~44M-cell CellxGene Census mouse atlas stored in lancell format and benchmark it against TileDB-SOMA for ML dataloader throughput and AnnData query latency. |
-
----
-
 ## The RaggedAtlas
 
 Real-world atlas building involves datasets that were not designed to be compatible — different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
@@ -132,6 +121,17 @@ atlas_r.query().count(group_by="cell_type")
 ```
 
 For large results, `.to_batches()` provides a streaming iterator that avoids materialising everything at once. `.to_mudata()` returns one AnnData per modality for multimodal atlases.
+
+---
+
+### Example Notebooks
+
+The `notebooks/` directory contains self-contained [marimo](https://marimo.io) notebooks that work after a plain `pip install lancell` — no repo clone needed.
+
+| Notebook | Description |
+|----------|-------------|
+| [`scbasecount_ragged_atlas.py`](notebooks/scbasecount_ragged_atlas.py) | Explore a small 7.3M-cell atlas built from [scBaseCount](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11885935/) data (human + *C. elegans*). Covers versioning, metadata queries, ragged union/intersection joins, feature selection, AnnData reconstruction, and the PyTorch dataloader. |
+| [`cellxgene_tiledb_vs_lancell_benchmark.py`](notebooks/cellxgene_tiledb_vs_lancell_benchmark.py) | Load the 44M-cell CellxGene Census mouse atlas stored in lancell format and benchmark it against TileDB-SOMA for ML dataloader throughput and AnnData query latency. |
 
 ---
 
