@@ -207,6 +207,7 @@ class AtlasVersionRecord(LanceModel):
     registry_table_versions: str
     feature_layouts_table_version: int
     total_cells: int
+    zarr_store_uri: str = ""
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )

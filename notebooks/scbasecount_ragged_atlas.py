@@ -3,7 +3,6 @@
 # dependencies = [
 #     "marimo",
 #     "lancell",
-#     "obstore",
 #     "polars",
 #     "anndata",
 # ]
@@ -58,7 +57,6 @@ def _(mo):
 
 @app.cell
 def _():
-    import obstore.store
     import polars as pl
     from tqdm.auto import tqdm
 
@@ -72,7 +70,6 @@ def _():
         register_spec,
     )
     from lancell.reconstruction import SparseCSRReconstructor
-    from lancell.schema import FeatureBaseSchema, LancellBaseSchema, SparseZarrPointer
 
     GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
         feature_space="genefull_expression",
@@ -91,40 +88,14 @@ def _():
         reconstructor=SparseCSRReconstructor(),
     )
     register_spec(GENEFULL_EXPRESSION_SPEC)
-
-    class GeneFeatureSpace(FeatureBaseSchema):
-        gene_id: str
-        gene_name: str
-        organism: str
-
-    class CellObs(LancellBaseSchema):
-        genefull_expression: SparseZarrPointer | None = None
-        cell_barcode: str | None = None
-        srx_accession: str | None = None
-        gene_count_unique: int | None = None
-        umi_count_unique: int | None = None
-        cell_type: str | None = None
-        cell_ontology_term_id: str | None = None
-
-    return CellObs, RaggedAtlas, obstore, pl, tqdm
+    return RaggedAtlas, pl, tqdm
 
 
 @app.cell
-def _(obstore):
-    ATLAS_DIR = "s3://epiblast-public/scbasecount_mini_lancell/"
-
-    db_uri = ATLAS_DIR.rstrip("/") + "/lance_db"
-    store = obstore.store.S3Store.from_url(
-        ATLAS_DIR.rstrip("/") + "/zarr_store",
-        config={"skip_signature": True, "region": "us-east-2"},
-    )
-    return db_uri, store
-
-
-@app.cell
-def _(db_uri):
-    db_uri
-    return
+def _():
+    db_uri = "s3://epiblast-public/scbasecount_mini_lancell/lance_db"
+    S3_KWARGS = {"config": {"skip_signature": True, "region": "us-east-2"}}
+    return S3_KWARGS, db_uri
 
 
 @app.cell
@@ -135,11 +106,10 @@ def _(RaggedAtlas, db_uri):
 
 
 @app.cell
-def _(CellObs, RaggedAtlas, db_uri, store):
+def _(RaggedAtlas, S3_KWARGS, db_uri):
     atlas = RaggedAtlas.checkout_latest(
         db_uri=db_uri,
-        cell_schema=CellObs,
-        store=store,
+        store_kwargs=S3_KWARGS,
     )
     return (atlas,)
 
@@ -516,7 +486,7 @@ def _(atlas):
     dataset = (
         atlas.query()
         .feature_spaces("genefull_expression")
-        .limit(100_000)
+        .limit(500_000)
         .to_cell_dataset(
             feature_space="genefull_expression",
             layer="Unique",
@@ -546,7 +516,7 @@ def _(mo):
 @app.cell
 def _(CellSampler, dataset):
     BATCH_SIZE = 1024
-    NUM_WORKERS = 0  # 0 for in-process (notebook-friendly); use 4+ in real training
+    NUM_WORKERS = 4  # 0 for in-process (notebook-friendly); use 4+ in real training
 
     sampler = CellSampler(
         dataset.groups_np,
