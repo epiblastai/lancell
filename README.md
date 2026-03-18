@@ -147,7 +147,7 @@ Zarr's sharded format packs many chunks into a single object-store file, with an
 
 Lancell's `RustShardReader` handles shard reads in Rust: it batches all requested ranges, issues one `get_ranges` call per shard file, and decodes chunks in parallel via rayon. On S3 and GCS this typically cuts latency-dominated read time by an order of magnitude compared to sequential per-chunk fetches.
 
-### BP-128 bitpacking
+### BP-128 bitpacking (from BPCells)
 
 When ingesting integer count data, lancell automatically applies BP-128 bitpacking with delta encoding to the sparse `indices` array, and BP-128 (no delta) to the values array. BP-128 is a SIMD-accelerated codec that packs integers using the minimum number of bits required per 128-element block.
 
@@ -192,8 +192,13 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 
 ---
 
-## References
+## Acknowledgements
 
-- **scBaseCount** — Luecken et al., *A community resource of harmonized scRNA-seq count data*, bioRxiv 2025. https://www.biorxiv.org/content/10.1101/2025.02.27.640494v3
-- **BPCells** — Lareau et al., *BPCells enables efficient single-cell analysis on the laptop and the cloud*, bioRxiv 2025. BP-128 bitpacking in lancell is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
+### Methods
+
+- **BPCells** — Parks and Greenleaf, *Scalable high-performance single cell data analysis with BPCells*, bioRxiv 2025. BP-128 bitpacking in lancell is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
+
+### Datasets
+
 - **CellxGene Census** — Chan Zuckerberg Initiative, *CellxGene Census*. The mouse atlas used in the benchmark. https://chanzuckerberg.github.io/cellxgene-census/
+- **scBaseCount** — Youngblut et al., *scBaseCount: an AI agent-curated, uniformly processed, and autonomously updated single cell data repository*, bioRxiv 2025. https://www.biorxiv.org/content/10.1101/2025.02.27.640494v3
