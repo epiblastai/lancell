@@ -119,7 +119,7 @@ class ZarrGroupSpec(BaseModel):
                         )
         return errors
 
-    def _find_layers_path(self) -> str:
+    def find_layers_path(self) -> str:
         """Return the layers group path — may be top-level or nested (e.g. 'csr/layers')."""
         for sg_spec in self.required_subgroups:
             name = sg_spec.subgroup_name
@@ -129,7 +129,7 @@ class ZarrGroupSpec(BaseModel):
 
     def _check_layers(self, group: zarr.Group) -> list[str]:
         errors: list[str] = []
-        layers_path = self._find_layers_path()
+        layers_path = self.find_layers_path()
 
         if self.required_layers:
             try:

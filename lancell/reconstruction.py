@@ -322,7 +322,8 @@ class SparseCSRReconstructor:
             ends = group_cells["_end"].to_numpy().astype(np.int64)
             gr = atlas._get_group_reader(zg, pf.feature_space)
             idx_reader = gr.get_array_reader(index_array_name)
-            lyr_readers = [gr.get_array_reader(f"csr/layers/{ln}") for ln in layers_to_read]
+            layers_path = spec.find_layers_path()
+            lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
             group_data.append((zg, group_cells, starts, ends, idx_reader, lyr_readers))
 
         # Dispatch all groups concurrently
@@ -417,8 +418,11 @@ class DenseReconstructor:
             layer_overrides if layer_overrides is not None else list(spec.required_layers)
         )
 
-        # Resolve array names: "layers/{ln}" for layered specs, "data" for plain
-        array_names = [f"layers/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
+        # Resolve array names: "{layers_path}/{ln}" for layered specs, "data" for plain
+        layers_path = spec.find_layers_path()
+        array_names = (
+            [f"{layers_path}/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
+        )
         output_keys = layers_to_read if layers_to_read else ["data"]
 
         n_total_cells = cells_pl.height
@@ -703,7 +707,8 @@ class FeatureCSCReconstructor:
                 starts = group_cells["_start"].to_numpy().astype(np.int64)
                 ends = group_cells["_end"].to_numpy().astype(np.int64)
                 idx_reader = gr.get_array_reader(csr_index_name)
-                lyr_readers = [gr.get_array_reader(f"csr/layers/{ln}") for ln in layers_to_read]
+                layers_path = spec.find_layers_path()
+                lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
                 group_info.append({"mode": "csr", "group_cells": group_cells, "zg": zg})
 

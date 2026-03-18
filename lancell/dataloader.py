@@ -47,6 +47,8 @@ from lancell.read import (
 # ---------------------------------------------------------------------------
 
 
+# TODO: We shouldn't do this. These metadata arrays could be quite large
+# We should just be reading them on demand from a lance dataset with `.take()`
 def _extract_metadata_arrays(
     cells_pl: pl.DataFrame,
     metadata_columns: list[str] | None,
@@ -148,13 +150,14 @@ def _build_sparse_modality_data(
 
     group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
+    layers_path = spec.find_layers_path()
     n_features = (
         len(wanted_globals_for_fs)
         if wanted_globals_for_fs is not None
         else atlas._registry_tables[fs].count_rows()
     )
     layer_dtype = (
-        group_readers[groups[0]].get_array_reader(f"csr/layers/{layer}")._native_dtype
+        group_readers[groups[0]].get_array_reader(f"{layers_path}/{layer}")._native_dtype
         if groups
         else np.dtype(np.float32)
     )
@@ -170,6 +173,7 @@ def _build_sparse_modality_data(
         index_array_name=index_array_name,
         layer=layer,
         layer_dtype=layer_dtype,
+        layers_path=layers_path,
         present_mask=present_mask,
         cell_positions=cell_positions,
     )
@@ -180,6 +184,7 @@ def _build_dense_modality_data(
     atlas: "RaggedAtlas",
     cells_indexed: pl.DataFrame,
     pf,
+    spec,
     fs: str,
     layer: str,
     n_cells: int,
@@ -211,9 +216,10 @@ def _build_dense_modality_data(
         for zg in groups
     }
 
+    layers_path = spec.find_layers_path()
     n_features = atlas._registry_tables[fs].count_rows()
     layer_dtype = (
-        group_readers[groups[0]].get_array_reader(f"layers/{layer}")._native_dtype
+        group_readers[groups[0]].get_array_reader(f"{layers_path}/{layer}")._native_dtype
         if groups
         else np.dtype(np.float32)
     )
@@ -229,11 +235,15 @@ def _build_dense_modality_data(
         index_array_name="",
         layer=layer,
         layer_dtype=layer_dtype,
+        layers_path=layers_path,
         present_mask=present_mask,
         cell_positions=cell_positions,
     )
 
 
+# TODO: Building this based on per-batch n_features is problematic for efficient
+# training where we want static input tensor shapes to enable torch.compile. Should
+# compute the union feature space across all datasets to define the tensor shape.
 def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
     """Scatter a SparseBatch into a dense float32 torch tensor (n_cells, n_features)."""
     import torch
@@ -267,6 +277,7 @@ class _AsyncDataset:
             self._loop.close()
 
 
+# Used insted of a lambda function because pickle doesn't like lambdas
 def _identity_collate(x):
     return x
 
@@ -318,6 +329,7 @@ class DenseBatch:
 
     data: np.ndarray
     n_features: int
+    metadata: dict[str, np.ndarray] | None = None
 
 
 @dataclass
@@ -364,6 +376,7 @@ class _ModalityData:
     index_array_name: str  # sparse only; "" for dense
     layer: str
     layer_dtype: np.dtype
+    layers_path: str = ""  # e.g. "csr/layers" or "layers"
     present_mask: np.ndarray | None = None  # bool, (n_total_cells,); None for CellDataset
     cell_positions: np.ndarray | None = None  # int64, (n_total_cells,); None for CellDataset
 
@@ -426,7 +439,7 @@ async def _take_sparse(
         tasks.append(
             _take_group_sparse(
                 gr.get_array_reader(mod_data.index_array_name),
-                gr.get_array_reader(f"csr/layers/{mod_data.layer}"),
+                gr.get_array_reader(f"{mod_data.layers_path}/{mod_data.layer}"),
                 gr.get_remap(),
                 batch_starts[mask],
                 batch_ends[mask],
@@ -539,7 +552,7 @@ async def _take_dense(
         gr = mod_data.group_readers[zg]
         tasks.append(
             _take_group_dense(
-                gr.get_array_reader(f"layers/{mod_data.layer}"),
+                gr.get_array_reader(f"{mod_data.layers_path}/{mod_data.layer}"),
                 sorted_starts[mask],
                 sorted_ends[mask],
                 mod_data.n_features,
@@ -657,6 +670,11 @@ class CellDataset(_AsyncDataset):
     def __init__(
         self,
         atlas: "RaggedAtlas",
+        # TODO: This whole table might be massive. We're already stuck with materializing the
+        # list of zarr groups and relevant cell indices for them. However, anything like the
+        # pointer structs and metadata can be loaded during training using the lance dataset
+        # with take. We just need the rowoffsets for that. Consider:
+        # https://raw.githubusercontent.com/lance-format/lance/refs/heads/main/python/python/lance/torch/data.py
         cells_pl: pl.DataFrame,
         feature_space: str = "gene_expression",
         layer: str = "counts",
@@ -820,7 +838,7 @@ class MultimodalCellDataset(_AsyncDataset):
                 )
             else:
                 modality_data[fs] = _build_dense_modality_data(
-                    atlas, cells_indexed, pf, fs, layer, self._n_cells
+                    atlas, cells_indexed, pf, spec, fs, layer, self._n_cells
                 )
 
         self._modality_data = modality_data
