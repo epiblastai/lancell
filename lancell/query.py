@@ -13,7 +13,6 @@ import anndata as ad
 import numpy as np
 import polars as pl
 
-from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
 from lancell.group_specs import get_spec
 from lancell.obs_alignment import PointerFieldInfo
@@ -21,6 +20,7 @@ from lancell.reconstruction import (
     _build_obs_only_anndata,
     _get_pointer_columns,
 )
+from lancell.util import sql_escape
 
 
 class AtlasQuery:
@@ -177,6 +177,54 @@ class AtlasQuery:
         if self._balanced_limit_n is not None:
             return self._materialize_balanced()
         return self._build_scanner().to_polars()
+
+    def _materialize_cells_for_dataset(self) -> pl.DataFrame:
+        """Materialise a lightweight cell DataFrame with row IDs for CellDataset.
+
+        Returns only pointer columns + ``_rowid`` (lance's built-in row ID).
+        Metadata is loaded lazily per batch via ``take_row_ids``.
+        """
+        if self._balanced_limit_n is not None:
+            return self._materialize_balanced_for_dataset()
+
+        q = self._build_base_query().with_row_id(True)
+        pointer_cols = list(self._atlas._pointer_fields.keys())
+        q = q.select(pointer_cols)
+        return q.to_polars()
+
+    def _materialize_balanced_for_dataset(self) -> pl.DataFrame:
+        """Two-phase balanced materialisation returning only pointers + _rowid."""
+        column = self._balanced_limit_column
+        assert column is not None
+
+        discovery_q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+        if self._where_clause is not None:
+            discovery_q = discovery_q.where(self._where_clause)
+        unique_values = discovery_q.select([column]).to_polars()[column].unique().to_list()
+        n_groups = len(unique_values)
+        if n_groups == 0:
+            pointer_cols = list(self._atlas._pointer_fields.keys())
+            q = self._build_base_query().with_row_id(True).select(pointer_cols)
+            return q.to_polars().head(0)
+
+        per_group = self._balanced_limit_n // n_groups
+        pointer_cols = list(self._atlas._pointer_fields.keys())
+
+        frames: list[pl.DataFrame] = []
+        for val in unique_values:
+            escaped = sql_escape(str(val))
+            group_filter = f"{column} = '{escaped}'"
+            if self._where_clause is not None:
+                combined = f"({self._where_clause}) AND ({group_filter})"
+            else:
+                combined = group_filter
+
+            q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+            q = q.where(combined).limit(per_group).with_row_id(True)
+            q = q.select(pointer_cols)
+            frames.append(q.to_polars())
+
+        return pl.concat(frames)
 
     def _materialize_balanced(self) -> pl.DataFrame:
         """Two-phase balanced materialisation."""
@@ -347,9 +395,9 @@ class AtlasQuery:
         lightweight :class:`~lancell.dataloader.SparseBatch` objects via
         :meth:`~lancell.dataloader.CellDataset.__getitems__`.
 
-        Pair with a :class:`~lancell.sampler.CellSampler` or
-        :class:`~lancell.sampler.BalancedCellSampler` for batch planning, then
-        use :func:`~lancell.dataloader.make_loader` to create the DataLoader.
+        Pair with a :class:`~lancell.sampler.CellSampler` for batch planning,
+        then use :func:`~lancell.dataloader.make_loader` to create the
+        DataLoader.
 
         Parameters
         ----------
@@ -370,7 +418,7 @@ class AtlasQuery:
         """
         from lancell.dataloader import CellDataset
 
-        cells_pl = self._materialize_cells()
+        cells_pl = self._materialize_cells_for_dataset()
 
         wanted_globals = None
         if feature_space in self._feature_filter:
@@ -420,7 +468,7 @@ class AtlasQuery:
         """
         from lancell.dataloader import MultimodalCellDataset
 
-        cells_pl = self._materialize_cells()
+        cells_pl = self._materialize_cells_for_dataset()
 
         if layers is None:
             layers = {fs: "counts" for fs in feature_spaces}

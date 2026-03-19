@@ -1,10 +1,4 @@
-"""RaggedAtlas: user-facing API for writing, querying, and streaming lancell data.
-
-The LanceDB database IS the atlas. The Python schema class (a LancellBaseSchema
-subclass) serves as the descriptor — it declares which pointer fields (feature
-spaces) exist and their types. ``RaggedAtlas.open(...)`` or ``.create(...)`` is
-the full API — no manifest file to maintain.
-"""
+"""RaggedAtlas: user-facing API for writing, querying, and streaming lancell data."""
 
 import json
 from collections import defaultdict
@@ -19,7 +13,6 @@ import obstore
 import polars as pl
 import zarr
 
-from lancell._util import sql_escape
 from lancell.feature_layouts import (
     build_feature_layout_df,
     layout_exists,
@@ -28,7 +21,7 @@ from lancell.feature_layouts import (
     validate_feature_layout,
 )
 from lancell.group_specs import get_spec
-from lancell.obs_alignment import _extract_pointer_fields
+from lancell.obs_alignment import _extract_pointer_fields, _infer_pointer_fields_from_arrow
 from lancell.schema import (
     AtlasVersionRecord,
     DatasetRecord,
@@ -36,6 +29,52 @@ from lancell.schema import (
     FeatureLayout,
     LancellBaseSchema,
 )
+from lancell.util import sql_escape
+
+# ---------------------------------------------------------------------------
+# Store URI helpers
+# ---------------------------------------------------------------------------
+
+
+def _store_to_uri(store: obstore.store.ObjectStore) -> str:
+    """Extract a URI string from an obstore ObjectStore instance."""
+    if isinstance(store, obstore.store.LocalStore):
+        return f"file://{store.prefix}"
+    if isinstance(store, obstore.store.S3Store):
+        bucket = store.config["bucket"]
+        prefix = store.prefix or ""
+        return f"s3://{bucket}/{prefix}".rstrip("/")
+    if isinstance(store, obstore.store.GCSStore):
+        bucket = store.config["bucket"]
+        prefix = store.prefix or ""
+        return f"gs://{bucket}/{prefix}".rstrip("/")
+    if isinstance(store, obstore.store.MemoryStore):
+        return "memory://"
+    raise TypeError(f"Cannot extract URI from store type {type(store).__name__}")
+
+
+def _store_from_uri(
+    uri: str,
+    **store_kwargs,
+) -> obstore.store.ObjectStore:
+    """Construct an obstore ObjectStore from a URI string."""
+    return obstore.store.from_url(uri, **store_kwargs)
+
+
+def _zarr_uri_from_db_uri(db_uri: str) -> str:
+    """Derive a zarr store URI from a db_uri using naming convention.
+
+    Replaces the last path segment with ``zarr_store``.
+    Works for local paths (``/a/b/lance_db`` -> ``/a/b/zarr_store``)
+    and cloud URIs (``s3://bucket/prefix/lance_db`` -> ``s3://bucket/prefix/zarr_store``).
+    """
+    # Handle both "/" and trailing-slash-stripped URIs
+    uri = db_uri.rstrip("/")
+    last_sep = uri.rfind("/")
+    if last_sep == -1:
+        return "zarr_store"
+    return uri[: last_sep + 1] + "zarr_store"
+
 
 # ---------------------------------------------------------------------------
 # RaggedAtlas
@@ -53,7 +92,7 @@ class RaggedAtlas:
         self,
         db: lancedb.DBConnection,
         cell_table: lancedb.table.Table,
-        cell_schema: type[LancellBaseSchema],
+        cell_schema: type[LancellBaseSchema] | None,
         root: zarr.Group,
         registry_tables: dict[str, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
@@ -61,12 +100,18 @@ class RaggedAtlas:
         version_table: lancedb.table.Table,
         feature_layouts_table: lancedb.table.Table,
     ) -> None:
+        # REVIEW: Add a docstring that __init__ should not be called
+        # directly, use create, open or checkout classmethods instead.
         self.db = db
+        self._db_uri = db.uri
         self.cell_table = cell_table
         self._cell_schema = cell_schema
         self._root = root
         self._store = root.store.store
-        self._pointer_fields = _extract_pointer_fields(cell_schema)
+        if cell_schema is not None:
+            self._pointer_fields = _extract_pointer_fields(cell_schema)
+        else:
+            self._pointer_fields = _infer_pointer_fields_from_arrow(cell_table.schema)
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
@@ -147,11 +192,11 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         cell_table_name: str,
-        cell_schema: type[LancellBaseSchema],
-        dataset_table_name: str,
+        cell_schema: type[LancellBaseSchema] | None = None,
+        dataset_table_name: str = "_datasets",
         *,
         store: obstore.store.ObjectStore,
-        registry_tables: dict[str, str],
+        registry_tables: dict[str, str] | None = None,
         version_table_name: str = "atlas_versions",
     ) -> "RaggedAtlas":
         """Open an existing atlas.
@@ -163,19 +208,31 @@ class RaggedAtlas:
         cell_table_name:
             Name of the cell table.
         cell_schema:
-            The schema class (must match the table's schema).
+            The schema class.  If ``None``, pointer fields are inferred
+            from the cell table's Arrow schema (sufficient for read-only use).
         dataset_table_name:
             Name of the dataset metadata table.
         store:
             An obstore ObjectStore for zarr I/O.
         registry_tables:
             Mapping of feature space names to LanceDB table names.
+            If ``None``, inferred from the dataset table using the naming
+            convention ``{feature_space}_registry``.
         version_table_name:
             Name of the version tracking table.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.open_table(cell_table_name)
         dataset_table = db.open_table(dataset_table_name)
+
+        if registry_tables is None:
+            datasets_df = dataset_table.search().select(["feature_space"]).to_polars()
+            feature_spaces = (
+                datasets_df["feature_space"].unique().to_list()
+                if not datasets_df.is_empty()
+                else []
+            )
+            registry_tables = {fs: f"{fs}_registry" for fs in feature_spaces}
 
         resolved_registries: dict[str, lancedb.table.Table] = {}
         for fs, table_name in registry_tables.items():
@@ -229,6 +286,28 @@ class RaggedAtlas:
             )
         return self._group_readers[key]
 
+    @property
+    def schemas(self) -> str:
+        """Print a summary of tables and their Arrow schemas."""
+        lines: list[str] = []
+
+        def _fmt_table(label: str, table: lancedb.table.Table) -> None:
+            schema = table.schema
+            rows = table.count_rows()
+            lines.append(f"  {label} ({table.name!r}, {rows} rows)")
+            for field in schema:
+                lines.append(f"    {field.name}: {field.type}")
+
+        lines.append("Atlas tables:")
+        _fmt_table("Cell table", self.cell_table)
+        _fmt_table("Dataset table", self._dataset_table)
+        for fs, reg_table in sorted(self._registry_tables.items()):
+            _fmt_table(f"Registry [{fs}]", reg_table)
+
+        summary = "\n".join(lines)
+        print(summary)
+        return summary
+
     # -- Query entry point --------------------------------------------------
 
     def query(self) -> "AtlasQuery":
@@ -246,6 +325,9 @@ class RaggedAtlas:
 
     # -- Feature registration -----------------------------------------------
 
+    # TODO: Add a dedupe_on option that checks the features for duplicates in
+    # specified column. For example, for a gene registry, this might check if
+    # the ensembl id is already registered in the table and skip it if so.
     def register_features(
         self,
         feature_space: str,
@@ -376,8 +458,10 @@ class RaggedAtlas:
             table.optimize()
             sync_layouts_global_index(self._feature_layouts_table, table)
 
+        # FTS index creates an inverted table that makes it easy to find which
+        # layouts have a given feature
         self._feature_layouts_table.create_fts_index("feature_uid", replace=True)
-        self._feature_layouts_table.create_fts_index("layout_uid", replace=True)
+        self._feature_layouts_table.create_scalar_index("layout_uid", replace=True)
         self._feature_layouts_table.optimize()
 
     # -- Validation ---------------------------------------------------------
@@ -466,14 +550,10 @@ class RaggedAtlas:
             One row per (zarr_group, feature) match with columns
             ``zarr_group``, ``global_feature_uid``, plus dataset metadata.
         """
+        from lancedb.query import MatchQuery
+
         if isinstance(feature_uids, str):
             feature_uids = [feature_uids]
-        return self._find_datasets_with_features_fast(feature_uids, feature_space)
-
-    def _find_datasets_with_features_fast(
-        self, feature_uids: list[str], feature_space: str
-    ) -> pl.DataFrame:
-        from lancedb.query import MatchQuery
 
         query_str = " ".join(feature_uids)
         # Estimate limit: each feature could appear in every layout
@@ -491,6 +571,8 @@ class RaggedAtlas:
 
         pairs = pairs.unique(subset=["feature_uid", "layout_uid"])
 
+        # TODO: `layout_uid` is already in the datasets table, this should be an AND where
+        # clause and no join is necessary.
         datasets_df = (
             self._dataset_table.search()
             .where(f"feature_space = '{sql_escape(feature_space)}'", prefilter=True)
@@ -506,7 +588,7 @@ class RaggedAtlas:
     def _validate_registries(self) -> list[str]:
         errors: list[str] = []
         for fs, table in self._registry_tables.items():
-            df = table.search().select(["uid", "global_index"]).to_polars()
+            df = table.search().select(["global_index"]).to_polars()
             if df.is_empty():
                 continue
             null_count = df["global_index"].null_count()
@@ -601,6 +683,7 @@ class RaggedAtlas:
             registry_table_versions=json.dumps(registry_versions),
             feature_layouts_table_version=self._feature_layouts_table.version,
             total_cells=self.cell_table.count_rows(),
+            zarr_store_uri=_store_to_uri(self._store),
         )
         self._version_table.add([record])
         return next_version
@@ -630,9 +713,10 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         version: int,
-        cell_schema: type[LancellBaseSchema],
-        store: obstore.store.ObjectStore,
+        cell_schema: type[LancellBaseSchema] | None = None,
+        store: obstore.store.ObjectStore | None = None,
         *,
+        store_kwargs: dict | None = None,
         version_table_name: str = "atlas_versions",
     ) -> "RaggedAtlas":
         """Open a read-only atlas pinned to a specific snapshot version.
@@ -644,9 +728,16 @@ class RaggedAtlas:
         version:
             Atlas version number (as returned by :meth:`snapshot`).
         cell_schema:
-            The schema class used when the atlas was created.
+            The schema class used when the atlas was created.  If ``None``,
+            pointer fields are inferred from the cell table's Arrow schema.
         store:
-            An obstore ObjectStore for zarr I/O.
+            An obstore ObjectStore for zarr I/O.  If ``None``, reconstructed
+            from the ``zarr_store_uri`` stored in the version record (or
+            inferred from ``db_uri`` for older records that lack it).
+        store_kwargs:
+            Extra keyword arguments forwarded to ``obstore.store.from_url``
+            when constructing the store from a URI (e.g. ``region``,
+            ``skip_signature``, ``credential_provider``).
         version_table_name:
             Name of the version tracking table.
         """
@@ -660,6 +751,12 @@ class RaggedAtlas:
                 f"Use RaggedAtlas.list_versions('{db_uri}') to see available versions."
             )
         row = records.row(0, named=True)
+
+        if store is None:
+            zarr_store_uri = row.get("zarr_store_uri", "")
+            if not zarr_store_uri:
+                zarr_store_uri = _zarr_uri_from_db_uri(db_uri)
+            store = _store_from_uri(zarr_store_uri, **(store_kwargs or {}))
 
         cell_table = db.open_table(row["cell_table_name"])
         cell_table.checkout(row["cell_table_version"])
@@ -697,9 +794,10 @@ class RaggedAtlas:
     def checkout_latest(
         cls,
         db_uri: str,
-        cell_schema: type[LancellBaseSchema],
-        store: obstore.store.ObjectStore,
+        cell_schema: type[LancellBaseSchema] | None = None,
+        store: obstore.store.ObjectStore | None = None,
         *,
+        store_kwargs: dict | None = None,
         version_table_name: str = "atlas_versions",
     ) -> "RaggedAtlas":
         """Open the most recent validated snapshot.
@@ -712,9 +810,14 @@ class RaggedAtlas:
         db_uri:
             LanceDB connection URI.
         cell_schema:
-            The schema class used when the atlas was created.
+            The schema class used when the atlas was created.  If ``None``,
+            pointer fields are inferred from the cell table's Arrow schema.
         store:
-            An obstore ObjectStore for zarr I/O.
+            An obstore ObjectStore for zarr I/O.  If ``None``, reconstructed
+            from the version record or inferred from ``db_uri``.
+        store_kwargs:
+            Extra keyword arguments forwarded to ``obstore.store.from_url``
+            when constructing the store from a URI.
         version_table_name:
             Name of the version tracking table.
         """
@@ -730,5 +833,6 @@ class RaggedAtlas:
             version=latest_version,
             cell_schema=cell_schema,
             store=store,
+            store_kwargs=store_kwargs,
             version_table_name=version_table_name,
         )

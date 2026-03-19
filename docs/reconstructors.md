@@ -40,7 +40,7 @@ Key parameters:
 - `cells_pl` — Polars DataFrame of the queried cells. Includes the zarr pointer struct columns used to locate each cell's row within its zarr group.
 - `pf` — `PointerFieldInfo` identifying which pointer field this reconstructor handles (field name, feature space, and pointer kind).
 - `spec` — the `ZarrGroupSpec` for this feature space, carrying the declared array layout and layer names.
-- `layer_overrides` — if set, read these layers instead of `spec.required_layers`.
+- `layer_overrides` — if set, read these layers instead of `spec.layers.required`.
 - `feature_join` — `"union"` includes all features from any group; `"intersection"` includes only features present in every group. Ignored when `wanted_globals` is set.
 - `wanted_globals` — if set, pin the output feature space to these global feature indices. Overrides `feature_join`.
 

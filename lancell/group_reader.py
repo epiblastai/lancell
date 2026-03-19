@@ -10,6 +10,9 @@ from lancell.batch_array import BatchAsyncArray
 from lancell.feature_layouts import read_feature_layout
 
 
+# TODO: Refactor GroupReader to take in a LayoutReader component. Currently
+# we will have duplicates of var_df and remap cached for every group even
+# when each group might share the same layout.
 class GroupReader:
     """Encapsulates all per-(zarr_group, feature_space) read state.
 

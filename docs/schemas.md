@@ -267,12 +267,12 @@ class CensusDatasetRecord(DatasetRecord):
 
 | Field | Type | Description |
 |---|---|---|
-| `layout_uid` | `str` | Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. FTS-indexed for layout → features lookup. |
+| `layout_uid` | `str` | Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. Scalar-indexed for layout → features lookup. |
 | `feature_uid` | `str` | The `uid` from the feature registry. FTS-indexed for feature → layouts lookup. |
 | `local_index` | `int` | 0-based position of this feature in the layout's zarr array (i.e. the column index stored in `csr/indices`). Used as the sort key when building the local→global remap. |
 | `global_index` | `int` | Denormalized copy of the feature's `global_index` from the registry. Written by `optimize()` after `reindex_registry()` has run. Used as the scatter/gather key in the reconstruction hot path — no database lookup needed during training. |
 
-The `_feature_layouts` table supports two query directions efficiently via FTS indexes on both `feature_uid` and `layout_uid`:
+The `_feature_layouts` table supports two query directions efficiently via an FTS index on `feature_uid` and a scalar index on `layout_uid`:
 
 - **Feature → datasets**: given a feature `uid`, which layouts (and thus datasets) include it? This drives queries like `find_datasets_with_features`.
 - **Layout → features**: given a `layout_uid`, reconstruct the full `local_index → global_index` remap array for vectorized scatter/gather during batch assembly.

@@ -4,7 +4,6 @@
 #     "marimo",
 #     "lancell",
 #     "lancedb",
-#     "obstore",
 #     "polars",
 #     "numpy",
 #     "torch",
@@ -16,14 +15,12 @@
 
 import marimo
 
-__generated_with = "0.21.0"
+__generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
-    import os
-    import sys
     import time
 
     import altair as alt
@@ -33,10 +30,7 @@ def _():
     import tiledbsoma
     from tqdm.auto import tqdm
 
-    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _repo_root not in sys.path:
-        sys.path.insert(0, _repo_root)
-    return alt, mo, np, os, pl, tiledbsoma, time, tqdm
+    return alt, mo, np, pl, tiledbsoma, time, tqdm
 
 
 @app.cell(hide_code=True)
@@ -100,20 +94,16 @@ def _(tiledbsoma, time):
 
 
 @app.cell
-def _(os, time):
-    import obstore.store
-
-    from examples.cellxgene_census_tiledb.schema import CellObs
+def _(time):
     from lancell.atlas import RaggedAtlas
 
     LANCELL_DIR = "s3://epiblast-public/cellxgene_mouse_lancell/"
+    S3_KWARGS = {"config": {"skip_signature": True, "region": "us-east-2"}}
 
-    store = obstore.store.S3Store.from_url(os.path.join(LANCELL_DIR, "zarr_store"))
     _t0 = time.perf_counter()
     atlas = RaggedAtlas.checkout_latest(
-        db_uri=os.path.join(LANCELL_DIR, "lance_db"),
-        cell_schema=CellObs,
-        store=store,
+        db_uri=LANCELL_DIR + "lance_db",
+        store_kwargs=S3_KWARGS,
     )
     lancell_open_s = time.perf_counter() - _t0
 

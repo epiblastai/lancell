@@ -16,7 +16,6 @@ __all__ = [
     "sparse_to_dense_collate",
     # Samplers
     "CellSampler",
-    "BalancedCellSampler",
     # Ingestion
     "add_from_anndata",
     "add_anndata_batch",
@@ -41,7 +40,6 @@ def __getattr__(name: str):
         "make_loader": "lancell.dataloader",
         "sparse_to_dense_collate": "lancell.dataloader",
         "CellSampler": "lancell.sampler",
-        "BalancedCellSampler": "lancell.sampler",
         "add_from_anndata": "lancell.ingestion",
         "add_anndata_batch": "lancell.ingestion",
         "add_csc": "lancell.ingestion",

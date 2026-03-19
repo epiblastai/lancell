@@ -66,7 +66,7 @@ A `ZarrGroupSpec` declares the expected zarr layout for a feature space. Registe
 
 ```python
 from lancell.group_specs import (
-    ZarrGroupSpec, PointerKind, SubgroupSpec, register_spec,
+    ZarrGroupSpec, PointerKind, LayersSpec, register_spec,
 )
 from lancell.reconstruction import DenseReconstructor
 
@@ -74,9 +74,11 @@ LOGNORM_RNA_SPEC = ZarrGroupSpec(
     feature_space="lognorm_rna",
     pointer_kind=PointerKind.DENSE,   # each cell stores a row index, not a byte range
     has_var_df=True,                  # this space has a feature registry + _feature_layouts rows
-    required_subgroups=[SubgroupSpec(subgroup_name="layers", uniform_shape=True)],
-    required_layers=["log_normalized"],
-    allowed_layers=["log_normalized"],
+    layers=LayersSpec(
+        uniform_shape=True,
+        required=["log_normalized"],
+        allowed=["log_normalized"],
+    ),
     reconstructor=DenseReconstructor(),
 )
 register_spec(LOGNORM_RNA_SPEC)
@@ -144,14 +146,6 @@ features = [
 ]
 atlas.register_features("lognorm_rna", features)
 # register_features uses merge_insert — safe to call concurrently from multiple processes
-```
-
-`register_features` inserts new rows but does not assign `global_index`. That happens when you call `atlas.optimize()`, which assigns contiguous indices in a single-writer pass.
-
-```python
-# Assigns global_index = 0..N-1 to any features that don't have one yet,
-# and runs other maintenance tasks (compaction, FTS rebuild).
-atlas.optimize()
 ```
 
 **Annotate var with `global_feature_uid`.** The ingestion function looks for this column to build the `_feature_layouts` feature mapping.

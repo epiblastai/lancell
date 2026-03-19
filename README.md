@@ -2,7 +2,7 @@
 
 Multimodal single-cell database built on [LanceDB](https://lancedb.com) and [Zarr](https://zarr.dev). Designed for building heterogeneous cell atlases and training foundation models on them.
 
-Cell metadata lives in LanceDB — queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr. A PyTorch-native data loading layer reads directly from those stores without intermediate copies or format conversions.
+Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr. A PyTorch-native data loading layer reads directly from those stores without intermediate copies or format conversions.
 
 - **[Documentation](https://epiblastai.github.io/lancell/)**
 
@@ -34,9 +34,9 @@ maturin develop --release
 
 ## The RaggedAtlas
 
-Real-world atlas building involves datasets that were not designed to be compatible — different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
+Real-world atlas building involves datasets that were not designed to be compatible: different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
 
-Lancell's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group. The reconstruction layer handles union/intersection/feature-filter logic at query time — no padding is stored, no information is discarded at ingest.
+Lancell's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group. The reconstruction layer handles union/intersection/feature-filter logic at query time. No padding is stored, no information is discarded at ingest.
 
 ```
 Cell table (shared)                Zarr (per-dataset)
@@ -51,40 +51,79 @@ At query time, the reconstruction layer joins the feature spaces: it computes th
 ### Quickstart
 
 ```python
+import os, tempfile
+import scanpy as sc
 import obstore.store
 from lancell.atlas import RaggedAtlas
-from lancell.schema import LancellBaseSchema, FeatureBaseSchema, SparseZarrPointer
+from lancell.schema import (
+    DatasetRecord, FeatureBaseSchema, LancellBaseSchema, SparseZarrPointer,
+)
 from lancell.ingestion import add_from_anndata
 
+# 1. Define schemas: one for gene features, one for cell metadata
 class GeneFeature(FeatureBaseSchema):
     gene_symbol: str
 
 class CellSchema(LancellBaseSchema):
-    cell_type: str | None = None
     gene_expression: SparseZarrPointer | None = None
 
-store = obstore.store.LocalStore("/data/atlas/arrays")
+# 2. Create an atlas
+atlas_dir = tempfile.mkdtemp()
+os.makedirs(f"{atlas_dir}/arrays")
+store = obstore.store.LocalStore(f"{atlas_dir}/arrays")
 atlas = RaggedAtlas.create(
-    db_uri="/data/atlas/db",
+    db_uri=f"{atlas_dir}/db",
     cell_table_name="cells",
     cell_schema=CellSchema,
+    dataset_table_name="datasets",
+    dataset_schema=DatasetRecord,
     store=store,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
+# 3. Load a dataset and register its genes
+adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
+features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
 atlas.register_features("gene_expression", features)
-add_from_anndata(atlas, adata, feature_space="gene_expression",
-                 zarr_layer="counts", dataset_record=record)
+
+# 4. Prepare var and ingest
+adata.var["global_feature_uid"] = adata.var_names
+record = DatasetRecord(
+    zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
+)
+add_from_anndata(
+    atlas, adata, feature_space="gene_expression",
+    zarr_layer="counts", dataset_record=record,
+)
+
+# 5. Snapshot and query
 atlas.optimize()
 atlas.snapshot()
+atlas_r = RaggedAtlas.checkout_latest(f"{atlas_dir}/db")
+result = atlas_r.query().limit(500).to_anndata()
+print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
+```
 
-atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", CellSchema, store)
-adata = atlas_r.query().where("cell_type = 'T cells'").to_anndata()
+### Opening a public atlas
+
+The CellxGene Census mouse atlas (~44M cells) is available on S3.
+No schema class or store construction needed, just `db_uri` and S3 config:
+
+```python
+from lancell.atlas import RaggedAtlas
+
+atlas = RaggedAtlas.checkout_latest(
+    db_uri="s3://epiblast-public/cellxgene_mouse_lancell/lance_db",
+    store_kwargs={"config": {"skip_signature": True, "region": "us-east-2"}},
+)
+
+atlas.query().count()                                           # 43,969,325
+adata = atlas.query().where("cell_type = 'neural cell'").limit(5000).to_anndata()
 ```
 
 ### Querying
 
-The cell table is a LanceDB table — the full query surface is available without custom loaders.
+The cell table is a LanceDB table. The full query surface is available without custom loaders.
 
 ```python
 # SQL filter
@@ -93,19 +132,28 @@ adata = atlas_r.query().where("tissue = 'lung' AND cell_type IS NOT NULL").to_an
 # Vector similarity search
 hits = atlas_r.query().search(query_vec, vector_column_name="embedding").limit(50).to_anndata()
 
-# Feature-filtered query — reads only the byte ranges for those genes (CSC index)
+# Feature-filtered query: reads only the byte ranges for those genes (CSC index)
 adata = atlas_r.query().features(["CD3D", "CD19", "MS4A1"], "gene_expression").to_anndata()
 
 # Intersection across ragged datasets (only genes shared by all)
 shared = atlas_r.query().feature_join("intersection").to_anndata()
 
-# Count by cell type — cheap, only fetches the grouping column
+# Count by cell type (cheap, only fetches the grouping column)
 atlas_r.query().count(group_by="cell_type")
 ```
 
 For large results, `.to_batches()` provides a streaming iterator that avoids materialising everything at once. `.to_mudata()` returns one AnnData per modality for multimodal atlases.
 
-The `notebooks/` directory contains [marimo](https://marimo.io) notebooks covering end-to-end atlas construction from scBaseCount data and the TileDB-SOMA benchmark used in the Performance section below.
+---
+
+### Example Notebooks
+
+The `notebooks/` directory contains self-contained [marimo](https://marimo.io) notebooks that work after a plain `pip install lancell` (no repo clone needed).
+
+| Notebook | Description |
+|----------|-------------|
+| [`scbasecount_ragged_atlas.py`](notebooks/scbasecount_ragged_atlas.py) | Explore a small 7.3M-cell atlas built from [scBaseCount](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11885935/) data (human + *C. elegans*). Covers versioning, metadata queries, ragged union/intersection joins, feature selection, AnnData reconstruction, and the PyTorch dataloader. |
+| [`cellxgene_tiledb_vs_lancell_benchmark.py`](notebooks/cellxgene_tiledb_vs_lancell_benchmark.py) | Load the 44M-cell CellxGene Census mouse atlas stored in lancell format and benchmark it against TileDB-SOMA for ML dataloader throughput and AnnData query latency. |
 
 ---
 
@@ -138,11 +186,11 @@ Zarr's sharded format packs many chunks into a single object-store file, with an
 
 Lancell's `RustShardReader` handles shard reads in Rust: it batches all requested ranges, issues one `get_ranges` call per shard file, and decodes chunks in parallel via rayon. On S3 and GCS this typically cuts latency-dominated read time by an order of magnitude compared to sequential per-chunk fetches.
 
-### BP-128 bitpacking
+### BP-128 bitpacking (from BPCells)
 
 When ingesting integer count data, lancell automatically applies BP-128 bitpacking with delta encoding to the sparse `indices` array, and BP-128 (no delta) to the values array. BP-128 is a SIMD-accelerated codec that packs integers using the minimum number of bits required per 128-element block.
 
-This delivers compression ratios comparable to zstd on typical single-cell count matrices while decoding at memory bandwidth speeds — making it strictly better than general-purpose codecs for this data type. Chunk sizes that are multiples of 128 align perfectly with the codec's block boundaries.
+This delivers compression ratios comparable to zstd on typical single-cell count matrices while decoding at memory bandwidth speeds, making it strictly better than general-purpose codecs for this data type. Chunk sizes that are multiples of 128 align perfectly with the codec's block boundaries.
 
 ---
 
@@ -150,17 +198,17 @@ This delivers compression ratios comparable to zstd on typical single-cell count
 
 Lancell separates the writable ingest path from the read/query path with an explicit snapshot model:
 
-1. **Ingest** — write Zarr arrays and cell records freely, in parallel if needed.
-2. **`optimize()`** — compact Lance fragments, assign `global_index` to newly registered features, rebuild FTS indexes.
-3. **`snapshot()`** — validate consistency and record the current Lance table versions. Returns a version number.
-4. **`checkout(version)`** — open a read-only atlas pinned to that snapshot. Every table is pinned to the exact Lance version recorded at snapshot time.
+1. **Ingest**: write Zarr arrays and cell records freely, in parallel if needed.
+2. **`optimize()`**: compact Lance fragments, assign `global_index` to newly registered features, rebuild FTS indexes.
+3. **`snapshot()`**: validate consistency and record the current Lance table versions. Returns a version number.
+4. **`checkout(version)`**: open a read-only atlas pinned to that snapshot. Every table is pinned to the exact Lance version recorded at snapshot time.
 
 ```python
 atlas.optimize()
 v0 = atlas.snapshot()       # validate + commit; returns version int
 
-# read-only handle pinned to v0 — concurrent ingestion won't affect it
-atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", CellSchema, store)
+# read-only handle pinned to v0; concurrent ingestion won't affect it
+atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", store=store)
 
 # inspect available snapshots
 RaggedAtlas.list_versions("/data/atlas/db")
@@ -172,19 +220,24 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 
 ## Documentation
 
-- **[Data Structure](docs/data_structure.md)** — LanceDB + Zarr layout, pointer types, `_feature_layouts` feature mapping, versioning model.
-- **[Building an Atlas](docs/atlas.md)** — end-to-end walkthrough with two heterogeneous datasets.
-- **[Array Storage](docs/array_storage.md)** — `add_from_anndata` internals, BP-128 bitpacking, CSC column index for fast feature-filtered reads.
-- **[Querying](docs/querying.md)** — `AtlasQuery` fluent builder: filtering, feature reconstruction, union/intersection joins, terminal methods.
-- **[PyTorch Data Loading](docs/dataloader.md)** — `CellDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
-- **[Versioning](docs/versioning.md)** — snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
-- **[Schemas](docs/schemas.md)** — `LancellBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetRecord`.
+- **[Data Structure](docs/data_structure.md)**: LanceDB + Zarr layout, pointer types, `_feature_layouts` feature mapping, versioning model.
+- **[Building an Atlas](docs/atlas.md)**: end-to-end walkthrough with two heterogeneous datasets.
+- **[Array Storage](docs/array_storage.md)**: `add_from_anndata` internals, BP-128 bitpacking, CSC column index for fast feature-filtered reads.
+- **[Querying](docs/querying.md)**: `AtlasQuery` fluent builder, filtering, feature reconstruction, union/intersection joins, terminal methods.
+- **[PyTorch Data Loading](docs/dataloader.md)**: `CellDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
+- **[Versioning](docs/versioning.md)**: snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
+- **[Schemas](docs/schemas.md)**: `LancellBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetRecord`.
 - **[Full docs site](https://epiblastai.github.io/lancell/)**
 
 ---
 
-## References
+## Acknowledgements
 
-- **scBaseCount** — Luecken et al., *A community resource of harmonized scRNA-seq count data*, bioRxiv 2025. https://www.biorxiv.org/content/10.1101/2025.02.27.640494v3
-- **BPCells** — Lareau et al., *BPCells enables efficient single-cell analysis on the laptop and the cloud*, bioRxiv 2025. BP-128 bitpacking in lancell is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
-- **CellxGene Census** — Chan Zuckerberg Initiative, *CellxGene Census*. The mouse atlas used in the benchmark. https://chanzuckerberg.github.io/cellxgene-census/
+### Methods
+
+- **BPCells**: Parks and Greenleaf, *Scalable high-performance single cell data analysis with BPCells*, bioRxiv 2025. BP-128 bitpacking in lancell is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
+
+### Datasets
+
+- **CellxGene Census**: Chan Zuckerberg Initiative, *CellxGene Census*. The mouse atlas used in the benchmark. https://chanzuckerberg.github.io/cellxgene-census/
+- **scBaseCount**: Youngblut et al., *scBaseCount: an AI agent-curated, uniformly processed, and autonomously updated single cell data repository*, bioRxiv 2025. https://www.biorxiv.org/content/10.1101/2025.02.27.640494v3

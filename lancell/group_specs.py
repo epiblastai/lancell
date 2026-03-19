@@ -6,6 +6,9 @@ from pydantic import BaseModel
 from lancell.protocols import Reconstructor
 
 
+# TODO: This seems totally unnecessary. We're just using the zarr dtype, I don't
+# believe this is required anywhere aside from validation, but then we're not validating
+# layer or assigning them a dtype, so it all seems a bit useless.
 class DTypeKind(str, Enum):
     """Structured dtype.kind values used by NumPy and Zarr arrays."""
 
@@ -28,18 +31,18 @@ class ArraySpec(BaseModel):
     ndim: int | None = None
 
 
-class SubgroupSpec(BaseModel):
-    """Expected properties of a zarr subgroup with multiple arrays."""
+class LayersSpec(BaseModel):
+    """Spec for the layers zarr subgroup."""
 
-    subgroup_name: str
-    # If None, any arrays are allowed. If provided, these are the
-    # minimum required arrays.
-    required_arrays: list[ArraySpec] | None = None
-    # All arrays in this subgroup must share the same shape
+    prefix: str = ""
     uniform_shape: bool = False
-    # All arrays must match shape of a named sibling array
-    # at the parent group level (e.g. "indices")
     match_shape_of: str | None = None
+    required: list[str] = []
+    allowed: list[str] = []
+
+    @property
+    def path(self) -> str:
+        return f"{self.prefix}/layers" if self.prefix else "layers"
 
 
 class ZarrGroupSpec(BaseModel):
@@ -53,9 +56,7 @@ class ZarrGroupSpec(BaseModel):
     reconstructor: Reconstructor
     has_var_df: bool = False
     required_arrays: list[ArraySpec] = []
-    required_subgroups: list[SubgroupSpec] = []
-    required_layers: list[str] = []
-    allowed_layers: list[str] = []
+    layers: LayersSpec = LayersSpec()
 
     def _check_top_level_arrays(self, group: zarr.Group) -> tuple[list[str], dict[str, tuple]]:
         errors: list[str] = []
@@ -80,95 +81,66 @@ class ZarrGroupSpec(BaseModel):
                 )
         return errors, reference_shapes
 
-    def _check_subgroups(self, group: zarr.Group, reference_shapes: dict[str, tuple]) -> list[str]:
-        errors: list[str] = []
-        for sg_spec in self.required_subgroups:
-            if sg_spec.subgroup_name not in group:
-                errors.append(f"Missing required subgroup '{sg_spec.subgroup_name}'")
-                continue
-            subgroup = group[sg_spec.subgroup_name]
-            if not isinstance(subgroup, zarr.Group):
-                errors.append(f"'{sg_spec.subgroup_name}' is not a group")
-                continue
-
-            sub_arrays = {k: v for k, v in subgroup.arrays()}
-            if sg_spec.required_arrays:
-                for arr_spec in sg_spec.required_arrays:
-                    if arr_spec.array_name not in sub_arrays:
-                        errors.append(
-                            f"Subgroup '{sg_spec.subgroup_name}' missing "
-                            f"required array '{arr_spec.array_name}'"
-                        )
-
-            if sg_spec.uniform_shape and sub_arrays:
-                shapes = {name: arr.shape for name, arr in sub_arrays.items()}
-                if len(set(shapes.values())) > 1:
-                    errors.append(
-                        f"Subgroup '{sg_spec.subgroup_name}' arrays have "
-                        f"inconsistent shapes: {shapes}"
-                    )
-
-            if sg_spec.match_shape_of and sg_spec.match_shape_of in reference_shapes:
-                expected = reference_shapes[sg_spec.match_shape_of]
-                for name, arr in sub_arrays.items():
-                    if arr.shape != expected:
-                        errors.append(
-                            f"'{sg_spec.subgroup_name}/{name}' shape {arr.shape} "
-                            f"doesn't match '{sg_spec.match_shape_of}' "
-                            f"shape {expected}"
-                        )
-        return errors
-
-    def _find_layers_path(self) -> str:
+    def find_layers_path(self) -> str:
         """Return the layers group path — may be top-level or nested (e.g. 'csr/layers')."""
-        for sg_spec in self.required_subgroups:
-            name = sg_spec.subgroup_name
-            if name == "layers" or name.endswith("/layers"):
-                return name
-        return "layers"
+        return self.layers.path
 
-    def _check_layers(self, group: zarr.Group) -> list[str]:
+    def _check_layers(self, group: zarr.Group, reference_shapes: dict[str, tuple]) -> list[str]:
         errors: list[str] = []
-        layers_path = self._find_layers_path()
+        layers_path = self.layers.path
 
-        if self.required_layers:
-            try:
-                layers_candidate = group[layers_path]
-                layers_group: zarr.Group | None = (
-                    layers_candidate if isinstance(layers_candidate, zarr.Group) else None
-                )
-            except Exception:
-                layers_group = None
+        try:
+            layers_candidate = group[layers_path]
+            layers_group: zarr.Group | None = (
+                layers_candidate if isinstance(layers_candidate, zarr.Group) else None
+            )
+        except Exception:
+            layers_group = None
+
+        if self.layers.required:
             if layers_group is None:
                 errors.append(
-                    f"Missing required 'layers' subgroup (required layers: {self.required_layers})"
+                    f"Missing required '{layers_path}' subgroup "
+                    f"(required layers: {self.layers.required})"
                 )
             else:
-                for layer_name in self.required_layers:
+                for layer_name in self.layers.required:
                     if layer_name not in layers_group:
                         errors.append(f"Missing required layer '{layer_name}'")
 
-        if self.allowed_layers:
-            try:
-                layers_candidate = group[layers_path]
-                if isinstance(layers_candidate, zarr.Group):
-                    allowed_values = set(self.allowed_layers)
-                    for name, _ in layers_candidate.arrays():
-                        if name not in allowed_values:
-                            errors.append(
-                                f"Unknown layer '{name}' in layers/ subgroup. "
-                                f"Allowed: {sorted(allowed_values)}"
-                            )
-            except Exception:
-                pass
+        if self.layers.allowed and layers_group is not None:
+            allowed_values = set(self.layers.allowed)
+            for name, _ in layers_group.arrays():
+                if name not in allowed_values:
+                    errors.append(
+                        f"Unknown layer '{name}' in {layers_path}/ subgroup. "
+                        f"Allowed: {sorted(allowed_values)}"
+                    )
+
+        if layers_group is not None:
+            sub_arrays = {k: v for k, v in layers_group.arrays()}
+
+            if self.layers.uniform_shape and sub_arrays:
+                shapes = {name: arr.shape for name, arr in sub_arrays.items()}
+                if len(set(shapes.values())) > 1:
+                    errors.append(f"'{layers_path}' arrays have inconsistent shapes: {shapes}")
+
+            if self.layers.match_shape_of and self.layers.match_shape_of in reference_shapes:
+                expected = reference_shapes[self.layers.match_shape_of]
+                for name, arr in sub_arrays.items():
+                    if arr.shape != expected:
+                        errors.append(
+                            f"'{layers_path}/{name}' shape {arr.shape} "
+                            f"doesn't match '{self.layers.match_shape_of}' "
+                            f"shape {expected}"
+                        )
 
         return errors
 
     def validate_group(self, group: zarr.Group) -> list[str]:
         """Validate a zarr group against this spec. Returns a list of errors."""
         errors, reference_shapes = self._check_top_level_arrays(group)
-        errors += self._check_subgroups(group, reference_shapes)
-        errors += self._check_layers(group)
+        errors += self._check_layers(group, reference_shapes)
         return errors
 
 

@@ -11,7 +11,7 @@ import lancedb
 import numpy as np
 import polars as pl
 
-from lancell._util import sql_escape
+from lancell.util import sql_escape
 
 if TYPE_CHECKING:
     import zarr
@@ -70,38 +70,29 @@ def build_feature_layout_df(
     n = len(feature_uids)
     layout_uid = compute_layout_uid(feature_uids)
 
-    uids_sql = ", ".join(f"'{sql_escape(u)}'" for u in feature_uids)
     registry_df = (
         registry_table.search()
-        .where(f"uid IN ({uids_sql})", prefilter=True)
         .select(["uid", "global_index"])
         .to_polars()
+        .rename({"uid": "feature_uid"})
     )
-    uid_to_global: dict[str, int | None] = dict(
-        zip(registry_df["uid"].to_list(), registry_df["global_index"].to_list(), strict=True)
+    requested_df = pl.DataFrame(
+        {"feature_uid": feature_uids, "local_index": range(n)},
+        schema={"feature_uid": pl.Utf8, "local_index": pl.Int64},
     )
-    registry_uids = set(registry_df["uid"].to_list())
 
-    global_indices: list[int | None] = []
-    missing: list[str] = []
-    for uid in feature_uids:
-        if uid not in registry_uids:
-            missing.append(uid)
-        else:
-            global_indices.append(uid_to_global.get(uid))
-
-    if missing:
+    missing_df = requested_df.join(registry_df, on="feature_uid", how="anti")
+    if not missing_df.is_empty():
+        missing = sorted(missing_df["feature_uid"].to_list())
         raise ValueError(
-            f"{len(missing)} uid(s) in var_df not found in registry. First 5: {sorted(missing)[:5]}"
+            f"{len(missing)} uid(s) in var_df not found in registry. First 5: {missing[:5]}"
         )
 
-    return layout_uid, pl.DataFrame(
-        {
-            "layout_uid": [layout_uid] * n,
-            "feature_uid": feature_uids,
-            "local_index": list(range(n)),
-            "global_index": pl.Series(global_indices, dtype=pl.Int64),
-        }
+    layout_df = requested_df.join(registry_df, on="feature_uid", how="left").with_columns(
+        pl.lit(layout_uid).alias("layout_uid"),
+    )
+    return layout_uid, layout_df.select(
+        ["layout_uid", "feature_uid", "local_index", "global_index"]
     )
 
 
@@ -148,8 +139,10 @@ def sync_layouts_global_index(
     """Propagate updated global_index values from registry to _feature_layouts.
 
     After reindex_registry(), call this to keep the denormalized global_index
-    in _feature_layouts consistent with the registry. Uses merge_insert to
-    update matched rows.
+    in _feature_layouts consistent with the registry.  Only touches layout rows
+    whose ``global_index`` is still NULL — since ``reindex_registry`` never
+    modifies existing indices, rows that already have a value are already
+    correct.
 
     Returns
     -------
@@ -165,22 +158,19 @@ def sync_layouts_global_index(
     if registry_df.is_empty():
         return 0
 
-    all_rows = (
+    stale_rows = (
         layouts_table.search()
+        .where("global_index IS NULL", prefilter=True)
         .select(["layout_uid", "feature_uid", "local_index", "global_index"])
         .to_polars()
     )
-    if all_rows.is_empty():
+    if stale_rows.is_empty():
         return 0
 
-    updated = (
-        all_rows.join(
-            registry_df.rename({"uid": "feature_uid", "global_index": "new_global_index"}),
-            on="feature_uid",
-            how="inner",
-        )
-        .with_columns(pl.col("new_global_index").alias("global_index"))
-        .drop("new_global_index")
+    updated = stale_rows.drop("global_index").join(
+        registry_df.rename({"uid": "feature_uid"}),
+        on="feature_uid",
+        how="inner",
     )
 
     if updated.is_empty():
@@ -240,12 +230,14 @@ def validate_feature_layout(
         errors.append(f"feature_uid has duplicates: {len(rows)} rows but {n_unique} unique values")
 
     if registry_table is not None:
-        registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
-        registry_uids = set(registry_df["uid"].to_list())
-        var_uids = rows["feature_uid"].to_list()
-
-        unresolved = [u for u in var_uids if u not in registry_uids]
-        if unresolved:
+        registry_uids_df = registry_table.search().select(["uid"]).to_polars()
+        unresolved_df = rows.select("feature_uid").join(
+            registry_uids_df.rename({"uid": "feature_uid"}),
+            on="feature_uid",
+            how="anti",
+        )
+        if not unresolved_df.is_empty():
+            unresolved = unresolved_df["feature_uid"].to_list()
             errors.append(
                 f"{len(unresolved)} uid(s) not found in registry. First 5: {unresolved[:5]}"
             )
@@ -343,18 +335,21 @@ def resolve_feature_uids_to_global_indices(
     if not feature_uids:
         return np.array([], dtype=np.int32)
 
-    registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
-    requested = set(feature_uids)
-    registry_uids = set(registry_df["uid"].to_list())
+    registry_df = (
+        registry_table.search()
+        .select(["uid", "global_index"])
+        .to_polars()
+        .rename({"uid": "feature_uid"})
+    )
+    requested_df = pl.DataFrame({"feature_uid": feature_uids})
 
-    missing = requested - registry_uids
-    if missing:
-        raise ValueError(
-            f"{len(missing)} UID(s) not found in registry. First 5: {sorted(missing)[:5]}"
-        )
+    missing_df = requested_df.join(registry_df, on="feature_uid", how="anti")
+    if not missing_df.is_empty():
+        missing = sorted(missing_df["feature_uid"].to_list())
+        raise ValueError(f"{len(missing)} UID(s) not found in registry. First 5: {missing[:5]}")
 
-    matched = registry_df.filter(pl.col("uid").is_in(list(requested)))
-    unindexed = matched.filter(pl.col("global_index").is_null())["uid"].to_list()
+    matched = requested_df.join(registry_df, on="feature_uid", how="inner")
+    unindexed = matched.filter(pl.col("global_index").is_null())["feature_uid"].to_list()
     if unindexed:
         raise ValueError(
             f"{len(unindexed)} UID(s) have global_index = None "

@@ -10,8 +10,8 @@ Defines:
 from lancell.group_specs import (
     ArraySpec,
     DTypeKind,
+    LayersSpec,
     PointerKind,
-    SubgroupSpec,
     ZarrGroupSpec,
     register_spec,
 )
@@ -34,11 +34,13 @@ GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
     required_arrays=[
         ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
     ],
-    required_subgroups=[
-        SubgroupSpec(subgroup_name="csr/layers", uniform_shape=True, match_shape_of="csr/indices"),
-    ],
-    required_layers=["Unique"],
-    allowed_layers=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+    layers=LayersSpec(
+        prefix="csr",
+        uniform_shape=True,
+        match_shape_of="csr/indices",
+        required=["Unique"],
+        allowed=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+    ),
     reconstructor=SparseCSRReconstructor(),
 )
 register_spec(GENEFULL_EXPRESSION_SPEC)

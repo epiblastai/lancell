@@ -10,6 +10,7 @@ from typing import Union, get_args, get_origin
 
 import anndata as ad
 import pandas as pd
+import pyarrow as pa
 
 from lancell.group_specs import PointerKind, get_spec
 from lancell.schema import AUTO_FIELDS, DenseZarrPointer, LancellBaseSchema, SparseZarrPointer
@@ -95,6 +96,54 @@ def _extract_pointer_fields(
                     pointer_type=t,
                 )
                 break
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Arrow-schema-based pointer inference (schema-less read path)
+# ---------------------------------------------------------------------------
+
+_SPARSE_SUBFIELDS = {"feature_space", "zarr_group", "start", "end", "zarr_row"}
+_DENSE_SUBFIELDS = {"feature_space", "zarr_group", "position"}
+
+
+def _infer_pointer_fields_from_arrow(
+    arrow_schema: pa.Schema,
+) -> dict[str, PointerFieldInfo]:
+    """Infer pointer fields from a cell table's Arrow schema.
+
+    Detects struct columns whose sub-field names match the signatures of
+    ``SparseZarrPointer`` or ``DenseZarrPointer``.  This allows read-path
+    code to work without the original Python schema class.
+    """
+    result: dict[str, PointerFieldInfo] = {}
+    for i in range(len(arrow_schema)):
+        field = arrow_schema.field(i)
+        if not pa.types.is_struct(field.type):
+            continue
+        sub_names = {field.type.field(j).name for j in range(field.type.num_fields)}
+        if sub_names == _SPARSE_SUBFIELDS:
+            pointer_kind = PointerKind.SPARSE
+            pointer_type = SparseZarrPointer
+        elif sub_names == _DENSE_SUBFIELDS:
+            pointer_kind = PointerKind.DENSE
+            pointer_type = DenseZarrPointer
+        else:
+            continue
+
+        feature_space = field.name
+        spec = get_spec(feature_space)
+        if pointer_kind is not spec.pointer_kind:
+            raise TypeError(
+                f"Arrow field '{feature_space}' looks like a {pointer_kind.value} pointer "
+                f"but the registered spec requires {spec.pointer_kind.value}"
+            )
+        result[feature_space] = PointerFieldInfo(
+            field_name=feature_space,
+            feature_space=feature_space,
+            pointer_kind=pointer_kind,
+            pointer_type=pointer_type,
+        )
     return result
 
 

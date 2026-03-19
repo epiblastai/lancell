@@ -175,12 +175,12 @@ The datasets table is the authoritative inventory of what zarr groups exist. `va
 
 | Field | Description |
 |---|---|
-| `layout_uid` | Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. FTS-indexed for layout → features lookup. |
+| `layout_uid` | Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. Scalar-indexed for layout → features lookup. |
 | `feature_uid` | `global_feature_uid` from the registry. FTS-indexed for feature → layouts lookup. |
 | `local_index` | 0-based position of this feature in the layout's zarr array (i.e. the column index stored in `csr/indices`). |
 | `global_index` | Denormalized from the registry. Used as a scatter/gather key at training time — no database lookup needed in the hot path. |
 
-FTS indices on both `feature_uid` and `layout_uid` make two queries efficient:
+An FTS index on `feature_uid` and a scalar index on `layout_uid` make two queries efficient:
 
 - **Feature → datasets**: which layouts (and thus datasets) include feature X? (`find_datasets_with_features`)
 - **Layout → features**: given a `layout_uid`, reconstruct the `local → global` index remap for vectorized scatter/gather

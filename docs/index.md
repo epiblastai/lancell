@@ -121,11 +121,11 @@ maturin develop --release
 
 - **[Schemas](schemas.md)** — all LanceDB schema classes: `LancellBaseSchema`, `SparseZarrPointer`, `DenseZarrPointer`, `FeatureBaseSchema`, `DatasetRecord`, `FeatureLayout`, `AtlasVersionRecord`. Covers the `uid`/`global_index` split and how pointer fields are validated.
 - **[Feature Layouts](feature_layouts.md)** — Python API for the `_feature_layouts` table: computing layout UIDs, building layout DataFrames, reindexing the registry, syncing global indices, and resolving feature UIDs to global positions.
-- **[Group Specs](group_specs.md)** — `ZarrGroupSpec`, `PointerKind`, `ArraySpec`, `SubgroupSpec`, built-in specs, and how to define custom specs for new assay types.
+- **[Group Specs](group_specs.md)** — `ZarrGroupSpec`, `PointerKind`, `ArraySpec`, `LayersSpec`, built-in specs, and how to define custom specs for new assay types.
 - **[Querying](querying.md)** — the `AtlasQuery` fluent builder: filtering cells, controlling feature reconstruction, union/intersection joins, feature-filtered queries, and all terminal methods (`.to_anndata()`, `.to_mudata()`, `.to_batches()`, `.count()`).
 - **[Reconstructors](reconstructors.md)** — `SparseCSRReconstructor`, `DenseReconstructor`, `FeatureCSCReconstructor`; choosing between them; the `Reconstructor` protocol for custom implementations.
 - **[Array Storage](array_storage.md)** — `add_from_anndata` internals: streaming from backed `.h5ad` files, chunk/shard sizing, BP-128 bitpacking, the `_feature_layouts` feature mapping. Building the optional CSC column index with `add_csc()` for fast feature-filtered reads.
-- **[PyTorch Data Loading](dataloader.md)** — `CellDataset` and `MultimodalCellDataset`; `CellSampler` (locality-aware bin-packing) and `BalancedCellSampler`; collate functions; `make_loader` with spawn parallelism.
+- **[PyTorch Data Loading](dataloader.md)** — `CellDataset` and `MultimodalCellDataset`; `CellSampler` (locality-aware bin-packing); collate functions; `make_loader` with spawn parallelism.
 
 ---
 

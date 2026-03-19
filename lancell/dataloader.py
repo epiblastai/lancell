@@ -10,6 +10,11 @@ collate_fn -> GPU`` pipeline.  Reader initialisation is deferred to the
 worker process, making the dataset safely picklable for spawn-based
 multiprocessing.
 
+Pointer structs and metadata columns are loaded lazily per-batch via
+lance's ``take_row_ids`` API, keeping init-time memory proportional to
+``n_cells * (8 + 4)`` bytes (row IDs + group IDs) rather than
+materializing the full cell table.
+
 Usage::
 
     dataset = atlas.query().to_cell_dataset("gene_expression", "counts", metadata_columns=["cell_type"])
@@ -28,6 +33,7 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import lancedb
 import numpy as np
 import polars as pl
 
@@ -45,16 +51,6 @@ from lancell.read import (
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin
 # ---------------------------------------------------------------------------
-
-
-def _extract_metadata_arrays(
-    cells_pl: pl.DataFrame,
-    metadata_columns: list[str] | None,
-) -> dict[str, np.ndarray] | None:
-    """Extract obs columns as numpy arrays; returns None when no columns are requested."""
-    if not metadata_columns:
-        return None
-    return {col: cells_pl[col].to_numpy() for col in metadata_columns if col in cells_pl.columns}
 
 
 def _build_groups_np(zg_series: pl.Series, groups: list[str]) -> np.ndarray:
@@ -118,11 +114,13 @@ def _build_sparse_modality_data(
     layer: str,
     wanted_globals_for_fs: np.ndarray | None,
     n_cells: int,
-) -> "tuple[pl.DataFrame, _ModalityData]":
+) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
     """Build ``_ModalityData`` for a sparse feature space modality.
 
-    Returns ``(filtered_cells, modality_data)`` where *filtered_cells* is the
-    DataFrame after empty-cell removal (with internal columns added).
+    Returns ``(filtered_cells, groups_np, modality_data)`` where
+    *filtered_cells* is the DataFrame after empty-cell removal (with
+    internal columns added), and *groups_np* is the per-present-cell
+    integer group ID array.
     """
     if len(spec.required_arrays) != 1:
         raise NotImplementedError(
@@ -139,52 +137,51 @@ def _build_sparse_modality_data(
 
     if len(present_indices) > 0 and groups:
         groups_np = _build_groups_np(filtered["_zg"], groups)
-        starts = filtered["_start"].to_numpy().astype(np.int64)
-        ends = filtered["_end"].to_numpy().astype(np.int64)
     else:
         groups_np = np.array([], dtype=np.int32)
-        starts = np.array([], dtype=np.int64)
-        ends = np.array([], dtype=np.int64)
 
     group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
+    layers_path = spec.find_layers_path()
     n_features = (
         len(wanted_globals_for_fs)
         if wanted_globals_for_fs is not None
         else atlas._registry_tables[fs].count_rows()
     )
     layer_dtype = (
-        group_readers[groups[0]].get_array_reader(f"csr/layers/{layer}")._native_dtype
+        group_readers[groups[0]].get_array_reader(f"{layers_path}/{layer}")._native_dtype
         if groups
         else np.dtype(np.float32)
     )
 
     mod_data = _ModalityData(
         kind=PointerKind.SPARSE,
-        groups_np=groups_np,
-        starts=starts,
-        ends=ends,
         unique_groups=groups,
         group_readers=group_readers,
         n_features=n_features,
         index_array_name=index_array_name,
         layer=layer,
         layer_dtype=layer_dtype,
+        layers_path=layers_path,
         present_mask=present_mask,
         cell_positions=cell_positions,
     )
-    return filtered, mod_data
+    return filtered, groups_np, mod_data
 
 
 def _build_dense_modality_data(
     atlas: "RaggedAtlas",
     cells_indexed: pl.DataFrame,
     pf,
+    spec,
     fs: str,
     layer: str,
     n_cells: int,
-) -> "_ModalityData":
-    """Build ``_ModalityData`` for a dense feature space modality."""
+) -> "tuple[np.ndarray, _ModalityData]":
+    """Build ``_ModalityData`` for a dense feature space modality.
+
+    Returns ``(groups_np, modality_data)``.
+    """
     filtered, groups = _prepare_dense_cells(cells_indexed, pf)
     groups = sorted(groups)
 
@@ -193,13 +190,8 @@ def _build_dense_modality_data(
 
     if len(present_indices) > 0 and groups:
         groups_np = _build_groups_np(filtered["_zg"], groups)
-        pos_arr = filtered["_pos"].to_numpy().astype(np.int64)
-        starts = pos_arr
-        ends = pos_arr + 1
     else:
         groups_np = np.array([], dtype=np.int32)
-        starts = np.array([], dtype=np.int64)
-        ends = np.array([], dtype=np.int64)
 
     group_readers: dict[str, GroupReader] = {
         zg: GroupReader.for_worker(
@@ -211,27 +203,27 @@ def _build_dense_modality_data(
         for zg in groups
     }
 
+    layers_path = spec.find_layers_path()
     n_features = atlas._registry_tables[fs].count_rows()
     layer_dtype = (
-        group_readers[groups[0]].get_array_reader(f"layers/{layer}")._native_dtype
+        group_readers[groups[0]].get_array_reader(f"{layers_path}/{layer}")._native_dtype
         if groups
         else np.dtype(np.float32)
     )
 
-    return _ModalityData(
+    mod_data = _ModalityData(
         kind=PointerKind.DENSE,
-        groups_np=groups_np,
-        starts=starts,
-        ends=ends,
         unique_groups=groups,
         group_readers=group_readers,
         n_features=n_features,
         index_array_name="",
         layer=layer,
         layer_dtype=layer_dtype,
+        layers_path=layers_path,
         present_mask=present_mask,
         cell_positions=cell_positions,
     )
+    return groups_np, mod_data
 
 
 def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
@@ -245,6 +237,27 @@ def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
         row_indices = np.repeat(np.arange(n_cells), lengths)
         X[row_indices, batch.indices] = torch.from_numpy(batch.values.astype(np.float32))
     return X
+
+
+def _reorder_take_result(result: pl.DataFrame, batch_row_ids: np.ndarray) -> pl.DataFrame:
+    """Reorder ``take_row_ids`` result to match the input order of *batch_row_ids*.
+
+    ``take_row_ids`` returns rows sorted by ``_rowid``.  This function
+    computes the inverse permutation so the output aligns with the
+    caller's requested order.
+    """
+    returned_ids = result["_rowid"].to_numpy().astype(np.uint64)
+    # Build mapping: for each returned_id, find its position in batch_row_ids.
+    # Both are uint64; we sort batch_row_ids and use searchsorted.
+    sort_perm = np.argsort(batch_row_ids)
+    inv_perm = np.empty_like(sort_perm)
+    inv_perm[sort_perm] = np.arange(len(sort_perm))
+    # returned_ids are already sorted by _rowid; sort batch_row_ids to match
+    sorted_batch_ids = batch_row_ids[sort_perm]
+    # Map each returned_id to its position in the original batch_row_ids order
+    positions = np.searchsorted(sorted_batch_ids, returned_ids)
+    reorder = inv_perm[positions]
+    return result[reorder.tolist()]
 
 
 class _AsyncDataset:
@@ -267,6 +280,7 @@ class _AsyncDataset:
             self._loop.close()
 
 
+# Used insted of a lambda function because pickle doesn't like lambdas
 def _identity_collate(x):
     return x
 
@@ -318,6 +332,7 @@ class DenseBatch:
 
     data: np.ndarray
     n_features: int
+    metadata: dict[str, np.ndarray] | None = None
 
 
 @dataclass
@@ -349,21 +364,21 @@ class MultimodalBatch:
 
 @dataclass
 class _ModalityData:
-    """Pre-computed per-modality arrays for CellDataset and MultimodalCellDataset.
+    """Pre-computed per-modality metadata for CellDataset and MultimodalCellDataset.
 
-    Built at ``__init__`` time; all fields are picklable.
+    Built at ``__init__`` time; all fields are picklable.  Does NOT store
+    per-cell pointer arrays (starts/ends/groups_np) — those are loaded
+    lazily per batch via lance ``take_row_ids``.
     """
 
     kind: PointerKind
-    groups_np: np.ndarray  # int32, (n_present_cells,)
-    starts: np.ndarray  # int64, (n_present_cells,)
-    ends: np.ndarray  # int64, (n_present_cells,)
     unique_groups: list[str]
     group_readers: dict[str, GroupReader]
     n_features: int
     index_array_name: str  # sparse only; "" for dense
     layer: str
     layer_dtype: np.dtype
+    layers_path: str = ""  # e.g. "csr/layers" or "layers"
     present_mask: np.ndarray | None = None  # bool, (n_total_cells,); None for CellDataset
     cell_positions: np.ndarray | None = None  # int64, (n_total_cells,); None for CellDataset
 
@@ -399,45 +414,44 @@ async def _take_group_sparse(
     return remapped, flat_values, lengths
 
 
-async def _take_sparse(
-    cell_positions: np.ndarray,
+async def _take_sparse_from_pointers(
+    groups_np: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
     mod_data: _ModalityData,
 ) -> SparseBatch:
-    """Fetch a sparse batch, dispatching across zarr groups concurrently.
+    """Fetch a sparse batch from per-cell pointer arrays.
 
-    Returns rows in the same order as ``cell_positions``.
+    Unlike the old ``_take_sparse`` which indexed into stored arrays,
+    this receives the pointer data directly (loaded from lance per-batch).
     """
-    batch_groups = mod_data.groups_np[cell_positions]
-    batch_starts = mod_data.starts[cell_positions]
-    batch_ends = mod_data.ends[cell_positions]
+    n_cells = len(groups_np)
 
     # Sort by group for ordered concatenation
-    sort_order = np.argsort(batch_groups, kind="stable")
-    batch_groups = batch_groups[sort_order]
-    batch_starts = batch_starts[sort_order]
-    batch_ends = batch_ends[sort_order]
+    sort_order = np.argsort(groups_np, kind="stable")
+    sorted_groups = groups_np[sort_order]
+    sorted_starts = starts[sort_order]
+    sorted_ends = ends[sort_order]
 
     # Dispatch one task per unique group
     tasks = []
-    for gid in np.unique(batch_groups):
-        mask = batch_groups == gid
+    for gid in np.unique(sorted_groups):
+        mask = sorted_groups == gid
         zg = mod_data.unique_groups[gid]
         gr = mod_data.group_readers[zg]
         tasks.append(
             _take_group_sparse(
                 gr.get_array_reader(mod_data.index_array_name),
-                gr.get_array_reader(f"csr/layers/{mod_data.layer}"),
+                gr.get_array_reader(f"{mod_data.layers_path}/{mod_data.layer}"),
                 gr.get_remap(),
-                batch_starts[mask],
-                batch_ends[mask],
+                sorted_starts[mask],
+                sorted_ends[mask],
             )
         )
 
     results = await asyncio.gather(*tasks)
 
-    # Assemble: concatenate in group order (pre-allocation isn't possible here
-    # because _take_group_sparse filters out-of-remap indices, making the
-    # final NNZ count unknown until the async reads complete)
+    # Assemble: concatenate in group order
     all_indices = []
     all_values = []
     all_lengths = []
@@ -453,7 +467,7 @@ async def _take_sparse(
     lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
 
     # Build CSR-style offsets
-    offsets = np.zeros(len(cell_positions) + 1, dtype=np.int64)
+    offsets = np.zeros(n_cells + 1, dtype=np.int64)
     np.cumsum(lengths, out=offsets[1:])
 
     batch = SparseBatch(
@@ -463,7 +477,7 @@ async def _take_sparse(
         n_features=mod_data.n_features,
     )
 
-    # Reorder to input order (consistent with _take_dense)
+    # Reorder to input order
     inv_sort = np.argsort(sort_order, kind="stable")
     return _reorder_sparse_batch_rows(batch, inv_sort)
 
@@ -514,20 +528,19 @@ async def _take_group_dense(
     return flat_data.reshape(len(starts), n_features).astype(np.float32)
 
 
-async def _take_dense(
-    cell_positions: np.ndarray,
+async def _take_dense_from_pointers(
+    groups_np: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
     mod_data: _ModalityData,
 ) -> DenseBatch:
-    """Fetch a dense batch across zarr groups; returns rows in query order."""
-    n_present = len(cell_positions)
-    batch_groups = mod_data.groups_np[cell_positions]
-    batch_starts = mod_data.starts[cell_positions]
-    batch_ends = mod_data.ends[cell_positions]
+    """Fetch a dense batch from per-cell pointer arrays."""
+    n_present = len(groups_np)
 
-    sort_order = np.argsort(batch_groups, kind="stable")
-    sorted_groups = batch_groups[sort_order]
-    sorted_starts = batch_starts[sort_order]
-    sorted_ends = batch_ends[sort_order]
+    sort_order = np.argsort(groups_np, kind="stable")
+    sorted_groups = groups_np[sort_order]
+    sorted_starts = starts[sort_order]
+    sorted_ends = ends[sort_order]
 
     tasks = []
     group_slices: list[tuple[int, int]] = []
@@ -539,7 +552,7 @@ async def _take_dense(
         gr = mod_data.group_readers[zg]
         tasks.append(
             _take_group_dense(
-                gr.get_array_reader(f"layers/{mod_data.layer}"),
+                gr.get_array_reader(f"{mod_data.layers_path}/{mod_data.layer}"),
                 sorted_starts[mask],
                 sorted_ends[mask],
                 mod_data.n_features,
@@ -558,23 +571,53 @@ async def _take_dense(
     return DenseBatch(data=sorted_data[inv_sort], n_features=mod_data.n_features)
 
 
-async def _fetch_modality(
-    cell_positions: np.ndarray,
+async def _fetch_modality_from_pointers(
+    groups_np: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
     mod_data: _ModalityData,
 ) -> "SparseBatch | DenseBatch":
-    """Dispatch to the appropriate fetch function based on modality kind."""
+    """Dispatch to sparse or dense fetch using pointer arrays."""
     if mod_data.kind is PointerKind.SPARSE:
-        return await _take_sparse(cell_positions, mod_data)
-    return await _take_dense(cell_positions, mod_data)
+        return await _take_sparse_from_pointers(groups_np, starts, ends, mod_data)
+    return await _take_dense_from_pointers(groups_np, starts, ends, mod_data)
+
+
+def _extract_pointers_sparse(
+    take_result: pl.DataFrame,
+    pointer_field: str,
+    unique_groups: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract (groups_np, starts, ends) from a take result for a sparse pointer field."""
+    pointer_df = take_result[pointer_field].struct.unnest()
+    zg_series = pointer_df["zarr_group"]
+    groups_np = _build_groups_np(zg_series, unique_groups)
+    starts = pointer_df["start"].to_numpy().astype(np.int64)
+    ends = pointer_df["end"].to_numpy().astype(np.int64)
+    return groups_np, starts, ends
+
+
+def _extract_pointers_dense(
+    take_result: pl.DataFrame,
+    pointer_field: str,
+    unique_groups: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract (groups_np, starts, ends) from a take result for a dense pointer field."""
+    pointer_df = take_result[pointer_field].struct.unnest()
+    zg_series = pointer_df["zarr_group"]
+    groups_np = _build_groups_np(zg_series, unique_groups)
+    pos_arr = pointer_df["position"].to_numpy().astype(np.int64)
+    return groups_np, pos_arr, pos_arr + 1
 
 
 async def _take_multimodal(
-    batch_cell_indices: np.ndarray,
+    take_result: pl.DataFrame,
     modality_data: dict[str, _ModalityData],
-    metadata_arrays: dict[str, np.ndarray] | None,
+    pointer_fields: dict[str, str],
+    metadata_columns: list[str] | None,
 ) -> MultimodalBatch:
-    """Fetch a multimodal batch; dispatches all modalities concurrently."""
-    n_cells = len(batch_cell_indices)
+    """Fetch a multimodal batch from a lance take result."""
+    n_cells = take_result.height
 
     tasks: list = []
     task_fs: list[str] = []
@@ -582,7 +625,18 @@ async def _take_multimodal(
     empty_modalities: dict[str, SparseBatch | DenseBatch] = {}
 
     for fs, mod_data in modality_data.items():
-        batch_present = mod_data.present_mask[batch_cell_indices]
+        pf_name = pointer_fields[fs]
+
+        # Extract pointers for ALL batch cells for this modality
+        if mod_data.kind is PointerKind.SPARSE:
+            pointer_df = take_result[pf_name].struct.unnest()
+            zg_series = pointer_df["zarr_group"]
+            batch_present = (zg_series != "").to_numpy()
+        else:
+            pointer_df = take_result[pf_name].struct.unnest()
+            zg_series = pointer_df["zarr_group"]
+            batch_present = (zg_series != "").to_numpy()
+
         present_masks[fs] = batch_present
         present_indices = np.where(batch_present)[0]
 
@@ -601,8 +655,18 @@ async def _take_multimodal(
                 )
             continue
 
-        mod_positions = mod_data.cell_positions[batch_cell_indices[present_indices]]
-        tasks.append(_fetch_modality(mod_positions, mod_data))
+        # Extract pointers only for present cells
+        present_take = take_result[present_indices.tolist()]
+        if mod_data.kind is PointerKind.SPARSE:
+            groups_np, starts, ends = _extract_pointers_sparse(
+                present_take, pf_name, mod_data.unique_groups
+            )
+        else:
+            groups_np, starts, ends = _extract_pointers_dense(
+                present_take, pf_name, mod_data.unique_groups
+            )
+
+        tasks.append(_fetch_modality_from_pointers(groups_np, starts, ends, mod_data))
         task_fs.append(fs)
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
@@ -612,8 +676,12 @@ async def _take_multimodal(
         modalities[fs] = result
 
     metadata = None
-    if metadata_arrays:
-        metadata = {col: arr[batch_cell_indices] for col, arr in metadata_arrays.items()}
+    if metadata_columns:
+        metadata = {
+            col: take_result[col].to_numpy()
+            for col in metadata_columns
+            if col in take_result.columns
+        }
 
     return MultimodalBatch(
         n_cells=n_cells,
@@ -636,12 +704,16 @@ class CellDataset(_AsyncDataset):
     :mod:`lancell.sampler`.  Use :func:`make_loader` to wire dataset and
     sampler into a ``torch.utils.data.DataLoader``.
 
+    Pointer structs and metadata are loaded lazily per-batch via lance's
+    ``take_row_ids`` API rather than being stored in memory at init time.
+
     Parameters
     ----------
     atlas:
         The atlas to read from.
     cells_pl:
-        Polars DataFrame of cell records (from a query).
+        Polars DataFrame of cell records (from a query). Must include
+        ``_rowid`` column (via ``with_row_id(True)``).
     feature_space:
         Which feature space to read.
     layer:
@@ -678,7 +750,7 @@ class CellDataset(_AsyncDataset):
 
         # Build modality data (filters empty cells, builds remaps & readers)
         cells_indexed = cells_pl.with_row_index("_orig_idx")
-        self.cells_pl, self._mod_data = _build_sparse_modality_data(
+        filtered, groups_np, self._mod_data = _build_sparse_modality_data(
             atlas,
             cells_indexed,
             pf,
@@ -688,12 +760,19 @@ class CellDataset(_AsyncDataset):
             wanted_globals,
             cells_pl.height,
         )
-        self._n_cells = self.cells_pl.height
-        self._metadata_arrays = _extract_metadata_arrays(self.cells_pl, metadata_columns)
+
+        # Store only the lightweight arrays needed for sampling + lazy loading
+        self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
+        self._groups_np = groups_np
+        self._n_cells = len(self._row_ids)
+        self._pointer_field = feature_space
+        self._metadata_columns = metadata_columns
+        self._lance_info = (atlas._db_uri, atlas.cell_table.name, atlas.cell_table.version)
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
+        self._cell_table: lancedb.table.Table | None = None
 
     @property
     def n_cells(self) -> int:
@@ -706,13 +785,13 @@ class CellDataset(_AsyncDataset):
     @property
     def groups_np(self) -> np.ndarray:
         """Integer group id for each cell (length = n_cells)."""
-        return self._mod_data.groups_np
+        return self._groups_np
 
     def __getitems__(self, cell_indices: list[int]) -> SparseBatch:
         """Fetch a batch of cells by index as a :class:`SparseBatch`.
 
         Called by PyTorch's DataLoader when ``batch_sampler`` yields a list of
-        indices (PyTorch ≥ 2.0 ``__getitems__`` protocol).
+        indices (PyTorch >= 2.0 ``__getitems__`` protocol).
 
         Parameters
         ----------
@@ -721,13 +800,42 @@ class CellDataset(_AsyncDataset):
         """
         self._ensure_initialized()
         indices_arr = np.array(cell_indices, dtype=np.int64)
+
+        # 1. Lance take: pointer + metadata in one call
+        batch_row_ids = self._row_ids[indices_arr]
+        select_cols = [self._pointer_field]
+        if self._metadata_columns:
+            select_cols.extend(self._metadata_columns)
+
+        take_result = (
+            self._cell_table.take_row_ids(batch_row_ids.tolist())
+            .with_row_id()
+            .select(select_cols)
+            .to_polars()
+        )
+
+        # 2. Reorder to match input order (take_row_ids sorts by _rowid)
+        take_result = _reorder_take_result(take_result, batch_row_ids)
+
+        # 3. Extract pointer data
+        groups_np, starts, ends = _extract_pointers_sparse(
+            take_result, self._pointer_field, self._mod_data.unique_groups
+        )
+
+        # 4. Async zarr reads using pointer data
         future = asyncio.run_coroutine_threadsafe(
-            _fetch_modality(indices_arr, self._mod_data),
+            _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
             self._loop,
         )
         batch = future.result()
-        if self._metadata_arrays:
-            batch.metadata = {col: arr[indices_arr] for col, arr in self._metadata_arrays.items()}
+
+        # 5. Extract metadata from same take result
+        if self._metadata_columns:
+            batch.metadata = {
+                col: take_result[col].to_numpy()
+                for col in self._metadata_columns
+                if col in take_result.columns
+            }
         return batch
 
     def __getitem__(self, idx: int) -> SparseBatch:
@@ -735,7 +843,7 @@ class CellDataset(_AsyncDataset):
         return self.__getitems__([idx])
 
     def _ensure_initialized(self) -> None:
-        """Start the background event loop if not yet done.
+        """Start the background event loop and open the lance table if not yet done.
 
         Safe to call multiple times; subsequent calls are no-ops.
         Called automatically on the first ``__getitem__`` in each process,
@@ -744,6 +852,10 @@ class CellDataset(_AsyncDataset):
         if self._loop is not None:
             return
         self._start_event_loop()
+        db_uri, table_name, table_version = self._lance_info
+        db = lancedb.connect(db_uri)
+        self._cell_table = db.open_table(table_name)
+        self._cell_table.checkout(table_version)
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
@@ -752,6 +864,7 @@ class CellDataset(_AsyncDataset):
         # GroupReader.__getstate__ zeroes its own transient zarr state.
         state["_loop"] = None
         state["_loop_thread"] = None
+        state["_cell_table"] = None
         return state
 
 
@@ -778,7 +891,8 @@ class MultimodalCellDataset(_AsyncDataset):
     atlas:
         The atlas to read from.
     cells_pl:
-        Polars DataFrame of cell records (from a query).
+        Polars DataFrame of cell records (from a query). Must include
+        ``_rowid`` column.
     feature_spaces:
         Ordered list of feature spaces.  The first is the "primary" space
         used to derive :attr:`groups_np` for the sampler.
@@ -802,26 +916,39 @@ class MultimodalCellDataset(_AsyncDataset):
     ) -> None:
         self._feature_spaces = feature_spaces
         self._n_cells = cells_pl.height
+        self._metadata_columns = metadata_columns
+
+        # Store lance info for lazy table reconstruction in workers
+        self._lance_info = (atlas._db_uri, atlas.cell_table.name, atlas.cell_table.version)
+
+        # Store row IDs for lazy loading
+        self._row_ids = cells_pl["_rowid"].to_numpy().astype(np.uint64)
+
+        # Map feature_space -> pointer field name for lance take
+        self._pointer_fields: dict[str, str] = {}
 
         # Attach row indices so we can track original positions after per-modality filters
         cells_indexed = cells_pl.with_row_index("_orig_idx")
 
         modality_data: dict[str, _ModalityData] = {}
+        modality_groups_np: dict[str, np.ndarray] = {}
 
         for fs in feature_spaces:
             pf = atlas._pointer_fields[fs]
+            self._pointer_fields[fs] = pf.field_name
             spec = get_spec(fs)
             layer = layers.get(fs, "counts")
 
             if spec.pointer_kind is PointerKind.SPARSE:
                 wg = wanted_globals.get(fs) if wanted_globals is not None else None
-                _, modality_data[fs] = _build_sparse_modality_data(
+                _, groups_np, modality_data[fs] = _build_sparse_modality_data(
                     atlas, cells_indexed, pf, spec, fs, layer, wg, self._n_cells
                 )
             else:
-                modality_data[fs] = _build_dense_modality_data(
-                    atlas, cells_indexed, pf, fs, layer, self._n_cells
+                groups_np, modality_data[fs] = _build_dense_modality_data(
+                    atlas, cells_indexed, pf, spec, fs, layer, self._n_cells
                 )
+            modality_groups_np[fs] = groups_np
 
         self._modality_data = modality_data
 
@@ -835,15 +962,14 @@ class MultimodalCellDataset(_AsyncDataset):
         if primary_mod.present_mask.any():
             primary_present = np.where(primary_mod.present_mask)[0]
             mod_positions = primary_mod.cell_positions[primary_present]
-            self._groups_np[primary_present] = primary_mod.groups_np[mod_positions]
+            self._groups_np[primary_present] = modality_groups_np[primary_fs][mod_positions]
 
         self._n_features = {fs: modality_data[fs].n_features for fs in feature_spaces}
-
-        self._metadata_arrays = _extract_metadata_arrays(cells_pl, metadata_columns)
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
+        self._cell_table: lancedb.table.Table | None = None
 
     @property
     def n_cells(self) -> int:
@@ -862,11 +988,29 @@ class MultimodalCellDataset(_AsyncDataset):
     def __getitems__(self, cell_indices: list[int]) -> MultimodalBatch:
         """Fetch a multimodal batch of cells by index."""
         self._ensure_initialized()
+        indices_arr = np.array(cell_indices, dtype=np.int64)
+
+        # Single lance take: all pointer columns + metadata
+        batch_row_ids = self._row_ids[indices_arr]
+        select_cols = list(self._pointer_fields.values())
+        if self._metadata_columns:
+            select_cols.extend(self._metadata_columns)
+        select_cols = list(dict.fromkeys(select_cols))  # dedupe
+
+        take_result = (
+            self._cell_table.take_row_ids(batch_row_ids.tolist())
+            .with_row_id()
+            .select(select_cols)
+            .to_polars()
+        )
+        take_result = _reorder_take_result(take_result, batch_row_ids)
+
         future = asyncio.run_coroutine_threadsafe(
             _take_multimodal(
-                np.array(cell_indices, dtype=np.int64),
+                take_result,
                 self._modality_data,
-                self._metadata_arrays,
+                self._pointer_fields,
+                self._metadata_columns,
             ),
             self._loop,
         )
@@ -879,11 +1023,16 @@ class MultimodalCellDataset(_AsyncDataset):
         if self._loop is not None:
             return
         self._start_event_loop()
+        db_uri, table_name, table_version = self._lance_info
+        db = lancedb.connect(db_uri)
+        self._cell_table = db.open_table(table_name)
+        self._cell_table.checkout(table_version)
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
         state["_loop"] = None
         state["_loop_thread"] = None
+        state["_cell_table"] = None
         return state
 
 
@@ -992,8 +1141,7 @@ def make_loader(dataset: CellDataset, sampler, **kwargs):
     dataset:
         A :class:`CellDataset` instance.
     sampler:
-        A :class:`~lancell.sampler.CellSampler` or
-        :class:`~lancell.sampler.BalancedCellSampler` instance.
+        A :class:`~lancell.sampler.CellSampler` instance.
     **kwargs:
         Forwarded to ``torch.utils.data.DataLoader``, overriding defaults.
 
