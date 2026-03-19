@@ -51,35 +51,58 @@ At query time, the reconstruction layer joins the feature spaces: it computes th
 ### Quickstart
 
 ```python
+import os, tempfile
+import scanpy as sc
 import obstore.store
 from lancell.atlas import RaggedAtlas
-from lancell.schema import LancellBaseSchema, FeatureBaseSchema, SparseZarrPointer
+from lancell.schema import (
+    DatasetRecord, FeatureBaseSchema, LancellBaseSchema, SparseZarrPointer,
+)
 from lancell.ingestion import add_from_anndata
 
+# 1. Define schemas — one for gene features, one for cell metadata
 class GeneFeature(FeatureBaseSchema):
     gene_symbol: str
 
 class CellSchema(LancellBaseSchema):
-    cell_type: str | None = None
     gene_expression: SparseZarrPointer | None = None
 
-store = obstore.store.LocalStore("/data/atlas/arrays")
+# 2. Create an atlas
+atlas_dir = tempfile.mkdtemp()
+os.makedirs(f"{atlas_dir}/arrays")
+store = obstore.store.LocalStore(f"{atlas_dir}/arrays")
 atlas = RaggedAtlas.create(
-    db_uri="/data/atlas/db",
+    db_uri=f"{atlas_dir}/db",
     cell_table_name="cells",
     cell_schema=CellSchema,
+    dataset_table_name="datasets",
+    dataset_schema=DatasetRecord,
     store=store,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
+# 3. Load a dataset and register its genes
+adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
+features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
 atlas.register_features("gene_expression", features)
-add_from_anndata(atlas, adata, feature_space="gene_expression",
-                 zarr_layer="counts", dataset_record=record)
+atlas.optimize()  # assigns global_index to newly registered features
+
+# 4. Prepare var and ingest
+adata.var["global_feature_uid"] = adata.var_names
+record = DatasetRecord(
+    zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
+)
+add_from_anndata(
+    atlas, adata, feature_space="gene_expression",
+    zarr_layer="counts", dataset_record=record,
+)
+
+# 5. Snapshot and query
 atlas.optimize()
 atlas.snapshot()
-
-atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", store=store)
-adata = atlas_r.query().where("cell_type = 'T cells'").to_anndata()
+atlas_r = RaggedAtlas.checkout_latest(f"{atlas_dir}/db")
+result = atlas_r.query().limit(500).to_anndata()
+print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```
 
 ### Opening a public atlas
