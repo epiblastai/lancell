@@ -5,12 +5,13 @@
 #     "lancell",
 #     "polars",
 #     "anndata",
+#     "numba",
 # ]
 # ///
 
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.21.1"
 app = marimo.App(width="medium")
 
 
@@ -38,6 +39,7 @@ def _(mo):
     4. Feature selection via registry lookup
     5. AnnData / batch reconstruction
     6. ML training with `CellDataset` + `CellSampler`
+    7. Differential expression with `dex`
     """)
     return
 
@@ -375,7 +377,7 @@ def _(atlas, marker_genes):
         atlas.query()
         .feature_spaces("genefull_expression")
         .features(marker_uids, feature_space="genefull_expression")
-        .limit(200_000)
+        .limit(10_000)
         .to_anndata()
     )
     adata_markers
@@ -587,6 +589,127 @@ def _(mo):
     dataset sizes span orders of magnitude and you want more equal
     representation during training.
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 7. Differential expression with `dex`
+
+    lancell includes a built-in differential expression module that
+    compares two groups of cells directly from the atlas. It auto-dispatches
+    **Mann-Whitney U** for sparse feature spaces (e.g. gene expression) and
+    **Welch's t-test** for dense ones (e.g. protein abundance).
+
+    `dex()` takes SQL WHERE clauses to define target and control groups —
+    no need to reconstruct AnnData yourself. It handles feature alignment
+    across datasets, normalization, and multiple-testing correction
+    internally.
+    """)
+    return
+
+
+@app.cell
+def _():
+    from lancell.dex import dex
+
+    return (dex,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Discover comparison groups
+
+    We'll use the datasets table to find tissues with enough cells for
+    a meaningful comparison.
+    """)
+    return
+
+
+@app.cell
+def _(datasets, pl):
+    tissue_counts = (
+        datasets
+        .filter(pl.col("tissue").is_not_null())
+        .group_by("tissue")
+        .agg(
+            pl.col("n_cells").sum().alias("total_cells"),
+            pl.len().alias("n_datasets"),
+        )
+        .sort("total_cells", descending=True)
+    )
+    tissue_counts
+    return (tissue_counts,)
+
+
+@app.cell
+def _(datasets, pl, tissue_counts):
+    target_tissue = tissue_counts["tissue"][0]
+    control_tissue = tissue_counts["tissue"][1]
+
+    target_uids = datasets.filter(pl.col("tissue") == target_tissue)["uid"].to_list()
+    control_uids = datasets.filter(pl.col("tissue") == control_tissue)["uid"].to_list()
+
+    target_where = "dataset_uid IN (" + ", ".join(f"'{u}'" for u in target_uids) + ")"
+    control_where = "dataset_uid IN (" + ", ".join(f"'{u}'" for u in control_uids) + ")"
+
+    print(f"Target:  {target_tissue} ({len(target_uids)} datasets)")
+    print(f"Control: {control_tissue} ({len(control_uids)} datasets)")
+    return control_tissue, control_where, target_tissue, target_where
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Run `dex()`
+
+    We compare the two tissue groups, limiting each side to 1 000 cells
+    with `max_records` so the demo runs quickly. The result is a Polars
+    DataFrame with fold changes, p-values, and FDR-corrected q-values
+    for every gene.
+    """)
+    return
+
+
+@app.cell
+def _(atlas, control_where, dex, target_where):
+    dex_result = dex(
+        atlas,
+        target=target_where,
+        control=control_where,
+        feature_space="genefull_expression",
+        max_records=1_000,
+    )
+    dex_result.sort("fdr")
+    return (dex_result,)
+
+
+@app.cell(hide_code=True)
+def _(control_tissue, dex_result, mo, pl, target_tissue):
+    _sig = dex_result.filter(pl.col("fdr") < 0.05).height
+    mo.md(f"""
+    **{target_tissue}** vs **{control_tissue}**: **{_sig:,}** significant
+    genes (FDR < 0.05) out of **{dex_result.height:,}** tested.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Top differentially expressed genes
+
+    Sorted by FDR, the top hits show the strongest expression differences
+    between the two tissues.
+    """)
+    return
+
+
+@app.cell
+def _(dex_result):
+    dex_result.sort("fdr").head(20)
     return
 
 
