@@ -525,6 +525,62 @@ class RaggedAtlas:
         """Return a Polars DataFrame of all ingested datasets."""
         return self._dataset_table.search().to_polars()
 
+    def feature_registry(self, feature_space: str) -> pl.DataFrame:
+        """Return the feature registry for a feature space as a Polars DataFrame.
+
+        Parameters
+        ----------
+        feature_space : str
+            Feature space name (e.g. ``"gene_expression"``).
+
+        Returns
+        -------
+        pl.DataFrame
+            All rows from the registry table (uid, global_index, plus
+            modality-specific columns such as gene_name, gene_id, etc.).
+        """
+        if feature_space not in self._registry_tables:
+            raise KeyError(
+                f"No registry for feature space '{feature_space}'. "
+                f"Available: {sorted(self._registry_tables.keys())}"
+            )
+        return self._registry_tables[feature_space].search().to_polars()
+
+    def join_feature_metadata(
+        self,
+        df: pl.DataFrame,
+        feature_space: str,
+        columns: list[str],
+        on: str = "feature",
+    ) -> pl.DataFrame:
+        """Join feature registry columns onto a DataFrame.
+
+        Parameters
+        ----------
+        df : pl.DataFrame
+            DataFrame with a column of feature UIDs to join on.
+        feature_space : str
+            Feature space name (e.g. ``"gene_expression"``).
+        columns : list[str]
+            Registry columns to join (e.g. ``["gene_name", "gene_id"]``).
+        on : str
+            Column in *df* that contains feature UIDs. Default ``"feature"``.
+
+        Returns
+        -------
+        pl.DataFrame
+            *df* with the requested registry columns added via a left join.
+        """
+        registry_df = self.feature_registry(feature_space)
+        available = [c for c in registry_df.columns if c not in ("uid", "global_index")]
+        unknown = set(columns) - set(available)
+        if unknown:
+            raise ValueError(
+                f"Unknown registry columns: {sorted(unknown)}. Available: {sorted(available)}"
+            )
+        registry_df = registry_df.select(["uid"] + columns)
+        return df.join(registry_df, left_on=on, right_on="uid", how="left")
+
     def find_datasets_with_features(
         self,
         feature_uids: str | list[str],

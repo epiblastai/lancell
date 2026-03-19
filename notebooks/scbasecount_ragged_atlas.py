@@ -599,13 +599,12 @@ def _(mo):
 
     lancell includes a built-in differential expression module that
     compares two groups of cells directly from the atlas. It auto-dispatches
-    **Mann-Whitney U** for sparse feature spaces (e.g. gene expression) and
-    **Welch's t-test** for dense ones (e.g. protein abundance).
+    **Mann-Whitney U** or **Welch's t-test** on any feature space.
 
-    `dex()` takes SQL WHERE clauses to define target and control groups —
-    no need to reconstruct AnnData yourself. It handles feature alignment
-    across datasets, normalization, and multiple-testing correction
-    internally.
+    `dex()` follows the scanpy `rank_genes_groups` pattern: specify a
+    `groupby` column, a list of `target` group values, and a `control`
+    group value. It handles per-group loading, feature alignment,
+    normalization, and multiple-testing correction internally.
     """)
     return
 
@@ -622,42 +621,38 @@ def _(mo):
     mo.md("""
     ### Discover comparison groups
 
-    We'll use the datasets table to find tissues with enough cells for
-    a meaningful comparison.
+    We look up datasets by tissue and pick one `dataset_uid` per tissue.
+    The cell table stores `dataset_uid`, so that's the column we group by.
     """)
     return
 
 
 @app.cell
 def _(datasets, pl):
-    tissue_counts = (
+    tissue_datasets = (
         datasets
         .filter(pl.col("tissue").is_not_null())
         .group_by("tissue")
         .agg(
-            pl.col("n_cells").sum().alias("total_cells"),
-            pl.len().alias("n_datasets"),
+            pl.col("uid").first().alias("dataset_uid"),
+            pl.col("n_cells").first().alias("n_cells"),
         )
-        .sort("total_cells", descending=True)
+        .sort("n_cells", descending=True)
     )
-    tissue_counts
-    return (tissue_counts,)
+    tissue_datasets
+    return (tissue_datasets,)
 
 
 @app.cell
-def _(datasets, pl, tissue_counts):
-    target_tissue = tissue_counts["tissue"][0]
-    control_tissue = tissue_counts["tissue"][1]
+def _(tissue_datasets):
+    target_uid = tissue_datasets["dataset_uid"][0]
+    control_uid = tissue_datasets["dataset_uid"][2]
+    target_tissue = tissue_datasets["tissue"][0]
+    control_tissue = tissue_datasets["tissue"][2]
 
-    target_uids = datasets.filter(pl.col("tissue") == target_tissue)["uid"].to_list()
-    control_uids = datasets.filter(pl.col("tissue") == control_tissue)["uid"].to_list()
-
-    target_where = "dataset_uid IN (" + ", ".join(f"'{u}'" for u in target_uids) + ")"
-    control_where = "dataset_uid IN (" + ", ".join(f"'{u}'" for u in control_uids) + ")"
-
-    print(f"Target:  {target_tissue} ({len(target_uids)} datasets)")
-    print(f"Control: {control_tissue} ({len(control_uids)} datasets)")
-    return control_tissue, control_where, target_tissue, target_where
+    print(f"Target:  {target_tissue} (dataset_uid={target_uid})")
+    print(f"Control: {control_tissue} (dataset_uid={control_uid})")
+    return control_tissue, control_uid, target_tissue, target_uid
 
 
 @app.cell(hide_code=True)
@@ -665,21 +660,22 @@ def _(mo):
     mo.md("""
     ### Run `dex()`
 
-    We compare the two tissue groups, limiting each side to 1 000 cells
-    with `max_records` so the demo runs quickly. The result is a Polars
-    DataFrame with fold changes, p-values, and FDR-corrected q-values
-    for every gene.
+    We compare cells from two datasets (one per tissue), grouping by
+    `dataset_uid` and limiting each side to 1 000 cells with
+    `max_records` so the demo runs quickly.
     """)
     return
 
 
 @app.cell
-def _(atlas, control_where, dex, target_where):
+def _(atlas, control_uid, dex, target_uid):
     dex_result = dex(
         atlas,
-        target=target_where,
-        control=control_where,
+        groupby="dataset_uid",
+        target=[target_uid],
+        control=control_uid,
         feature_space="genefull_expression",
+        test="mwu",
         max_records=1_000,
     )
     dex_result.sort("fdr")
@@ -701,15 +697,21 @@ def _(mo):
     mo.md("""
     ### Top differentially expressed genes
 
-    Sorted by FDR, the top hits show the strongest expression differences
-    between the two tissues.
+    The `feature` column contains internal UIDs. Use
+    `atlas.join_feature_metadata()` to bring in human-readable
+    gene names and Ensembl IDs from the feature registry.
     """)
     return
 
 
 @app.cell
-def _(dex_result):
-    dex_result.sort("fdr").head(20)
+def _(atlas, dex_result):
+    dex_annotated = atlas.join_feature_metadata(
+        dex_result,
+        feature_space="genefull_expression",
+        columns=["gene_name", "gene_id"],
+    )
+    dex_annotated.sort("fdr").head(20)
     return
 
 

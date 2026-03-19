@@ -11,6 +11,7 @@ from scipy.sparse import csr_matrix
 from lancell.dex._numba_mwu import (
     MannWhitneyUResult,
     SparseColumnIndex,
+    mannwhitneyu_dense,
     mannwhitneyu_sparse,
 )
 
@@ -100,8 +101,12 @@ def mwu(
     x: np.ndarray | csr_matrix | SparseColumnIndex,
     y: np.ndarray | csr_matrix | SparseColumnIndex,
 ) -> MannWhitneyUResult:
-    """Route to sparse MWU (only sparse path supported here)."""
-    return mannwhitneyu_sparse(x, y)
+    """Route to sparse or dense MWU based on input type."""
+    from scipy.sparse import issparse
+
+    if isinstance(x, SparseColumnIndex) or issparse(x):
+        return mannwhitneyu_sparse(x, y)
+    return mannwhitneyu_dense(x, y)
 
 
 def normalize_log1p_sparse(X: csr_matrix, target_sum: float) -> csr_matrix:
