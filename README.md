@@ -106,7 +106,7 @@ print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 
 ### Opening a public atlas
 
-The CellxGene Census mouse atlas (~44M cells) is available on S3.
+The CellxGene Census mouse atlas (about 44M cells) is available on S3.
 No schema class or store construction needed, just `db_uri` and S3 config:
 
 ```python
