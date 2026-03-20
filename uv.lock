@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "lancell",
+    "lancell-examples",
+]
+
 [[package]]
 name = "aiobotocore"
 version = "2.26.0"
@@ -1727,6 +1733,7 @@ dependencies = [
     { name = "h5py" },
     { name = "lancedb" },
     { name = "mudata" },
+    { name = "numba" },
     { name = "numpy" },
     { name = "obstore" },
     { name = "polars" },
@@ -1753,7 +1760,6 @@ all = [
     { name = "imagecodecs" },
     { name = "marimo" },
     { name = "matplotlib" },
-    { name = "numba" },
     { name = "opencv-python" },
     { name = "openpyxl" },
     { name = "pandas" },
@@ -1782,6 +1788,9 @@ dev = [
 docs = [
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
+]
+examples = [
+    { name = "lancell-examples" },
 ]
 io = [
     { name = "boto3" },
@@ -1814,12 +1823,13 @@ requires-dist = [
     { name = "imagecodecs", marker = "extra == 'io'", specifier = ">=2026.1.14" },
     { name = "lancedb" },
     { name = "lancell", extras = ["ml", "bio", "viz", "io", "ai"], marker = "extra == 'all'" },
+    { name = "lancell-examples", marker = "extra == 'examples'", editable = "lancell_examples" },
     { name = "marimo", marker = "extra == 'viz'" },
     { name = "matplotlib", marker = "extra == 'viz'" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27" },
     { name = "mudata" },
-    { name = "numba", marker = "extra == 'all'" },
+    { name = "numba" },
     { name = "numpy" },
     { name = "obstore" },
     { name = "opencv-python", marker = "extra == 'io'" },
@@ -1844,7 +1854,18 @@ requires-dist = [
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'ml'" },
     { name = "zarr" },
 ]
-provides-extras = ["ml", "bio", "viz", "io", "ai", "all", "dev", "docs"]
+provides-extras = ["ml", "bio", "viz", "io", "ai", "all", "examples", "dev", "docs"]
+
+[[package]]
+name = "lancell-examples"
+version = "0.1.0"
+source = { editable = "lancell_examples" }
+dependencies = [
+    { name = "lancell", extra = ["all"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "lancell", extras = ["all"], editable = "." }]
 
 [[package]]
 name = "legacy-api-wrap"

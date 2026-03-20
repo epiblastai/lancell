@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from examples.multimodal_perturbation_atlas.schema import GeneticPerturbationType
+from lancell_examples.multimodal_perturbation_atlas.schema import GeneticPerturbationType
 
 # ---------------------------------------------------------------------------
 # Control label detection

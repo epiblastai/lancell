@@ -1,7 +1,7 @@
 """Bulk download scBaseCount h5ad files from GCS.
 
 Usage:
-    python -m examples.scbasecount.download \
+    python -m lancell_examples.scbasecount.download \
         --output-dir ./data/scbasecount \
         --max-download 50 \
         --feature-type Velocyto \
