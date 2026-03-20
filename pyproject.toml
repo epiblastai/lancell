@@ -16,6 +16,7 @@ dependencies = [
     "pyarrow",
     "pylance>=2.0.0",
     "scipy",
+    "numba",
     "zarr",
 ]
 
@@ -47,9 +48,7 @@ viz = [
     "marimo",
     "matplotlib",
 ]
-dex = [
-    "numba",
-]
+dex = []
 io = [
     "boto3",
     "gcsfs",
@@ -66,7 +65,6 @@ all = [
     "lancell[ml,bio,viz,io,ai,dex]",
     "datasets",
     "duckdb",
-    "numba",
     "openpyxl",
     "pandas",
     "scikit-learn",
