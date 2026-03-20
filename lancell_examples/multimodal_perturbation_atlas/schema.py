@@ -6,7 +6,18 @@ from typing import Self
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
-from lancell.schema import make_uid
+from lancell.schema import (
+    DatasetRecord,
+    DenseZarrPointer,
+    FeatureBaseSchema,
+    LancellBaseSchema,
+    SparseZarrPointer,
+    make_uid,
+)
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
 
 
 class FeatureSpace(str, Enum):
@@ -15,6 +26,80 @@ class FeatureSpace(str, Enum):
     CHROMATIN_ACCESSIBILITY = "chromatin_accessibility"
     IMAGE_FEATURES = "image_features"
     IMAGE_TILES = "image_tiles"
+
+
+class FeatureType(str, Enum):
+    """The level of resolution a genomic feature represents."""
+
+    GENE = "gene"
+    TRANSCRIPT = "transcript"
+    EXON = "exon"
+    CRYPTIC_EXON = "cryptic_exon"
+    PROBE = "probe"
+    OTHER = "other"
+
+
+class SequenceRole(str, Enum):
+    """The role of a sequence in a reference genome assembly."""
+
+    CHROMOSOME = "chromosome"
+    MITOCHONDRIAL = "mitochondrial"
+    SCAFFOLD = "scaffold"
+    UNLOCALIZED = "unlocalized"
+    ALT_LOCUS = "alt_locus"
+    PATCH = "patch"
+    DECOY = "decoy"
+    VIRAL = "viral"
+    OTHER = "other"
+
+
+class GeneticPerturbationType(str, Enum):
+    """The class of genetic perturbation reagent."""
+
+    CRISPR_KO = "CRISPRko"
+    CRISPR_I = "CRISPRi"
+    CRISPR_A = "CRISPRa"
+    SI_RNA = "siRNA"
+    SH_RNA = "shRNA"
+    ASO = "ASO"
+    OVEREXPRESSION = "overexpression"
+    OTHER = "other"
+
+
+class TargetContext(str, Enum):
+    """Where a genetic perturbation reagent lands relative to gene structure."""
+
+    EXON = "exon"
+    INTRON = "intron"
+    PROMOTER = "promoter"
+    ENHANCER = "enhancer"
+    UTR_5 = "5_UTR"
+    UTR_3 = "3_UTR"
+    INTERGENIC = "intergenic"
+    OTHER = "other"
+
+
+class BiologicPerturbationType(str, Enum):
+    """The class of biologic perturbation agent."""
+
+    CYTOKINE = "cytokine"
+    GROWTH_FACTOR = "growth_factor"
+    ANTIBODY = "antibody"
+    LIGAND = "ligand"
+    RECEPTOR_AGONIST = "receptor_agonist"
+    RECEPTOR_ANTAGONIST = "receptor_antagonist"
+    OTHER = "other"
+
+
+class PerturbationType(str, Enum):
+    SMALL_MOLECULE = "small_molecule"
+    GENETIC_PERTURBATION = "genetic_perturbation"
+    BIOLOGIC_PERTURBATION = "biologic_perturbation"
+
+
+# ---------------------------------------------------------------------------
+# Publications
+# ---------------------------------------------------------------------------
 
 
 class PublicationSchema(LanceModel):
@@ -44,10 +129,12 @@ class PublicationSectionSchema(LanceModel):
     section_title: str | None
 
 
-class DatasetSchema(LanceModel):
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
+# ---------------------------------------------------------------------------
+# Datasets & donors
+# ---------------------------------------------------------------------------
 
+
+class DatasetSchema(DatasetRecord):
     # Foreign key: The uid for an associated publication
     publication_uid: str | None
     # Database from which the dataset was downloaded, if applicable
@@ -62,81 +149,6 @@ class DatasetSchema(LanceModel):
     tissue: list[str] | None  # ["cortex", "hippocampus"] for multi-region
     cell_line: list[str] | None  # ["A549", "MCF7", "K562"] for village-in-a-dish
     disease: list[str] | None  # ["ALS", "healthy"] for case-control
-
-
-class ImageFeatureSchema(LanceModel):
-    uid: str = Field(default_factory=make_uid)
-
-    # The name of the image feature, e.g., "mean_intensity_DAPI", "texture_feature_1", etc.
-    feature_name: str
-    # A description of the image feature and how it was calculated, if available
-    description: str | None
-
-
-class SequenceRole(str, Enum):
-    """The role of a sequence in a reference genome assembly."""
-
-    CHROMOSOME = "chromosome"
-    MITOCHONDRIAL = "mitochondrial"
-    SCAFFOLD = "scaffold"
-    UNLOCALIZED = "unlocalized"
-    ALT_LOCUS = "alt_locus"
-    PATCH = "patch"
-    DECOY = "decoy"
-    VIRAL = "viral"
-    OTHER = "other"
-
-
-class ReferenceSequenceSchema(LanceModel):
-    """A single contig or sequence in a reference genome assembly.
-
-    Covers chromosomes as well as non-chromosomal sequences commonly
-    found in reference genomes: unplaced/unlocalized scaffolds, alt loci,
-    patches, decoys, and viral sequences (e.g., EBV in GRCh38).
-    """
-
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
-
-    # The sequence name as used in alignment, e.g. "chr1", "chrUn_GL000220v1",
-    # "chr6_GL000256v2_alt", "chrEBV"
-    sequence_name: str
-    # The size of the sequence in base pairs
-    sequence_length: int
-    # The role this sequence plays in the assembly
-    sequence_role: SequenceRole
-
-    # The organism, e.g. "human", "mouse"
-    organism: str
-    # The genome assembly name, e.g. "GRCh38", "GRCm39"
-    assembly: str
-
-    # Unambiguous accession — stable across naming conventions
-    # (e.g. "CM000663.2" for chr1 in GRCh38)
-    genbank_accession: str | None = None
-    refseq_accession: str | None = None
-
-    # Whether this sequence is part of the primary assembly,
-    # i.e. the set of sequences most analyses restrict to
-    is_primary_assembly: bool = True
-
-
-class ProteinSchema(LanceModel):
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
-
-    # The UniProt accession ID, e.g., "P04637"
-    uniprot_id: str | None
-    # The recommended protein name from UniProt, e.g., "Cellular tumor antigen p53"
-    protein_name: str | None
-    # The primary gene name encoding this protein, e.g., "TP53"
-    gene_name: str | None
-    # The organism, e.g., "human", "mouse"
-    organism: str | None
-    # The amino acid sequence
-    sequence: str | None
-    # Length of the amino acid sequence
-    sequence_length: int | None
 
 
 class DonorSchema(LanceModel):
@@ -154,18 +166,12 @@ class DonorSchema(LanceModel):
     description: str | None = None
 
 
-class FeatureType(str, Enum):
-    """The level of resolution a genomic feature represents."""
-
-    GENE = "gene"
-    TRANSCRIPT = "transcript"
-    EXON = "exon"
-    CRYPTIC_EXON = "cryptic_exon"
-    PROBE = "probe"
-    OTHER = "other"
+# ---------------------------------------------------------------------------
+# Feature registries (var tables)
+# ---------------------------------------------------------------------------
 
 
-class GenomicFeatureSchema(LanceModel):
+class GenomicFeatureSchema(FeatureBaseSchema):
     """A single measurable genomic feature in a dataset's var space.
 
     This schema is designed to serve as a feature registry across datasets
@@ -208,6 +214,67 @@ class GenomicFeatureSchema(LanceModel):
     organism: str
 
 
+class ReferenceSequenceSchema(FeatureBaseSchema):
+    """A single contig or sequence in a reference genome assembly.
+    Intended as the feature table for chromatin accessibility peaks.
+
+    Covers chromosomes as well as non-chromosomal sequences commonly
+    found in reference genomes: unplaced/unlocalized scaffolds, alt loci,
+    patches, decoys, and viral sequences (e.g., EBV in GRCh38).
+    """
+
+    # The sequence name as used in alignment, e.g. "chr1", "chrUn_GL000220v1",
+    # "chr6_GL000256v2_alt", "chrEBV"
+    sequence_name: str
+
+    start: int
+    end: int
+
+    # The role this sequence plays in the assembly
+    sequence_role: SequenceRole
+
+    # The organism, e.g. "human", "mouse"
+    organism: str
+    # The genome assembly name, e.g. "GRCh38", "GRCm39"
+    assembly: str
+
+    # Unambiguous accession — stable across naming conventions
+    # (e.g. "CM000663.2" for chr1 in GRCh38)
+    genbank_accession: str | None = None
+    refseq_accession: str | None = None
+
+    # Whether this sequence is part of the primary assembly,
+    # i.e. the set of sequences most analyses restrict to
+    is_primary_assembly: bool = True
+
+
+class ProteinSchema(FeatureBaseSchema):
+    # The UniProt accession ID, e.g., "P04637"
+    uniprot_id: str | None
+    # The recommended protein name from UniProt, e.g., "Cellular tumor antigen p53"
+    protein_name: str | None
+    # The primary gene name encoding this protein, e.g., "TP53"
+    gene_name: str | None
+    # The organism, e.g., "human", "mouse"
+    organism: str | None
+    # The amino acid sequence
+    sequence: str | None
+    # Length of the amino acid sequence
+    sequence_length: int | None
+
+
+class ImageFeatureSchema(FeatureBaseSchema):
+    # The name of the image feature, e.g., "mean_intensity_DAPI", "texture_feature_1", etc.
+    feature_name: str
+    # A description of the image feature and how it was calculated, if available
+    description: str | None
+
+
+# ---------------------------------------------------------------------------
+# Perturbation registries
+# ---------------------------------------------------------------------------
+
+
 class SmallMoleculeSchema(LanceModel):
     """Small molecule data, either perturbations or features in themselves."""
 
@@ -236,32 +303,6 @@ class SmallMoleculeSchema(LanceModel):
                 "At least one identifier (smiles, pubchem_cid, iupac_name, name) must be provided"
             )
         return self
-
-
-class GeneticPerturbationType(str, Enum):
-    """The class of genetic perturbation reagent."""
-
-    CRISPR_KO = "CRISPRko"
-    CRISPR_I = "CRISPRi"
-    CRISPR_A = "CRISPRa"
-    SI_RNA = "siRNA"
-    SH_RNA = "shRNA"
-    ASO = "ASO"
-    OVEREXPRESSION = "overexpression"
-    OTHER = "other"
-
-
-class TargetContext(str, Enum):
-    """Where a genetic perturbation reagent lands relative to gene structure."""
-
-    EXON = "exon"
-    INTRON = "intron"
-    PROMOTER = "promoter"
-    ENHANCER = "enhancer"
-    UTR_5 = "5_UTR"
-    UTR_3 = "3_UTR"
-    INTERGENIC = "intergenic"
-    OTHER = "other"
 
 
 class GeneticPerturbationSchema(LanceModel):
@@ -308,18 +349,6 @@ class GeneticPerturbationSchema(LanceModel):
     reagent_id: str | None = None  # e.g. "BRD_KO_1", "CROPseq_A1"
 
 
-class BiologicPerturbationType(str, Enum):
-    """The class of biologic perturbation agent."""
-
-    CYTOKINE = "cytokine"
-    GROWTH_FACTOR = "growth_factor"
-    ANTIBODY = "antibody"
-    LIGAND = "ligand"
-    RECEPTOR_AGONIST = "receptor_agonist"
-    RECEPTOR_ANTAGONIST = "receptor_antagonist"
-    OTHER = "other"
-
-
 class BiologicPerturbationSchema(LanceModel):
     """A biologic agent (protein, cytokine, antibody, etc.) applied to cells.
 
@@ -342,20 +371,14 @@ class BiologicPerturbationSchema(LanceModel):
     lot_number: str | None = None
 
 
-class PerturbationType(str, Enum):
-    SMALL_MOLECULE = "small_molecule"
-    GENETIC_PERTURBATION = "genetic_perturbation"
-    BIOLOGIC_PERTURBATION = "biologic_perturbation"
+# ---------------------------------------------------------------------------
+# Cell index (obs table)
+# ---------------------------------------------------------------------------
 
 
-class CellIndex(LanceModel):
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
-
-    dataset_uid: str  # Foreign key to DatasetSchema.uid
-
+class CellIndex(LancellBaseSchema):
     # Assay used like Perturb-seq, Cell Painting, snATAC-seq, Drop-seq, etc.
-    # TODO: Validate this against a controlled vocabulary
+    # TODO: Validate this against a controlled vocabulary, EFO
     assay: str
     # The organism that the cells in this sample come from, e.g. human, mouse, etc.
     organism: str
@@ -403,49 +426,18 @@ class CellIndex(LanceModel):
     # List of json dump with additional metadata for each perturbation
     perturbation_additional_metadata: list[str] | None
 
-    # Private fields that define the zarr group and relevant ranges
-    # for loading data. Multimodal measurements might have zarr groups
-    # and ranges for for multiple feature spaces. All cells must have
-    # a measurement in at least 1 feature space.
+    # Pointers for each of the feature spaces. These all have a corresponding
+    # feature registry table
+    gene_expression: SparseZarrPointer | None = None  # GenomicFeatureSchema
+    chromatin_accessibility: SparseZarrPointer | None = None  # ReferenceSequenceSchema
+    protein_abundance: DenseZarrPointer | None = None  # ProteinSchema
+    image_features: DenseZarrPointer | None = None  # ImageFeatureSchema
 
-    # Points to a zarr group with `indices` as one array
-    # and another subgroup called `layers` with arrays for `counts`,
-    # `log_counts`, `log_normalized_counts`, etc.
-    _zarr_group_gene_expression: str | None = None
-    # Start and end index into the arrays. `indices` and all `layers`
-    # have identical layouts by construction.
-    _start_gene_expression: int | None = None
-    _end_gene_expression: int | None = None
-
-    # Points to a zarr group for chromatin accessibility data.
-    # May contain raw fragments, called peaks, or both.
-    _zarr_group_chromatin_accessibility: str | None = None
-    # Raw fragments: arrays for `fragment_starts`, `fragment_ends`
-    # (genomic coordinates). Stored so users can re-call peaks on
-    # a subset of cells.
-    _start_fragments: int | None = None
-    _end_fragments: int | None = None
-    # Peak counts: arrays for `indices` and `counts`, same COO
-    # pattern as gene expression. Feature mapping in group attrs
-    # maps local peak index → ReferenceSequenceSchema.uid + peak
-    # start/end coordinates.
-    _start_peaks: int | None = None
-    _end_peaks: int | None = None
-
-    # Both protein abundance and image features are expected to be
-    # dense arrays that can easily be stored as 2D cell x feature
-    # matrices. Only need the row index to load a cell. Top level
-    # group has a single dense array.
-    _zarr_group_protein_abundance: str | None = None
-    _index_protein_abundance: int | None = None
-    _zarr_group_image_features: str | None = None
-    _index_image_features: int | None = None
-    # Image tiles are similarly dense and we assume that they
-    # correspond to an (N, C, H, W) array where N is the number
-    # of tiles and C is channels. Chunks must not partition along
-    # C, H, or W. Only need the index for the first dimension.
-    _zarr_group_image_tiles: str | None = None
-    _index_image_tiles: int | None = None
+    # Image tiles don't have a schema because they aren't features!
+    # TODO: For image data we might want to define a concept like "axis annotations"
+    # that are alternatives to the feature registry. Here for example, the axis annotations
+    # would be channel names probably.
+    image_tiles: DenseZarrPointer | None = None
 
     # Auto-filled field
     perturbation_search_string: str = ""
@@ -483,6 +475,11 @@ class CellIndex(LanceModel):
             elif ptype == PerturbationType.BIOLOGIC_PERTURBATION:
                 tokens.append(f"BIO:{uid}")
         return " ".join(tokens)
+
+
+# ---------------------------------------------------------------------------
+# Dataset-perturbation index (materialized summary)
+# ---------------------------------------------------------------------------
 
 
 class DatasetPerturbationIndex(LanceModel):
