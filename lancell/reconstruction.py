@@ -316,6 +316,9 @@ class SparseCSRReconstructor:
         group_data: list[
             tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
         ] = []
+        # TODO: Can this be parallelized? Probably onlt the group_cells step, isn't there a groupby equivalent
+        # in polars? Applying a filter in each step is probably slower than groupby. Everything else in
+        # the loop should be quite fast.
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             starts = group_cells["_start"].to_numpy().astype(np.int64)
@@ -338,6 +341,7 @@ class SparseCSRReconstructor:
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
         obs_parts: list[pl.DataFrame] = []
 
+        # TODO: Can this be parallelized? Should consider pushing this pattern down to rust
         for (zg, group_cells, _, _, _, _), (index_result, layer_results) in zip(
             group_data, all_results, strict=True
         ):

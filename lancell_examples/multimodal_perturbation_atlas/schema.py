@@ -227,9 +227,6 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     # "chr6_GL000256v2_alt", "chrEBV"
     sequence_name: str
 
-    start: int
-    end: int
-
     # The role this sequence plays in the assembly
     sequence_role: SequenceRole
 
@@ -377,6 +374,11 @@ class BiologicPerturbationSchema(LanceModel):
 
 
 class CellIndex(LancellBaseSchema):
+    # NOTE: The uid for CellIndex should be the cell barcode and not a randomly
+    # generated value? This is especially important for keeping alignment between
+    # cells in multiple datasets. Should be using merge_insert patterns when adding
+    # records.
+
     # Assay used like Perturb-seq, Cell Painting, snATAC-seq, Drop-seq, etc.
     # TODO: Validate this against a controlled vocabulary, EFO
     assay: str
