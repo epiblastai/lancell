@@ -14,6 +14,7 @@ from lancell.schema import (
     SparseZarrPointer,
     make_uid,
 )
+from lancell.standardization.perturbations import GeneticPerturbationType
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -41,19 +42,6 @@ class SequenceRole(str, Enum):
     PATCH = "patch"
     DECOY = "decoy"
     VIRAL = "viral"
-    OTHER = "other"
-
-
-class GeneticPerturbationType(str, Enum):
-    """The class of genetic perturbation reagent."""
-
-    CRISPR_KO = "CRISPRko"
-    CRISPR_I = "CRISPRi"
-    CRISPR_A = "CRISPRa"
-    SI_RNA = "siRNA"
-    SH_RNA = "shRNA"
-    ASO = "ASO"
-    OVEREXPRESSION = "overexpression"
     OTHER = "other"
 
 

@@ -5,7 +5,13 @@ metadata to canonical identifiers and CELLxGENE-compatible ontology term IDs.
 No coupling to ingestion_utils.py or LanceDB.
 """
 
-from lancell.standardization.genes import detect_organism_from_ensembl_ids, resolve_genes
+from lancell.standardization.genes import (
+    detect_organism_from_ensembl_ids,
+    is_placeholder_symbol,
+    resolve_genes,
+)
+from lancell.standardization.gget import annotate_genomic_coordinates
+from lancell.standardization.guide_rna import resolve_guide_sequences
 from lancell.standardization.metadata_table import get_reference_db, set_reference_db_path
 from lancell.standardization.molecules import (
     canonicalize_smiles,
@@ -41,6 +47,7 @@ from lancell.standardization.ontologies import (
     resolve_tissues,
 )
 from lancell.standardization.perturbations import (
+    GeneticPerturbationType,
     classify_perturbation_method,
     detect_control_labels,
     detect_negative_control_type,
@@ -50,6 +57,7 @@ from lancell.standardization.perturbations import (
 from lancell.standardization.proteins import resolve_proteins
 from lancell.standardization.types import (
     GeneResolution,
+    GuideRnaResolution,
     MoleculeResolution,
     OntologyResolution,
     ProteinResolution,
@@ -61,6 +69,7 @@ __all__ = [
     # Types
     "Resolution",
     "GeneResolution",
+    "GuideRnaResolution",
     "MoleculeResolution",
     "ProteinResolution",
     "OntologyResolution",
@@ -71,6 +80,10 @@ __all__ = [
     # Genes
     "resolve_genes",
     "detect_organism_from_ensembl_ids",
+    "is_placeholder_symbol",
+    # Guide RNAs
+    "resolve_guide_sequences",
+    "annotate_genomic_coordinates",
     # Proteins
     "resolve_proteins",
     # Molecules
@@ -93,6 +106,7 @@ __all__ = [
     "get_ontology_descendants",
     "get_ontology_siblings",
     # Perturbations
+    "GeneticPerturbationType",
     "detect_control_labels",
     "is_control_label",
     "detect_negative_control_type",

@@ -44,6 +44,7 @@ ml = [
 bio = [
     "biopython",
     "GEOparse",
+    "gget",
     "pronto",
     "pubmed-parser",
     "scanpy",

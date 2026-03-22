@@ -47,6 +47,19 @@ class ProteinResolution(Resolution):
 
 
 @dataclass
+class GuideRnaResolution(Resolution):
+    chromosome: str | None = None  # e.g. "chr17"
+    target_start: int | None = None
+    target_end: int | None = None
+    target_strand: str | None = None  # "+" or "-"
+    intended_gene_name: str | None = None
+    intended_ensembl_gene_id: str | None = None
+    target_context: str | None = None  # TargetContext value
+    assembly: str | None = None  # e.g. "hg38"
+    blat_pct_match: float | None = None
+
+
+@dataclass
 class OntologyResolution(Resolution):
     ontology_term_id: str | None = None  # e.g., "CL:0000540", "UBERON:0002048"
     ontology_name: str | None = None  # e.g., "Cell Ontology", "UBERON"
@@ -97,6 +110,16 @@ class ResolutionReport:
                 row["gene_name"] = r.gene_name
                 row["protein_name"] = r.protein_name
                 row["organism"] = r.organism
+            elif isinstance(r, GuideRnaResolution):
+                row["chromosome"] = r.chromosome
+                row["target_start"] = r.target_start
+                row["target_end"] = r.target_end
+                row["target_strand"] = r.target_strand
+                row["intended_gene_name"] = r.intended_gene_name
+                row["intended_ensembl_gene_id"] = r.intended_ensembl_gene_id
+                row["target_context"] = r.target_context
+                row["assembly"] = r.assembly
+                row["blat_pct_match"] = r.blat_pct_match
             elif isinstance(r, OntologyResolution):
                 row["ontology_term_id"] = r.ontology_term_id
                 row["ontology_name"] = r.ontology_name

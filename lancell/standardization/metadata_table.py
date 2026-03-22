@@ -1,7 +1,7 @@
 """LanceModel schemas and DB helpers for self-hosted reference databases.
 
-Eight tables: organisms, genomic features, genomic feature aliases, ontology terms,
-compounds, compound synonyms, proteins, and protein aliases.
+Nine tables: organisms, genomic features, genomic feature aliases, ontology terms,
+compounds, compound synonyms, proteins, protein aliases, and guide RNAs.
 Stored in a single LanceDB at ``~/.cache/lancell/reference_db/``.
 """
 
@@ -20,6 +20,7 @@ COMPOUNDS_TABLE = "compounds"
 COMPOUND_SYNONYMS_TABLE = "compound_synonyms"
 PROTEINS_TABLE = "proteins"
 PROTEIN_ALIASES_TABLE = "protein_aliases"
+GUIDE_RNAS_TABLE = "guide_rnas"
 
 DEFAULT_REFERENCE_DB_PATH = Path.home() / ".cache" / "lancell" / "reference_db"
 
@@ -258,6 +259,61 @@ class ProteinAliasRecord(LanceModel):
     organism: str
     is_canonical: bool
     source: str
+
+
+class GuideRnaRecord(LanceModel):
+    """Cached guide RNA resolution result.
+
+    One row per unique (guide_sequence, organism) pair. Populated
+    lazily as guide sequences are resolved via BLAT + Ensembl.
+
+    Parameters
+    ----------
+    guide_sequence:
+        Uppercase DNA sequence (typically 20bp). Lookup key.
+    organism:
+        Scientific name FK (e.g., ``"homo_sapiens"``). Lookup key.
+    chromosome:
+        BLAT-aligned chromosome, e.g. ``"chr17"``.
+    target_start:
+        Genomic start coordinate.
+    target_end:
+        Genomic end coordinate.
+    target_strand:
+        ``"+"`` or ``"-"``.
+    intended_gene_name:
+        Symbol of the closest protein-coding gene.
+    intended_ensembl_gene_id:
+        Ensembl gene ID of the intended gene.
+    target_context:
+        Where the guide lands relative to gene structure.
+    assembly:
+        Genome assembly, e.g. ``"hg38"``, ``"mm39"``.
+    blat_pct_match:
+        BLAT alignment quality percentage (0–100).
+    confidence:
+        Resolution confidence (1.0=single gene, 0.9=multiple,
+        0.5=no gene, 0.0=failed).
+    resolved_value:
+        Gene name or locus string, ``None`` if unresolved.
+    alternatives:
+        Pipe-delimited alternative overlapping gene names.
+    """
+
+    guide_sequence: str
+    organism: str
+    chromosome: str | None = None
+    target_start: int | None = None
+    target_end: int | None = None
+    target_strand: str | None = None
+    intended_gene_name: str | None = None
+    intended_ensembl_gene_id: str | None = None
+    target_context: str | None = None
+    assembly: str | None = None
+    blat_pct_match: float | None = None
+    confidence: float = 0.0
+    resolved_value: str | None = None
+    alternatives: str | None = None
 
 
 # ---------------------------------------------------------------------------
