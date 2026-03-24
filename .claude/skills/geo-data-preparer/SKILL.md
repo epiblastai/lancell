@@ -104,7 +104,7 @@ python scripts/download_geo_file.py <accession> <filename> [dest_dir]
 
 Default destination: `/tmp/geo_agent/<accession>/`. Some GEO datasets have multiple files in a single tar archive -- extract it. If there are multiple versions of the same dataset, possibly indicated by terms like "filtered", "processed", or "validated", prefer these analysis-ready artifacts to the raw version. Ask the user if unsure.
 
-Next group the files into subdirectories by experiment. Depending on the file formats and whether the assay is unimodal or multimodal, we may have multiple files bundled together in the same subdirectory. Do not create separate subdirectories for modalities captured in the same experiment.
+Next group the files into subdirectories by experiment. Simply use `mv` to move the files into the correct subdirectory, no `cp` or `ln -s` for symlinks. Depending on the file formats and whether the assay is unimodal or multimodal, we may have multiple files bundled together in the same subdirectory. Do not create separate subdirectories for modalities captured in the same experiment.
 
 ### 6. Create raw obs and var dataframes
 
@@ -171,6 +171,8 @@ Agent tool call:
     - Input: <SchemaClassName>_raw.csv
     - Output: <SchemaClassName>_resolved.csv (with UIDs assigned via make_uid())
 ```
+
+Avoid giving the resolver skill any instructions about how to resolve the data. It already knows the correct procedure, such instructions in your prompt might contradict the skill.
 
 **For the genetic-perturbation-resolver specifically**, also provide the obs-level mapping context so it can write perturbation obs fragments (see B1–B4 in the resolver skill):
 
