@@ -1,38 +1,25 @@
 ---
 name: protein-resolver
-description: Resolve protein identifiers for ADT/CITE-seq feature tables (ProteinSchema) and biologic perturbation registries (BiologicPerturbationSchema). Uses lancell.standardization.resolve_proteins() for one-step alias-to-UniProt resolution. Handles isotype control detection, biologic type classification, and capability gaps (sequence, sequence_length). Use when a dataset has protein abundance features or biologic perturbation columns.
+description: Use this skill when tasked with standardizing protein identifiers (aliases, gene names, UniProt accessions) in feature dataframes and looking up metadata to fill out missing information in a LanceDB table schema (e.g., ProteinSchema). Requires dataframes with at minimum the protein identifiers to standardize and a target schema specifying missing metadata to lookup. Handles isotype control detection. For biologic perturbation resolution, use a dedicated biologic-perturbation-resolver skill.
 ---
 
-# Protein & Biologic Resolver
+# Protein Resolver
 
-Resolve protein identifiers in two contexts that share the same core resolution function:
+Resolve protein identifiers in feature dataframes — typically the var index of an ADT/CITE-seq protein abundance matrix. Maps protein aliases, gene names, and UniProt accessions to canonical identifiers using the `lancell.standardization` suite.
 
-1. **Protein feature resolution** (Phase A, var-level) — ADT/CITE-seq panels where each feature is a protein target. Maps to `ProteinSchema`. Input: `Protein_raw.csv` → Output: `Protein_resolved.csv`.
-2. **Biologic perturbation resolution** (Phase A + Phase B) — cytokines, growth factors, antibodies applied to cells. Maps to `BiologicPerturbationSchema`. Input: `BiologicPerturbation_raw.csv` → Output: `BiologicPerturbation_resolved.csv` + per-experiment obs fragments with `|` convention.
-
-For genetic perturbation targets (CRISPR, siRNA, shRNA), use the **genetic-perturbation-resolver** skill. For small molecule perturbations, use the **molecule-resolver** skill.
+For biologic perturbation resolution (cytokines, growth factors, antibodies applied to cells), use a dedicated **biologic-perturbation-resolver** skill. For genetic perturbation targets (CRISPR, siRNA, shRNA), use the **genetic-perturbation-resolver** skill.
 
 ## Interface
 
-**Phase A Input:**
-- `Protein_raw.csv` and/or `BiologicPerturbation_raw.csv` — consolidated data across all experiments, at the accession level.
-- A user-specified target schema.
+**Input:**
+- `Protein_raw.csv` — consolidated var data across all experiments, at the accession level. Contains `var_index`, `experiment_subdir`, and protein identifiers (aliases, gene names, or UniProt accessions).
+- A user-specified target schema describing which output columns to produce.
 
-**Phase A Output:**
-- `Protein_resolved.csv` — with resolution columns, UIDs assigned via `make_uid()`, `resolved` boolean.
-- `BiologicPerturbation_resolved.csv` — same pattern.
-- `resolver_reports/protein-resolver.md` — markdown report written in the working directory. Summarize inputs, outputs, resolved/unresolved proteins or biologics, control handling, and any blank finalized fields with reasons.
-
-**Phase B Input (biologic perturbations only):**
-- Per-experiment raw obs CSV (`{fs}_raw_obs.csv`) — **read-only**
-- `BiologicPerturbation_resolved.csv` from Phase A (for UID lookup)
-
-**Phase B Output (biologic perturbations only):**
-- Per-experiment obs fragment (`{fs}_fragment_biologic_perturbation_obs.csv`) with `|` convention columns.
-
-**Column naming:** No `validated_` prefix. Schema field names directly.
-
-**Rule:** Save the CSV after adding each column to prevent losing work.
+**Output:**
+- `Protein_resolved.csv` — all raw columns plus resolved columns (`feature_name`, `uniprot_id`, `protein_name`, `gene_name`, `organism`, `sequence`, `sequence_length`, `resolved`, `uid`). This is the full intermediate output for inspection and debugging.
+- `ProteinSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types (nullable ints, lists, bools) so the file can be loaded directly into LanceDB.
+- `{fs}_standardized_var.csv` — per-experiment var CSV with the original var index and a `global_feature_uid` column mapping each feature to its resolved UID. Written in each experiment subdirectory.
+- `resolver_reports/protein-resolver.md` — markdown report written in the working directory. Summarize inputs, output paths, resolved/unresolved counts, control detection summary, and any fields left blank in the finalized schema output.
 
 ## Reporting
 
@@ -45,250 +32,135 @@ Each run must write a markdown report to `resolver_reports/` in the working dire
   - input file path(s)
   - output file path(s)
   - row counts and resolved/unresolved counts
-  - control detection summary
+  - isotype control detection summary
   - correction mappings or fallback logic used
   - any finalized schema fields left blank, with reasons
 
-## Imports
+## Scripts
 
-```python
-from lancell.standardization import (
-    resolve_proteins,
-    is_control_label,
-    detect_control_labels,
-    detect_negative_control_type,
-)
-from lancell.standardization.types import ProteinResolution, ResolutionReport
-from lancell.schema import make_uid
+### `resolve_proteins.py` — Resolution
+
+Auto-detects protein identifier column, separates isotype controls (IgG1, IgG2a, etc.) and other controls, resolves actual proteins via `resolve_proteins()`, and maps organism to scientific name via `resolve_organisms()`.
+
+```bash
+python .claude/skills/protein-resolver/scripts/resolve_proteins.py \
+    <input_csv> <output_csv> \
+    [--protein-col COL] [--organism ORG] \
+    [--index-col COL] [--dry-run]
+```
+
+- `--protein-col`: Column with protein identifiers. Default: auto-detect from columns (`var_index`, `feature_name`, `protein`, etc.) then index.
+- `--organism`: Organism for resolution. Default: `human`.
+- `--index-col`: Override which CSV column becomes the DataFrame index. Use `--index-col none` to disable index handling.
+- `--dry-run`: Print detected columns and planned operations without writing output.
+
+#### Columns produced
+
+| Column | Source |
+|---|---|
+| `feature_name` | Original protein alias from input |
+| `uniprot_id` | `ProteinResolution.uniprot_id` or None |
+| `protein_name` | Resolved protein name, or original value if unresolved |
+| `gene_name` | `ProteinResolution.gene_name` or None |
+| `organism` | Scientific name via `resolve_organisms()` (e.g., `"Homo sapiens"`) |
+| `sequence` | `ProteinResolution.sequence` or None |
+| `sequence_length` | `ProteinResolution.sequence_length` or None |
+| `resolved` | Boolean — `True` if resolution succeeded |
+| `uid` | Unique ID via `make_uid()` |
+
+### `write_standardized_var.py` — Per-experiment standardized var CSVs
+
+Reads the resolved CSV to build a `var_index → uid` mapping, then writes `{fs}_standardized_var.csv` in each experiment subdirectory containing the original var index and a `global_feature_uid` column.
+
+```bash
+python .claude/skills/protein-resolver/scripts/write_standardized_var.py \
+    <accession_dir> \
+    [--resolved-csv Protein_resolved.csv] \
+    [--feature-space protein]
+```
+
+- `--resolved-csv`: Filename of the resolved CSV in the accession directory. Default: `GenomicFeatureSchema_resolved.csv` (override to `Protein_resolved.csv`).
+- `--feature-space`: Feature space name used to find `{fs}_raw_var.csv` per experiment and name the output. Default: `gene_expression` (override to `protein`).
+
+Experiment directories are auto-discovered by scanning for `{fs}_raw_var.csv` files under the accession directory.
+
+### `finalize_features.py` — Schema finalization with type coercion
+
+Takes the resolved CSV, adds any schema-specific columns, drops everything not in the schema (including `resolved`), coerces types (JSON lists, bools, numerics), and writes parquet with correct types so the output can be loaded directly into LanceDB without further manipulation.
+
+Does NOT do per-row pydantic validation — type coercion + parquet schema enforcement is sufficient. Type errors surface at LanceDB insertion time.
+
+```bash
+python .claude/skills/protein-resolver/scripts/finalize_features.py \
+    <resolved_csv> <output_parquet> <schema_module> <schema_class> \
+    [--column KEY=VALUE ...]
+```
+
+- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. If VALUE is `None` or `null` (case-insensitive), sets actual Python None. Otherwise uses VALUE as a constant for all rows.
+
+Example:
+
+```bash
+python .claude/skills/protein-resolver/scripts/finalize_features.py \
+    /tmp/GSE123/Protein_resolved.csv \
+    /tmp/GSE123/ProteinSchema.parquet \
+    lancell_examples.multimodal_perturbation_atlas.schema \
+    ProteinSchema \
+    --column feature_type=protein \
+    --column feature_id=uniprot_id
 ```
 
 ---
 
-## Workflow A: Protein Feature Resolution (Phase A — ProteinSchema)
+## Workflow
 
-### A1. Load and inspect
+### 1. Run the resolution script
 
-```python
-import pandas as pd
-from pathlib import Path
-
-accession_dir = Path("<accession_dir>")
-raw_path = accession_dir / "Protein_raw.csv"
-raw_df = pd.read_csv(raw_path, index_col=0)
-protein_aliases = raw_df["var_index"].tolist()
-print(f"Protein features: {len(protein_aliases)}")
-print(f"Sample: {protein_aliases[:10]}")
+```bash
+python .claude/skills/protein-resolver/scripts/resolve_proteins.py \
+    /path/to/Protein_raw.csv \
+    /path/to/Protein_resolved.csv
 ```
 
-### A2. Identify isotype controls
+Review the output for resolved/unresolved counts and isotype control detection.
 
-Isotype controls (IgG1, IgG2a, etc.) are antibody controls, not real protein targets. **`is_control_label()` does NOT detect isotype controls** — it only handles genetic controls (nontargeting, scramble) and chemical controls (DMSO, vehicle). Use explicit patterns:
+### 2. Finalize against the target schema
 
-```python
-ISOTYPE_PATTERNS = {"IgG1", "IgG2a", "IgG2b", "IgG2c", "IgM", "IgA", "IgD", "IgE"}
+Read the target schema to determine which columns need to be added, then run:
 
-def is_isotype_control(name: str) -> bool:
-    lower = name.strip().lower()
-    return (
-        any(lower == p.lower() for p in ISOTYPE_PATTERNS)
-        or "isotype" in lower
-        or lower.startswith("mouse-igg")
-        or lower.startswith("rat-igg")
-    )
-
-actual_proteins = [p for p in protein_aliases if not is_isotype_control(p)]
-isotype_controls = [p for p in protein_aliases if is_isotype_control(p)]
-print(f"Actual proteins: {len(actual_proteins)}, Isotype controls: {len(isotype_controls)}")
+```bash
+python .claude/skills/protein-resolver/scripts/finalize_features.py \
+    /path/to/Protein_resolved.csv \
+    /path/to/ProteinSchema.parquet \
+    <schema_module> <schema_class> \
+    --column feature_type=protein \
+    --column feature_id=uniprot_id
 ```
 
-### A3. Resolve proteins
+The script coerces types and writes parquet — the output is ready for direct LanceDB ingestion.
 
-One-step resolution — no need for the old two-step alias→symbol→UniProt approach:
+### 3. Write per-experiment standardized var CSVs
 
-```python
-report = resolve_proteins(actual_proteins, organism="human")
-print(f"Resolved: {report.resolved}/{report.total}, Unresolved: {report.unresolved}")
-if report.unresolved_values:
-    print(f"Unresolved: {report.unresolved_values[:10]}")
+After finalization, write per-experiment `{fs}_standardized_var.csv` files that map each experiment's var index to the resolved UIDs:
+
+```bash
+python .claude/skills/protein-resolver/scripts/write_standardized_var.py \
+    /path/to/accession_dir \
+    --resolved-csv Protein_resolved.csv \
+    --feature-space protein
 ```
 
-Common ADT naming issues that cause failures:
-- **Hyphenated names:** "HLA-DR" may not resolve because it's a complex of HLA-DRA and HLA-DRB1
-- **Numbered suffixes:** "CD3" is ambiguous — could be CD3D, CD3E, or CD3G
-- **Alternate names:** "PD-1" should resolve (known alias for PDCD1)
-- **Clone-specific names:** "anti-CD3 (OKT3)" — strip the clone/catalog info first
+This requires the caller (preparer) to provide the accession directory path and feature space name.
 
-Investigate failures and build a correction mapping before proceeding.
+### 4. Write the markdown report
 
-### A4. Assign UIDs and write resolved output
+After finalization, write `resolver_reports/protein-resolver.md` in the working directory with the run summary, control detection details, and blank-field audit.
 
-Map `ProteinResolution` fields to the target schema (no `validated_` prefix):
-
-```python
-resolved_df = raw_df.copy()
-
-for res in report.results:
-    uniprot_id = res.uniprot_id          # → ProteinSchema.uniprot_id
-    protein_name = res.protein_name      # → ProteinSchema.protein_name
-    gene_name = res.gene_name            # → ProteinSchema.gene_name
-    organism = res.organism              # → ProteinSchema.organism
-    sequence = res.sequence              # → ProteinSchema.sequence
-    sequence_length = res.sequence_length  # → ProteinSchema.sequence_length
-    is_resolved = res.resolved_value is not None
-
-# For isotype controls, all protein fields map to None.
-resolved_df["resolved"] = [...]
-
-# Assign UIDs — one per unique protein feature
-resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
-
-output_path = accession_dir / "Protein_resolved.csv"
-resolved_df.to_csv(output_path)
-print(f"Wrote {output_path.name}: {len(resolved_df)} features, {resolved_df['resolved'].sum()} resolved")
-```
-
-### A5. Notes
-
-- `ProteinSchema.sequence` and `ProteinSchema.sequence_length` are populated from the SwissProt reference database when a UniProt ID resolves.
+Common cases:
+- Use `--column feature_id=uniprot_id` when the schema wants a stable protein foreign key.
+- Use literal constants such as `--column feature_type=protein` for schema-wide values.
+- `sequence` and `sequence_length` are populated from the SwissProt reference DB when a UniProt ID resolves.
 - `FeatureBaseSchema.global_index` is auto-generated at ingestion time, not during resolution.
-
----
-
-## Workflow B: Biologic Perturbation Resolution (Phase A + Phase B — BiologicPerturbationSchema)
-
-### Phase A: Global Resolution
-
-#### BA1. Load and inspect
-
-```python
-raw_path = accession_dir / "BiologicPerturbation_raw.csv"
-raw_df = pd.read_csv(raw_path, index_col=0)
-unique_biologics = raw_df["<biologic_column>"].dropna().unique().tolist()
-print(f"Unique biologic agents: {len(unique_biologics)}")
-```
-
-#### BA2. Control detection
-
-Use `detect_control_labels()` for standard controls (DMSO, vehicle, untreated, PBS). Additionally apply isotype control detection for antibody-treated experiments:
-
-```python
-control_flags = detect_control_labels(unique_biologics)
-controls = [v for v, is_ctrl in zip(unique_biologics, control_flags) if is_ctrl]
-isotype_ctrls = [v for v in unique_biologics if is_isotype_control(v)]
-all_controls = set(controls) | set(isotype_ctrls)
-
-actual_biologics = [v for v in unique_biologics if v not in all_controls]
-```
-
-#### BA3. Resolve protein identity
-
-```python
-report = resolve_proteins(actual_biologics, organism="human")
-print(f"Resolved: {report.resolved}/{report.total}")
-```
-
-#### BA4. Biologic type classification (manual)
-
-**No automated `classify_biologic_type()` function exists.** Classification must be guided by dataset metadata and heuristics:
-
-1. **Check dataset metadata first.** Papers and GEO records often describe agent types explicitly.
-
-2. **Common heuristic patterns** (validate against metadata):
-
-   | Pattern | Likely Type |
-   |---|---|
-   | IL-* (IL-2, IL-6, IL-17) | `cytokine` |
-   | IFN* (IFNg, IFNa) | `cytokine` |
-   | TNF, TNFa, TGFb | `cytokine` or `growth_factor` |
-   | anti-* (anti-CD3, anti-PD-L1) | `antibody` |
-   | *mab (adalimumab, nivolumab) | `antibody` |
-   | EGF, FGF, VEGF, PDGF, NGF, BMP, HGF | `growth_factor` |
-   | WNT, DLL1, DLL4, JAG1 | `ligand` |
-
-3. **Single-type datasets** (common case): apply uniformly from metadata.
-4. **Mixed-type datasets**: build a manual classification dict.
-5. **Default to `"other"`** for unclassifiable agents.
-
-#### BA5. Assign UIDs and write resolved output
-
-```python
-resolved_df = raw_df.copy()
-
-# Map fields (no validated_ prefix)
-resolved_df["biologic_name"] = [...]
-resolved_df["uniprot_id"] = [...]
-resolved_df["biologic_type"] = [...]
-resolved_df["resolved"] = [...]
-
-# Assign UIDs
-resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
-
-output_path = accession_dir / "BiologicPerturbation_resolved.csv"
-resolved_df.to_csv(output_path)
-```
-
-### Phase B: Per-Experiment Obs Fragments
-
-#### BB1. Load resolved table and raw obs
-
-```python
-resolved = pd.read_csv(accession_dir / "BiologicPerturbation_resolved.csv", index_col=0)
-raw_obs = pd.read_csv(experiment_dir / f"{fs}_raw_obs.csv", index_col=0)
-
-uid_map = dict(zip(resolved["<key_column>"], resolved["uid"]))
-fragment = pd.DataFrame(index=raw_obs.index)
-```
-
-#### BB2. Build perturbation list columns with `|` convention
-
-```python
-import json
-
-def build_perturbation_lists(row):
-    biologic = row[biologic_col]
-    concentration = row.get(concentration_col)
-    if pd.isna(biologic) or is_control_label(str(biologic)) or is_isotype_control(str(biologic)):
-        return None, None, None
-
-    uid = uid_map.get(str(biologic))
-    if uid is None:
-        return None, None, None
-
-    conc = float(concentration) if pd.notna(concentration) else -1.0
-    return json.dumps([uid]), json.dumps(["biologic"]), json.dumps([conc])
-
-results = raw_obs.apply(build_perturbation_lists, axis=1)
-fragment["perturbation_uids|BiologicPerturbation"] = results.apply(lambda x: x[0])
-fragment["perturbation_types|BiologicPerturbation"] = results.apply(lambda x: x[1])
-fragment["perturbation_concentrations_um|BiologicPerturbation"] = results.apply(lambda x: x[2])
-```
-
-#### BB3. Derive control columns with `|` convention
-
-```python
-def derive_is_control(value) -> bool:
-    if pd.isna(value):
-        return False
-    return is_control_label(str(value)) or is_isotype_control(str(value))
-
-fragment["is_negative_control|BiologicPerturbation"] = raw_obs[biologic_col].apply(derive_is_control)
-
-fragment["negative_control_type|BiologicPerturbation"] = raw_obs[biologic_col].apply(
-    lambda v: (
-        "isotype_control" if pd.notna(v) and is_isotype_control(str(v))
-        else detect_negative_control_type(str(v)) if pd.notna(v) and is_control_label(str(v))
-        else None
-    )
-)
-```
-
-#### BB4. Write fragment
-
-```python
-fragment["biologic_perturbation_resolved"] = True
-fragment_path = experiment_dir / f"{fs}_fragment_biologic_perturbation_obs.csv"
-fragment.to_csv(fragment_path)
-```
 
 ---
 
@@ -296,23 +168,22 @@ fragment.to_csv(fragment_path)
 
 All resolved columns follow the same principle: **never NaN unless there is genuinely no value**, and **always flag resolution status with a boolean `resolved` column.**
 
-1. **Resolution succeeds** (`resolved_value` is not None) → use canonical values from `ProteinResolution`. Set `resolved=True`.
-2. **Resolution fails** (`resolved_value` is None) → keep the original value for name fields. `uniprot_id` can be None when no mapping exists. Set `resolved=False`.
-3. **Isotype controls → None** in protein identity fields. They inform `is_negative_control`.
-4. **NaN only when no value exists.**
+1. **Resolution succeeds** (`resolved_value` is not None) → use canonical values from `ProteinResolution` (e.g., `.uniprot_id`, `.protein_name`). Set `resolved=True`.
+2. **Resolution fails** (`resolved_value` is None) → keep the original value for name fields (do not set to NaN), but set `resolved=False`. ID fields (`uniprot_id`) can be None when no mapping exists.
+3. **Isotype controls** → `resolved=False`, protein identity fields (`uniprot_id`, `gene_name`, `sequence`, `sequence_length`) set to None. `protein_name` keeps the original alias.
+4. **NaN only when no value exists** — e.g., a protein has no known gene name at all.
 
 ## Rules
 
-- **Two-phase workflow.** Phase A resolves globally and assigns UIDs. Phase B maps UIDs to per-experiment obs (biologic perturbations only; protein features have no obs fragments).
-- **No `validated_` prefix.** Output columns use schema field names directly.
-- **Use `|` convention in Phase B.** All obs columns that could also be written by other perturbation resolvers use `{field}|BiologicPerturbation` naming.
-- **Assign UIDs via `make_uid()` in Phase A.** Every unique protein/biologic gets a UID.
+- **Accession-level only.** This resolver operates at the accession level on `Protein_raw.csv`, not per-experiment. The raw CSV is already deduplicated on `var_index` by the preparer — the same protein appearing in multiple experiment subdirs should only have one row.
+- **No `validated_` prefix.** Output columns use schema field names directly (e.g., `protein_name` not `validated_protein_name`). This is the project-wide convention for all resolver output.
+- **Organism as scientific name.** Use `resolve_organisms()` to map common names to scientific names. Do not hardcode organism mappings.
+- **Assign UIDs via `make_uid()`.** Every unique feature row gets a UID in the output.
 - **One-step resolution.** Use `resolve_proteins()` directly. Do not attempt the old two-step alias→gene symbol→UniProt approach.
-- **Isotype controls are NOT caught by `is_control_label()`.** Use the explicit isotype patterns defined in this skill.
-- **Biologic type requires manual classification.** No automated classifier exists. Use metadata and heuristics, default to `"other"`.
-- **Sequence fields** are populated from the SwissProt reference DB when a UniProt ID resolves.
+- **Isotype controls are NOT caught by `is_control_label()`.** Use the explicit isotype patterns defined in the resolve script (IgG1, IgG2a, IgG2b, IgG2c, IgM, IgA, IgD, IgE, plus "isotype", "mouse-igg*", "rat-igg*" prefixes).
 - **Assume human** unless the dataset metadata specifies another organism.
-- **Never set name columns to NaN for failed resolution.** Use the original value. Only ID columns (`uniprot_id`) can be None when no mapping exists.
-- **Always write a `resolved` boolean column.**
-- **Save after each column** to prevent losing work on interruption.
+- **Never set name columns to NaN for failed resolution.** Use the original value and set `resolved=False`.
+- **Output columns may overwrite raw columns.** In particular, resolved `organism` replaces any raw `organism` column.
+- **Index collisions are renamed.** If the input index name collides with an output column such as `feature_name`, the script renames the index to `raw_<name>` before writing.
 - **Column names follow the user's schema.** Do not assume specific column names — use whatever the user's target schema specifies.
+- **Two output files.** `Protein_resolved.csv` retains `resolved` for inspection. `ProteinSchema.parquet` is type-coerced and production-ready for direct LanceDB ingestion.

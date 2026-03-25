@@ -1,4 +1,4 @@
-# Protein & Biologic Resolver — API Reference
+# Protein Resolver — API Reference
 
 ## Protein Resolution
 
@@ -75,7 +75,7 @@ from lancell.standardization import (
 
 Recognized controls: `nontargeting`, `scramble`, `DMSO`, `vehicle`, `untreated`, `PBS`, `control`, etc.
 
-**Important:** These functions do **NOT** detect isotype controls (IgG1, IgG2a, IgG2b, IgM, etc.). Isotype control detection requires the explicit patterns defined in the skill instructions.
+**Important:** These functions do **NOT** detect isotype controls (IgG1, IgG2a, IgG2b, IgM, etc.). Isotype control detection requires the explicit patterns defined in the `resolve_proteins.py` script.
 
 ---
 
@@ -94,33 +94,3 @@ Shows which resolution outputs fill which `ProteinSchema` fields:
 | `organism` | `ProteinResolution.organism` or metadata | |
 | `sequence` | `ProteinResolution.sequence` | From SwissProt reference DB |
 | `sequence_length` | `ProteinResolution.sequence_length` | From SwissProt reference DB |
-
----
-
-## BiologicPerturbationSchema Field Mapping
-
-| Schema Field | Source | Notes |
-|---|---|---|
-| `uid` | Auto-generated | |
-| `biologic_name` | Direct from input | Original agent name |
-| `biologic_type` | Manual classification | No automated function exists |
-| `uniprot_id` | `ProteinResolution.uniprot_id` | Via `resolve_proteins()` |
-| `vendor` | From metadata | If available |
-| `catalog_number` | From metadata | If available |
-| `lot_number` | From metadata | If available |
-
----
-
-## BiologicPerturbationType Enum
-
-Defined in `lancell_examples/multimodal_perturbation_atlas/schema.py` (schema-level, not in `lancell.standardization`).
-
-| Member | Value |
-|---|---|
-| `CYTOKINE` | `"cytokine"` |
-| `GROWTH_FACTOR` | `"growth_factor"` |
-| `ANTIBODY` | `"antibody"` |
-| `LIGAND` | `"ligand"` |
-| `RECEPTOR_AGONIST` | `"receptor_agonist"` |
-| `RECEPTOR_ANTAGONIST` | `"receptor_antagonist"` |
-| `OTHER` | `"other"` |
