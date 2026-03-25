@@ -137,17 +137,29 @@ def _resolve_field(
         name_map[ctrl] = None
         id_map[ctrl] = None
 
-    # Write columns to fragment
+    # Write the schema column to fragment (exact schema field name, no suffix)
     fragment[schema_field] = raw_obs[obs_col].astype(str).map(name_map)
-    fragment[f"{schema_field}_ontology_id"] = raw_obs[obs_col].astype(str).map(id_map)
 
     # Rows where obs_col was NaN should stay NaN in the fragment
     null_mask = raw_obs[obs_col].isna()
     fragment.loc[null_mask, schema_field] = None
-    fragment.loc[null_mask, f"{schema_field}_ontology_id"] = None
+
+    # Track which rows resolved (have an ontology ID) for the ontology_resolved boolean
+    resolved_set = {v for v in actual_values if id_map.get(v) is not None}
+    control_set = {str(c) for c in control_labels}
+    ok_set = resolved_set | control_set
+    fragment[f"_resolved_{schema_field}"] = raw_obs[obs_col].astype(str).isin(ok_set)
+    fragment.loc[null_mask, f"_resolved_{schema_field}"] = True  # NaN rows are not failures
 
     # Collect unresolved
     unresolved = [v for v in actual_values if id_map.get(v) is None]
+
+    # Build resolved mappings for the report (canonical name → CURIE)
+    resolved_mappings = {
+        name_map[v]: id_map[v]
+        for v in actual_values
+        if id_map.get(v) is not None
+    }
 
     stats = {
         "obs_col": obs_col,
@@ -161,6 +173,7 @@ def _resolve_field(
         "ambiguous": report.ambiguous,
         "unresolved_values": unresolved,
         "corrections_applied": corrected_originals,
+        "resolved_mappings": resolved_mappings,
     }
     return stats
 
@@ -211,6 +224,13 @@ def _write_report(
             lines.append("")
             for v in s["controls"]:
                 lines.append(f"- `{v}`")
+            lines.append("")
+
+        if s["resolved_mappings"]:
+            lines.append(f"### Resolved CURIEs: {s['schema_field']} ({s['entity']})")
+            lines.append("")
+            for name, curie in sorted(s["resolved_mappings"].items()):
+                lines.append(f"- `{name}` → `{curie}`")
             lines.append("")
 
         if s["corrections_applied"]:
@@ -291,14 +311,15 @@ def main(argv: list[str] | None = None) -> None:
         if stats["corrections_applied"]:
             print(f"  Corrections applied: {stats['corrections_applied']}")
 
-    # Write ontology_resolved boolean
+    # Write ontology_resolved boolean from internal tracking columns
     schema_fields = [sf for _, sf, _ in fields]
+    resolved_cols = [f"_resolved_{sf}" for sf in schema_fields]
     fragment["ontology_resolved"] = True
-    for schema_field in schema_fields:
-        id_col = f"{schema_field}_ontology_id"
-        has_value = fragment[schema_field].notna()
-        has_id = fragment[id_col].notna()
-        fragment.loc[has_value & ~has_id, "ontology_resolved"] = False
+    for rc in resolved_cols:
+        fragment.loc[~fragment[rc].astype(bool), "ontology_resolved"] = False
+
+    # Drop internal tracking columns — only schema columns + ontology_resolved in output
+    fragment.drop(columns=resolved_cols, inplace=True)
 
     fragment.to_csv(args.output_csv)
 

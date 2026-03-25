@@ -96,6 +96,8 @@ Launch a subagent with `publication-resolver` skill to create `PublicationSchema
 
 The publication resolver produces validated parquet files with UIDs already assigned, following the same pattern as other resolvers. The `publication_uid` is included in `publication.json` for downstream reference.
 
+If you have questions about the data in later steps, the publication is a good place to find answers before asking the user.
+
 ### 5. Download and organize files by experiment
 
 Download the necessary files from GEO (be sure to use long enough timeouts for large files):
@@ -184,7 +186,7 @@ Avoid giving the resolver skill any instructions about how to resolve the data. 
     - Feature space: <feature_space> (e.g., "gene_expression")
 ```
 
-**For the genetic-perturbation-resolver specifically**, also provide experiment subdirectories so it can write perturbation obs fragments (see B1–B4 in the resolver skill):
+**For the ontology-resolver, genetic-perturbation-resolver, and molecule-resolver specifically**, also provide experiment subdirectories so it can write obs fragments (see B1–B4 in the resolver skill):
 
 ```
     Additional context for obs-level fragment writing:
@@ -194,7 +196,7 @@ Avoid giving the resolver skill any instructions about how to resolve the data. 
     - Columns you are responsible for: [list of columns in ObsLevelSchemaClassName]
 ```
 
-All resolvers can run in parallel, except for `publication-resolver` which should have been run previously.
+All resolvers, except for `publication-resolver` which must be run first, may run in parallel. However, avoid running more than 2 or 3 resolvers agents at a time as this can cause resource contention.
 
 **Note:** The ontology resolver operates per-experiment (writing `{fs}_fragment_ontology_obs.csv` directly in each experiment directory), unlike other resolvers which write global accession-level tables.
 

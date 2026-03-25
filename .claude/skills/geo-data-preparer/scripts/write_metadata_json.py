@@ -147,6 +147,7 @@ def write_metadata_json(data_dir: str, accession: str) -> Path:
     assert ACCESSION_RE.match(accession), f"Invalid accession: {accession}. Expected GSE or GSM followed by digits."
 
     data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
     print(f"Fetching metadata for {accession}...")
     metadata = _fetch_metadata(accession)
 
