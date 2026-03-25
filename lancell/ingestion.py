@@ -5,10 +5,12 @@ reference implementation.  Downstream projects can write their own ingestion
 that calls the lower-level ``var_df`` helpers directly.
 """
 
+import subprocess
 from pathlib import Path
 
 import anndata as ad
 import numpy as np
+import pandas as pd
 import polars as pl
 import pyarrow as pa
 import scipy.sparse as sp
@@ -466,6 +468,348 @@ def add_from_anndata(
         chunk_shape=chunk_shape,
         shard_shape=shard_shape,
     )
+
+
+def add_coo_batch(
+    atlas: RaggedAtlas,
+    coo_path: Path,
+    *,
+    obs_df: pd.DataFrame,
+    var_df: pl.DataFrame,
+    feature_space: str,
+    zarr_layer: str,
+    dataset_record: DatasetRecord,
+    n_cells: int,
+    n_features: int,
+    separator: str = "\t",
+    gene_col: int = 0,
+    cell_col: int = 1,
+    value_col: int = 2,
+    one_indexed: bool = True,
+    value_dtype: np.dtype = np.int32,
+    chunk_shape: tuple[int, ...] | None = None,
+    shard_shape: tuple[int, ...] | None = None,
+) -> int:
+    """Ingest a cell-sorted COO triplet matrix into the atlas via streaming.
+
+    Streams a gzipped (or plain) text file of (feature_idx, cell_idx, value)
+    triplets directly into zarr + LanceDB without loading the full matrix.
+    The file **must be sorted by cell index**.
+
+    Two-pass approach:
+
+    1. Count nonzeros per cell to determine array sizes and CSR indptr.
+    2. Stream triplets into pre-allocated zarr arrays in shard-sized batches.
+
+    Peak memory is bounded by two numpy buffers of ``shard_shape[0]`` elements
+    (~320 MB at default shard size) plus the per-cell indptr array.
+
+    Parameters
+    ----------
+    atlas:
+        The atlas to ingest into.
+    coo_path:
+        Path to the COO triplet file (gzipped or plain text).
+    obs_df:
+        Validated obs DataFrame with schema-aligned columns. Must have
+        exactly ``n_cells`` rows.
+    var_df:
+        Polars DataFrame with a ``global_feature_uid`` column (one row per
+        feature in the matrix's var space, in positional order).
+    feature_space:
+        Which feature space this data belongs to.
+    zarr_layer:
+        Destination layer name (e.g. ``"counts"``).
+    dataset_record:
+        Dataset record to register.
+    n_cells:
+        Number of cells (rows) in the matrix.
+    n_features:
+        Number of features (columns) in the matrix.
+    separator:
+        Column separator in the COO file.
+    gene_col:
+        0-based column index for the feature/gene identifier.
+    cell_col:
+        0-based column index for the cell identifier.
+    value_col:
+        0-based column index for the value.
+    one_indexed:
+        Whether the file uses 1-based indexing (True) or 0-based (False).
+    value_dtype:
+        Numpy dtype for values. Default ``int32``.
+    chunk_shape:
+        Zarr chunk shape (1-element tuple). Defaults to ``(_CHUNK_ELEMS,)``.
+    shard_shape:
+        Zarr shard shape (1-element tuple). Defaults to ``(_SHARD_ELEMS,)``.
+
+    Returns
+    -------
+    int
+        Number of cells ingested.
+    """
+    if atlas._cell_schema is None:
+        raise ValueError(
+            "Cannot ingest data into an atlas opened without a cell schema. "
+            "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
+        )
+
+    spec = get_spec(feature_space)
+    if spec.pointer_kind is not PointerKind.SPARSE:
+        raise ValueError(
+            f"add_coo_batch only supports sparse feature spaces, "
+            f"but '{feature_space}' is {spec.pointer_kind.value}"
+        )
+
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
+        raise ValueError(
+            f"zarr_layer '{zarr_layer}' not allowed for '{feature_space}'. "
+            f"Allowed: {spec.layers.allowed}"
+        )
+
+    obs_errors = validate_obs_columns(obs_df, atlas._cell_schema)
+    if obs_errors:
+        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
+
+    if "global_feature_uid" not in var_df.columns:
+        raise ValueError("var_df must have a 'global_feature_uid' column")
+
+    pointer_field: PointerFieldInfo | None = None
+    for pf in atlas._pointer_fields.values():
+        if pf.feature_space == feature_space:
+            pointer_field = pf
+            break
+    if pointer_field is None:
+        raise ValueError(
+            f"Schema {atlas._cell_schema.__name__} has no pointer field "
+            f"for feature space '{feature_space}'"
+        )
+
+    chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
+    shard_shape = shard_shape or (_SHARD_ELEMS,)
+
+    use_bitpacking = value_dtype in _INTEGER_DTYPES
+    zarr_group = dataset_record.zarr_group
+    offset = 1 if one_indexed else 0
+
+    # Column names for polars (headerless CSV uses column_1, column_2, ...)
+    cell_col_name = f"column_{cell_col + 1}"
+    gene_col_name = f"column_{gene_col + 1}"
+    value_col_name = f"column_{value_col + 1}"
+
+    # -----------------------------------------------------------------------
+    # Pass 1: Count nonzeros per cell using polars streaming aggregation
+    # -----------------------------------------------------------------------
+    import time
+
+    print(f"Pass 1: counting nonzeros in {coo_path.name}...", flush=True)
+    t0 = time.monotonic()
+    counts_df = (
+        pl.scan_csv(coo_path, has_header=False, separator=separator)
+        .select(pl.col(cell_col_name))
+        .group_by(cell_col_name)
+        .agg(pl.len().alias("count"))
+        .collect(streaming=True)
+    )
+    t1 = time.monotonic()
+
+    cell_nnz = np.zeros(n_cells, dtype=np.int64)
+    cell_indices = counts_df[cell_col_name].to_numpy() - offset
+    cell_counts = counts_df["count"].to_numpy()
+    cell_nnz[cell_indices] = cell_counts
+    total_nnz = int(cell_counts.sum())
+    del counts_df, cell_indices, cell_counts
+    print(
+        f"  {total_nnz:,} nonzeros across {n_cells:,} cells ({t1 - t0:.1f}s)",
+        flush=True,
+    )
+
+    # Build CSR indptr
+    indptr = np.zeros(n_cells + 1, dtype=np.int64)
+    np.cumsum(cell_nnz, out=indptr[1:])
+    del cell_nnz
+
+    starts = indptr[:-1].copy()
+    ends = indptr[1:].copy()
+
+    # -----------------------------------------------------------------------
+    # Register dataset record
+    # -----------------------------------------------------------------------
+    dataset_arrow = pa.Table.from_pylist(
+        [dataset_record.model_dump()],
+        schema=type(dataset_record).to_arrow_schema(),
+    )
+    atlas._dataset_table.add(dataset_arrow)
+
+    # -----------------------------------------------------------------------
+    # Pass 2: Stream triplet chunks into zarr
+    # -----------------------------------------------------------------------
+    from lancell.codecs.bitpacking import BitpackingCodec
+
+    group = atlas._root.create_group(zarr_group)
+    prefix = spec.layers.prefix
+
+    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
+    layer_kwargs: dict = {}
+    if use_bitpacking:
+        layer_kwargs["compressors"] = BitpackingCodec(transform="none")
+
+    if prefix:
+        prefix_group = group.create_group(prefix)
+        zarr_indices = prefix_group.create_array(
+            "indices",
+            shape=(total_nnz,),
+            dtype=np.uint32,
+            chunks=chunk_shape,
+            shards=shard_shape,
+            **indices_kwargs,
+        )
+        layers_group = prefix_group.create_group("layers")
+    else:
+        zarr_indices = group.create_array(
+            "indices",
+            shape=(total_nnz,),
+            dtype=np.uint32,
+            chunks=chunk_shape,
+            shards=shard_shape,
+            **indices_kwargs,
+        )
+        layers_group = group.create_group("layers")
+    zarr_values = layers_group.create_array(
+        zarr_layer,
+        shape=(total_nnz,),
+        dtype=value_dtype,
+        chunks=chunk_shape,
+        shards=shard_shape,
+        **layer_kwargs,
+    )
+
+    # Use subprocess for gzip decompression (faster than Python gzip module)
+    # and polars batched CSV reader for vectorized chunk processing.
+    is_gzip = str(coo_path).endswith(".gz")
+    batch_rows = 5_000_000
+    written = 0
+
+    print(f"Pass 2: streaming {total_nnz:,} triplets into zarr...", flush=True)
+    t0 = time.monotonic()
+
+    if is_gzip:
+        proc = subprocess.Popen(
+            ["gzip", "-dc", str(coo_path)],
+            stdout=subprocess.PIPE,
+        )
+        source = proc.stdout
+    else:
+        source = open(coo_path, "rb")
+
+    try:
+        reader = pl.read_csv_batched(
+            source,
+            has_header=False,
+            separator=separator,
+            batch_size=batch_rows,
+            schema_overrides={
+                gene_col_name: pl.Int32,
+                cell_col_name: pl.Int32,
+                value_col_name: pl.Int32,
+            },
+        )
+        n_batches = 0
+        while True:
+            batches = reader.next_batches(1)
+            if not batches:
+                break
+            batch = batches[0]
+            genes = batch[gene_col_name].to_numpy() - offset
+            vals = batch[value_col_name].to_numpy()
+            n = len(genes)
+            zarr_indices[written : written + n] = genes.astype(np.uint32)
+            zarr_values[written : written + n] = vals.astype(value_dtype)
+            written += n
+            n_batches += 1
+            elapsed = time.monotonic() - t0
+            rate = written / elapsed if elapsed > 0 else 0
+            eta = (total_nnz - written) / rate if rate > 0 else 0
+            print(
+                f"  batch {n_batches}: {written:,} / {total_nnz:,} "
+                f"({written * 100 / total_nnz:.1f}%) "
+                f"[{elapsed:.0f}s elapsed, ~{eta:.0f}s remaining]",
+                flush=True,
+            )
+    finally:
+        if is_gzip:
+            source.close()
+            proc.wait()
+        else:
+            source.close()
+
+    print(f"  Wrote {written:,} nonzeros to zarr ({time.monotonic() - t0:.1f}s)", flush=True)
+
+    # -----------------------------------------------------------------------
+    # Write feature layout
+    # -----------------------------------------------------------------------
+    if spec.has_var_df:
+        atlas.add_or_reuse_layout(var_df, dataset_record.uid, feature_space)
+
+    # -----------------------------------------------------------------------
+    # Insert cell records
+    # -----------------------------------------------------------------------
+    arrow_schema = atlas._cell_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas._cell_schema)
+
+    pointer_struct = pa.StructArray.from_arrays(
+        [
+            pa.array([feature_space] * n_cells, type=pa.string()),
+            pa.array([zarr_group] * n_cells, type=pa.string()),
+            pa.array(starts.astype(np.int64), type=pa.int64()),
+            pa.array(ends.astype(np.int64), type=pa.int64()),
+            pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
+        ],
+        names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+    )
+
+    columns = {
+        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
+        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
+        pointer_field.field_name: pointer_struct,
+    }
+
+    # Zero-fill other pointer fields
+    for other_pf_name, other_pf in atlas._pointer_fields.items():
+        if other_pf_name == pointer_field.field_name:
+            continue
+        if other_pf.pointer_kind is PointerKind.SPARSE:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+            )
+        else:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "position"],
+            )
+
+    for col in schema_fields:
+        if col in obs_df.columns:
+            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
+
+    for col in schema_fields:
+        if col not in columns:
+            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
+
+    arrow_table = pa.table(columns, schema=arrow_schema)
+    atlas.cell_table.add(arrow_table)
+    return n_cells
 
 
 def write_feature_layout(
