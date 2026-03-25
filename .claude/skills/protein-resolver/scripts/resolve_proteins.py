@@ -23,7 +23,7 @@ import sys
 
 import pandas as pd
 
-from lancell.schema import make_uid
+from lancell.schema import make_stable_uid
 from lancell.standardization import (
     is_control_label,
     resolve_organisms,
@@ -180,7 +180,11 @@ def resolve_protein_csv(
         res is not None and res.resolved_value is not None
         for res in all_results
     ]
-    out["uid"] = [make_uid() for _ in range(len(out))]
+    out["uid"] = [
+        res.stable_uid if res is not None
+        else make_stable_uid("control", protein_aliases[i].lower())
+        for i, res in enumerate(all_results)
+    ]
 
     out.to_csv(output_path)
 

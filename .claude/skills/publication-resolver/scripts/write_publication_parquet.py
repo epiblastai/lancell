@@ -31,7 +31,7 @@ from typing import Union, get_args, get_origin
 import pandas as pd
 from pydantic_core import PydanticUndefined
 
-from lancell.schema import make_uid
+from lancell.schema import make_stable_uid
 from lancell.standardization import (
     fetch_geo_series,
     fetch_publication,
@@ -270,8 +270,8 @@ def write_publication_parquet(
     pub_dict = fetch_publication_metadata(resolved_pmid)
     text_data = fetch_publication_text(publication.pmid, publication.pmc_id)
 
-    # Generate UID
-    publication_uid = make_uid()
+    # Generate stable UID from PMID
+    publication_uid = make_stable_uid(str(resolved_pmid))
 
     outputs: dict[str, Path] = {}
 

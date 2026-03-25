@@ -23,7 +23,6 @@ import sys
 
 import pandas as pd
 
-from lancell.schema import make_uid
 from lancell.standardization import (
     detect_organism_from_ensembl_ids,
     is_placeholder_symbol,
@@ -267,7 +266,7 @@ def resolve_gene_csv(
         for res in all_results
     ]
     out["resolved"] = [res.resolved_value is not None for res in all_results]
-    out["uid"] = [make_uid() for _ in range(len(out))]
+    out["uid"] = [res.stable_uid for res in all_results]
 
     out.to_csv(output_path)
 

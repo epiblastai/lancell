@@ -35,12 +35,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from lancell.schema import make_stable_uid
 from lancell.standardization import (
     detect_control_labels,
     is_control_label,
     resolve_molecules,
 )
-from lancell.schema import make_uid
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -150,8 +150,17 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(f"WARNING: catalog column '{args.catalog_column}' not found", file=sys.stderr)
 
-    # Assign UIDs
-    resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
+    # Assign stable UIDs
+    uids = []
+    for _, row in raw_df.iterrows():
+        compound = row[compound_col]
+        if pd.isna(compound) or is_control_label(str(compound)):
+            uids.append(make_stable_uid("control", str(compound).lower()))
+        elif str(compound) in resolution_map and resolution_map[str(compound)].resolved_value is not None:
+            uids.append(resolution_map[str(compound)].stable_uid)
+        else:
+            uids.append(make_stable_uid("unresolved", str(compound)))
+    resolved_df["uid"] = uids
 
     output_path = output_dir / "SmallMolecule_resolved.csv"
     resolved_df.to_csv(output_path)

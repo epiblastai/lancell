@@ -54,6 +54,18 @@ def make_uid() -> str:
     return uuid.uuid4().hex[:16]
 
 
+_LANCELL_NS = uuid.UUID("b3e7a9f1-6c2d-4a8b-9f01-3d5e7a2b8c4f")
+
+
+def make_stable_uid(*identity_values: str) -> str:
+    """Deterministic 16-char hex UID from identity values.
+
+    Same inputs always produce the same UID. Used for entity deduplication
+    across datasets (genes, proteins, molecules, perturbations, publications).
+    """
+    return uuid.uuid5(_LANCELL_NS, "|".join(identity_values)).hex[:16]
+
+
 class LancellBaseSchema(LanceModel):
     """
     Base schema for all lancell datasets. The only requirements are a uid string

@@ -6,13 +6,18 @@ Every resolver returns structured dataclasses instead of raw dicts or bare strin
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import pandas as pd
+
+from lancell.schema import make_stable_uid
 
 
 @dataclass
 class Resolution:
     """Base result for any single resolution attempt."""
+
+    _identity_fields: ClassVar[tuple[str, ...]] = ()
 
     input_value: str
     resolved_value: str | None  # Canonical form, or None if failed
@@ -20,9 +25,26 @@ class Resolution:
     source: str  # Which API/ontology provided the resolution
     alternatives: list[str] = field(default_factory=list)
 
+    @property
+    def stable_uid(self) -> str:
+        """Deterministic UID derived from identity fields.
+
+        Falls back to hashing ("unresolved", input_value) when any identity
+        field is None, so re-runs produce the same UID for unresolved entries.
+        """
+        values = []
+        for f in self._identity_fields:
+            val = getattr(self, f)
+            if val is None:
+                return make_stable_uid("unresolved", self.input_value)
+            values.append(str(val))
+        return make_stable_uid(*values)
+
 
 @dataclass
 class GeneResolution(Resolution):
+    _identity_fields: ClassVar[tuple[str, ...]] = ("ensembl_gene_id", "organism")
+
     ensembl_gene_id: str | None = None
     symbol: str | None = None  # HGNC/MGI canonical symbol
     organism: str | None = None
@@ -31,6 +53,8 @@ class GeneResolution(Resolution):
 
 @dataclass
 class MoleculeResolution(Resolution):
+    _identity_fields: ClassVar[tuple[str, ...]] = ("pubchem_cid",)
+
     pubchem_cid: int | None = None
     canonical_smiles: str | None = None
     inchi_key: str | None = None
@@ -40,6 +64,8 @@ class MoleculeResolution(Resolution):
 
 @dataclass
 class ProteinResolution(Resolution):
+    _identity_fields: ClassVar[tuple[str, ...]] = ("uniprot_id", "organism")
+
     uniprot_id: str | None = None
     gene_name: str | None = None
     protein_name: str | None = None
@@ -50,6 +76,14 @@ class ProteinResolution(Resolution):
 
 @dataclass
 class GuideRnaResolution(Resolution):
+    _identity_fields: ClassVar[tuple[str, ...]] = (
+        "chromosome",
+        "target_start",
+        "target_end",
+        "target_strand",
+        "assembly",
+    )
+
     chromosome: str | None = None  # e.g. "chr17"
     target_start: int | None = None
     target_end: int | None = None

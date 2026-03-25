@@ -41,6 +41,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from lancell.schema import make_stable_uid
 from lancell.standardization import (
     classify_perturbation_method,
     detect_control_labels,
@@ -48,7 +49,6 @@ from lancell.standardization import (
     parse_combinatorial_perturbations,
     resolve_genes,
 )
-from lancell.schema import make_uid
 
 
 def _split_rows(raw_df: pd.DataFrame, split_column: str, delimiter: str) -> pd.DataFrame:
@@ -235,7 +235,17 @@ def main(argv: list[str] | None = None) -> None:
     if "reagent_id" not in resolved_df.columns:
         resolved_df["reagent_id"] = raw_df.index
 
-    resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
+    uids = []
+    for _, row in raw_df.iterrows():
+        gene = row[gene_col]
+        if pd.isna(gene) or gene in control_labels:
+            uids.append(make_stable_uid("control", str(gene).lower()))
+        elif gene in target_map and target_map[gene].resolved_value is not None:
+            res = target_map[gene]
+            uids.append(make_stable_uid(res.ensembl_gene_id, perturbation_type))
+        else:
+            uids.append(make_stable_uid("unresolved", str(gene)))
+    resolved_df["uid"] = uids
 
     output_path = output_dir / "GeneticPerturbationSchema_resolved.csv"
     resolved_df.to_csv(output_path)
