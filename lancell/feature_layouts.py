@@ -66,6 +66,16 @@ def build_feature_layout_df(
     if "global_feature_uid" not in var_df.columns:
         raise ValueError("var_df must have a 'global_feature_uid' column")
 
+    n_total = var_df.height
+    n_unique = var_df["global_feature_uid"].n_unique()
+    if n_unique != n_total:
+        n_dupes = n_total - n_unique
+        raise ValueError(
+            f"var_df has {n_dupes} duplicate global_feature_uid value(s) "
+            f"({n_total} rows, {n_unique} unique). "
+            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
+        )
+
     feature_uids = var_df["global_feature_uid"].to_list()
     n = len(feature_uids)
     layout_uid = compute_layout_uid(feature_uids)

@@ -1,7 +1,7 @@
-"""Convert chromatin accessibility fragments into a cells × ranges count matrix.
+"""Convert chromatin accessibility fragments into a cells x ranges count matrix.
 
 Given a set of genomic ranges (peaks, bins, tiles) and a
-:class:`~lancell_examples.multimodal_perturbation_atlas.interval_reconstruction.FragmentResult`,
+:class:`~lancell.fragments.reconstruction.FragmentResult`,
 produces a sparse count matrix where entry ``(i, j)`` is the number of
 fragments from cell *i* that overlap range *j*.
 
@@ -19,9 +19,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from lancell_examples.multimodal_perturbation_atlas.interval_reconstruction import (
-    FragmentResult,
-)
+from lancell.fragments.reconstruction import FragmentResult
 
 
 @dataclass(frozen=True)
@@ -151,7 +149,7 @@ class FragmentCounter:
     """Count fragments overlapping user-provided genomic ranges.
 
     Given a set of genomic ranges and a
-    :class:`~lancell_examples.multimodal_perturbation_atlas.interval_reconstruction.FragmentResult`,
+    :class:`~lancell.fragments.reconstruction.FragmentResult`,
     produces a sparse count matrix of shape ``(n_cells, n_ranges)``.
 
     Parameters
@@ -206,7 +204,7 @@ class FragmentCounter:
         ----------
         fragments
             Fragment data from
-            :meth:`~lancell_examples.multimodal_perturbation_atlas.interval_reconstruction.IntervalReconstructor.as_fragments`.
+            :meth:`~lancell.fragments.reconstruction.IntervalReconstructor.as_fragments`.
 
         Returns
         -------
