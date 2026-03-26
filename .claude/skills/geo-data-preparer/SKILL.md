@@ -96,6 +96,8 @@ Launch a subagent with `publication-resolver` skill to create `PublicationSchema
 
 The publication resolver produces validated parquet files with UIDs already assigned, following the same pattern as other resolvers. The `publication_uid` is included in `publication.json` for downstream reference.
 
+In some cases the GEO record does not have a clear publication reference. Do not guess at the publication, stop and ask the user to provide it directly.
+
 If you have questions about the data in later steps, the publication is a good place to find answers before asking the user.
 
 ### 5. Download and organize files by experiment

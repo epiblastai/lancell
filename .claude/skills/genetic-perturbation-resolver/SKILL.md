@@ -10,7 +10,7 @@ Resolve genetic perturbation targets and schema fields at the accession level: r
 Handles three input types that may co-exist in a single dataset:
 
 1. **Gene names/symbols** — Target gene names (e.g., "TP53", "BRCA1").
-2. **Guide RNA sequences** — Raw ~20bp guide sequences from CRISPR screens. Aligns via BLAT to get genomic coordinates, then annotates with overlapping genes and target context.
+2. **Guide RNA sequences** — Raw ~20bp guide sequences from CRISPR screens. Aligns via BLAT to get genomic coordinates, then annotates with overlapping genes and target context. 20bp is the minimum for BLAT resolution and generally works great for resolving guide RNAs. This is because guide RNAs are chosen to exactly match the reference genome and to be unique within it.
 3. **Genomic coordinates** — Pre-computed target regions (e.g., enhancer/promoter-targeting screens). Annotates with overlapping genes and target context without BLAT.
 
 ## Interface
@@ -138,10 +138,10 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 
 - **One perturbation per row.** Each accession-level row must represent exactly one reagent.
 - **Controls are not perturbations.** Control labels map to `None` in perturbation target fields and drive `is_negative_control` at the obs level.
-- **Do not guess required guide-level fields.** If the schema requires `guide_sequence`, coordinates, strand, or `target_context` and the data is missing, stop and ask the user unless they explicitly approve nulls.
+- **Do not guess required guide-level fields.** If the schema requires `guide_sequence`, coordinates, or strand and the data is missing, stop and ask the user unless they explicitly approve nulls.
 - **Use schema field names directly.** Do not introduce `validated_` prefixes or ad hoc column names.
 - **Resolver owns enrichment.** If a field can be filled from supplementary files, raw identifiers, publication text, or deterministic parsing, do that work here rather than assuming the preparer already did it.
-- **Every blank needs a reason.** In the final report, enumerate any schema fields left blank and justify why they could not be filled safely.
+- **Every blank needs a reason.** In the final report, enumerate any schema fields left blank and justify why they were not be filled.
 
 ## Resolution Workflow
 
@@ -204,7 +204,7 @@ report = resolve_guide_sequences(unique_guides, organism="human")
 print(f"Resolved: {report.resolved}/{report.total}, Ambiguous: {report.ambiguous}")
 ```
 
-Deduplicate guide sequences before BLAT-backed resolution because guides are reused across many cells and BLAT is rate-limited. After inferring coordinates or target context, spot-check 3-5 guides with `resolve_guide_sequences()`. For ~20 bp CRISPR guides, low BLAT resolution rates are expected and are not by themselves a data quality problem.
+Deduplicate guide sequences before BLAT-backed resolution because guides are reused across many cells and BLAT is rate-limited. After inferring coordinates or target context, spot-check 3-5 guides with `resolve_guide_sequences()`. 
 
 ### A8. Resolve by genomic coordinates (if applicable)
 
