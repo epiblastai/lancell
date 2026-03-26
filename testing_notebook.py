@@ -139,7 +139,7 @@ def test_full_workflow():
                 "gene_expression": GeneFeatureSchema,
                 "protein_abundance": FeatureBaseSchema,
             },
-            dataset_table_name="_datasets",
+            dataset_table_name="datasets",
             dataset_schema=DatasetRecord,
         )
 
@@ -260,7 +260,7 @@ def test_layer_name_required_for_sparse():
             cell_schema=TestCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
-            dataset_table_name="_datasets",
+            dataset_table_name="datasets",
             dataset_schema=DatasetRecord,
         )
 
@@ -308,7 +308,7 @@ def test_obs_validation_before_write():
             cell_schema=StrictCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
-            dataset_table_name="_datasets",
+            dataset_table_name="datasets",
             dataset_schema=DatasetRecord,
         )
 

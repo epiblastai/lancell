@@ -87,7 +87,7 @@ def dex_atlas(tmp_path):
         cell_schema=DexCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
-        dataset_table_name="_datasets",
+        dataset_table_name="datasets",
         dataset_schema=DatasetRecord,
     )
 
@@ -331,7 +331,7 @@ class TestDexMWUOnDensePath:
             cell_schema=DenseCellSchema,
             store=store,
             registry_schemas={"image_features": ImageFeatureSchema},
-            dataset_table_name="_datasets",
+            dataset_table_name="datasets",
             dataset_schema=DatasetRecord,
         )
 

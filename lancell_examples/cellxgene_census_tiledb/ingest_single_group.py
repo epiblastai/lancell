@@ -5,7 +5,7 @@ eliminating per-dataset partitioning overhead. This is the "regular" baseline
 for benchmarking against the ragged (per-dataset) layout in ``ingest.py``.
 
 Usage:
-    python -m examples.cellxgene_census_tiledb.ingest_single_group \
+    python -m lancell_examples.cellxgene_census_tiledb.ingest_single_group \
         --soma-path ~/datasets/mus_musculus \
         --atlas-dir /path/to/atlas_single \
         [--batch-size 50000] \
@@ -27,16 +27,16 @@ import polars as pl
 import pyarrow as pa
 import tiledbsoma
 
-from examples.cellxgene_census_tiledb.schema import (
-    CellObs,
-    CensusDatasetRecord,
-    GeneFeatureSpace,
-)
 from lancell.atlas import RaggedAtlas
 from lancell.codecs.bitpacking import BitpackingCodec
 from lancell.ingestion import add_csc
 from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields
 from lancell.schema import make_uid
+from lancell_examples.cellxgene_census_tiledb.schema import (
+    CellObs,
+    CensusDatasetRecord,
+    GeneFeatureSpace,
+)
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"

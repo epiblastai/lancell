@@ -49,7 +49,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
         cell_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
-        dataset_table_name="_datasets",
+        dataset_table_name="datasets",
         dataset_schema=DatasetRecord,
     )
 

@@ -316,6 +316,9 @@ class SparseCSRReconstructor:
         group_data: list[
             tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
         ] = []
+        # TODO: Can this be parallelized? Probably onlt the group_cells step, isn't there a groupby equivalent
+        # in polars? Applying a filter in each step is probably slower than groupby. Everything else in
+        # the loop should be quite fast.
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             starts = group_cells["_start"].to_numpy().astype(np.int64)
@@ -338,6 +341,7 @@ class SparseCSRReconstructor:
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
         obs_parts: list[pl.DataFrame] = []
 
+        # TODO: Can this be parallelized? Should consider pushing this pattern down to rust
         for (zg, group_cells, _, _, _, _), (index_result, layer_results) in zip(
             group_data, all_results, strict=True
         ):
@@ -486,6 +490,91 @@ class DenseReconstructor:
         return _assemble_anndata(
             atlas, pf.feature_space, joined_globals, obs_parts, output_keys, all_layers
         )
+
+    def as_array(
+        self,
+        atlas: "RaggedAtlas",
+        cells_pl: pl.DataFrame,
+        pf: PointerFieldInfo,
+        spec: ZarrGroupSpec,
+        array_name: str | None = None,
+    ) -> np.ndarray:
+        """Return raw dense data as a NumPy array preserving all dimensions.
+
+        Unlike :meth:`as_anndata`, this skips feature remapping, layer
+        handling, and AnnData assembly.  The result keeps the original
+        array dimensionality — e.g. ``(n_cells, C, H, W)`` for 4-D
+        image tiles.
+
+        Parameters
+        ----------
+        atlas:
+            The atlas to read from.
+        cells_pl:
+            Polars DataFrame of cell rows (must include zarr pointer columns).
+        pf:
+            Pointer field info for the feature space.
+        spec:
+            Zarr group spec for the feature space.
+        array_name:
+            Zarr array to read within each group.  Defaults to the first
+            entry in ``spec.required_arrays``.
+        """
+        if array_name is None:
+            if not spec.required_arrays:
+                raise ValueError(
+                    f"Spec for '{pf.feature_space}' has no required_arrays; "
+                    "pass array_name explicitly"
+                )
+            array_name = spec.required_arrays[0].array_name
+
+        cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
+
+        # Prepare per-group reads and discover per-cell shape
+        per_cell_shape: tuple[int, ...] | None = None
+        group_data: list[tuple[np.ndarray, np.ndarray, int, list[BatchAsyncArray]]] = []
+        offset = 0
+        for zg in groups:
+            group_cells = cells_pl.filter(pl.col("_zg") == zg)
+            positions = group_cells["_pos"].to_numpy().astype(np.int64)
+            gr = atlas._get_group_reader(zg, pf.feature_space)
+            reader = gr.get_array_reader(array_name)
+
+            shape_tail = tuple(reader.shape[1:])
+            if per_cell_shape is None:
+                per_cell_shape = shape_tail
+                dtype = reader._native_dtype
+            elif shape_tail != per_cell_shape:
+                raise ValueError(
+                    f"Shape mismatch across zarr groups for '{pf.feature_space}': "
+                    f"expected per-cell shape {per_cell_shape}, got {shape_tail} "
+                    f"in group '{zg}'"
+                )
+
+            starts = positions
+            ends = positions + 1
+            group_data.append((starts, ends, offset, [reader]))
+            offset += len(positions)
+
+        n_total_cells = offset
+        if per_cell_shape is None:
+            per_cell_shape = ()
+            dtype = np.float32
+
+        out = np.empty((n_total_cells, *per_cell_shape), dtype=dtype)
+        if n_total_cells == 0:
+            return out
+
+        all_results = _sync_gather(
+            [_read_dense_group(readers, starts, ends) for starts, ends, _, readers in group_data]
+        )
+
+        for (_, _, offset, _), group_results in zip(group_data, all_results, strict=True):
+            (flat_data, _) = group_results[0]
+            n_cells_group = flat_data.shape[0] // max(1, int(np.prod(per_cell_shape)))
+            out[offset : offset + n_cells_group] = flat_data.reshape(n_cells_group, *per_cell_shape)
+
+        return out
 
 
 def _prepare_csc_group(

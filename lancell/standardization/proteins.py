@@ -29,7 +29,16 @@ def _batch_lookup_proteins(uniprot_ids: list[str]) -> dict[str, dict]:
         df = (
             table.search()
             .where(f"uniprot_id IN ({in_clause})", prefilter=True)
-            .select(["uniprot_id", "protein_name", "gene_name", "organism"])
+            .select(
+                [
+                    "uniprot_id",
+                    "protein_name",
+                    "gene_name",
+                    "organism",
+                    "sequence",
+                    "sequence_length",
+                ]
+            )
             .to_polars()
         )
         frames.append(df)
@@ -151,6 +160,8 @@ def resolve_proteins(
             if prot:
                 res.protein_name = prot["protein_name"]
                 res.gene_name = prot["gene_name"]
+                res.sequence = prot["sequence"]
+                res.sequence_length = prot["sequence_length"]
 
     # Build final results list aligned with input order
     final_results: list[ProteinResolution] = []

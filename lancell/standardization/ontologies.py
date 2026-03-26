@@ -2,14 +2,14 @@
 
 Covers: cell_type (CL), tissue (UBERON), disease (MONDO), organism (NCBITaxon),
 assay (EFO), development_stage (HsapDv/MmusDv), ethnicity (HANCESTRO),
-sex (PATO), cell_line (CLO via OLS4).
+sex (PATO), cell_line (Cellosaurus).
 
 Strategy:
 1. Exact name match (case-insensitive) against ontology_terms table → confidence 1.0
 2. Synonym match (pipe-delimited, case-insensitive) → confidence 0.9
 3. No match → unresolved (confidence 0.0)
 
-Cell lines use OLS4 (CLO is OWL-only, not in the local DB).
+Cell lines use a local Cellosaurus table (cell_lines + cell_line_synonyms).
 """
 
 import functools
@@ -19,10 +19,12 @@ from enum import Enum
 import polars as pl
 
 from lancell.standardization.metadata_table import (
+    CELL_LINE_SYNONYMS_TABLE,
+    CELL_LINES_TABLE,
     ONTOLOGY_TERMS_TABLE,
     get_reference_db,
 )
-from lancell.standardization.types import OntologyResolution, ResolutionReport
+from lancell.standardization.types import CellLineResolution, OntologyResolution, ResolutionReport
 from lancell.util import sql_escape
 
 
@@ -54,7 +56,7 @@ _ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
 # Mapping from OntologyEntity → display name
 _ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
     OntologyEntity.CELL_TYPE: "Cell Ontology",
-    OntologyEntity.CELL_LINE: "CLO",
+    OntologyEntity.CELL_LINE: "Cellosaurus",
     OntologyEntity.TISSUE: "UBERON",
     OntologyEntity.DISEASE: "MONDO",
     OntologyEntity.ORGANISM: "NCBITaxon",
@@ -170,75 +172,151 @@ def _resolve_sex(value: str) -> OntologyResolution:
     )
 
 
-def _resolve_cell_lines(values: list[str]) -> list[OntologyResolution]:
-    """Resolve cell line names to CLO terms via OLS4.
+@functools.lru_cache(maxsize=1)
+def _load_cell_lines() -> pl.DataFrame:
+    """Load all cell lines from the reference DB. Cached."""
+    db = get_reference_db()
+    table = db.open_table(CELL_LINES_TABLE)
+    return (
+        table.search()
+        .select(
+            [
+                "cellosaurus_id",
+                "cell_line_name",
+                "species",
+                "ncbi_taxonomy_id",
+                "disease",
+                "sex",
+                "category",
+            ]
+        )
+        .to_polars()
+    )
 
-    CLO is OWL-only (no OBO download), so we query OLS4 on demand.
-    Results are cached by the OLS4 layer (30-day TTL).
 
-    Search results are filtered to CLO-prefixed terms only, since the CLO
-    ontology in OLS4 includes imported terms from CL and other ontologies.
+@functools.lru_cache(maxsize=1)
+def _build_cell_line_name_index() -> dict[str, str]:
+    """Build lowercased cell line name → cellosaurus_id index."""
+    df = _load_cell_lines()
+    index: dict[str, str] = {}
+    for row in df.iter_rows(named=True):
+        key = row["cell_line_name"].strip().lower()
+        if key not in index:
+            index[key] = row["cellosaurus_id"]
+    return index
+
+
+@functools.lru_cache(maxsize=1)
+def _build_cell_line_synonym_index() -> dict[str, str]:
+    """Build lowercased synonym → cellosaurus_id index (non-primary names only)."""
+    db = get_reference_db()
+    table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
+    df = (
+        table.search()
+        .where("is_primary_name = false", prefilter=True)
+        .select(["synonym", "cellosaurus_id"])
+        .to_polars()
+    )
+    index: dict[str, str] = {}
+    for row in df.iter_rows(named=True):
+        key = row["synonym"]  # already lowercased at ingestion
+        if key not in index:
+            index[key] = row["cellosaurus_id"]
+    return index
+
+
+@functools.lru_cache(maxsize=1)
+def _build_cell_line_record_lookup() -> dict[str, dict]:
+    """Build cellosaurus_id → row dict for fast metadata retrieval."""
+    df = _load_cell_lines()
+    return {row["cellosaurus_id"]: row for row in df.iter_rows(named=True)}
+
+
+def _make_cell_line_resolution(
+    input_value: str,
+    cellosaurus_id: str,
+    confidence: float,
+    source: str,
+    record_lookup: dict[str, dict],
+) -> CellLineResolution:
+    """Build a CellLineResolution from a matched cellosaurus_id."""
+    rec = record_lookup.get(cellosaurus_id, {})
+    return CellLineResolution(
+        input_value=input_value,
+        resolved_value=rec.get("cell_line_name"),
+        confidence=confidence,
+        source=source,
+        cellosaurus_id=cellosaurus_id,
+        cell_line_name=rec.get("cell_line_name"),
+        species=rec.get("species"),
+        disease=rec.get("disease"),
+        sex=rec.get("sex"),
+        category=rec.get("category"),
+    )
+
+
+def _resolve_cell_lines(values: list[str]) -> list[CellLineResolution]:
+    """Resolve cell line names against the local Cellosaurus reference DB.
+
+    Resolution cascade:
+    1. Exact name match (confidence 1.0)
+    2. Synonym match (confidence 0.9)
+    3. FTS fuzzy search (confidence 0.7)
+    4. Unresolved (confidence 0.0)
     """
-    from lancell.standardization.ols import search_ols
+    name_index = _build_cell_line_name_index()
+    synonym_index = _build_cell_line_synonym_index()
+    record_lookup = _build_cell_line_record_lookup()
 
-    results: list[OntologyResolution] = []
+    results: list[CellLineResolution] = []
     for val in values:
-        query = val.strip()
-        if not query:
+        key = val.strip().lower()
+
+        if not key:
             results.append(
-                OntologyResolution(
+                CellLineResolution(
                     input_value=val,
                     resolved_value=None,
                     confidence=0.0,
                     source="none",
-                    ontology_name="CLO",
                 )
             )
             continue
 
-        # Exact match
-        hits = search_ols(query, ontology="CLO", exact=True, rows=5)
-        clo_hits = [h for h in hits if h.obo_id.startswith("CLO:")]
-        if clo_hits:
-            term = clo_hits[0]
+        # Step 1: exact name match
+        if key in name_index:
             results.append(
-                OntologyResolution(
-                    input_value=val,
-                    resolved_value=term.label,
-                    confidence=1.0,
-                    source="ols4_clo",
-                    ontology_term_id=term.obo_id,
-                    ontology_name="CLO",
-                )
+                _make_cell_line_resolution(val, name_index[key], 1.0, "reference_db", record_lookup)
             )
             continue
 
-        # Fallback: fuzzy search
-        hits = search_ols(query, ontology="CLO", exact=False, rows=10)
-        clo_hits = [h for h in hits if h.obo_id.startswith("CLO:")]
-        if clo_hits:
-            term = clo_hits[0]
-            alternatives = [h.obo_id for h in clo_hits[1:]]
+        # Step 2: synonym match
+        if key in synonym_index:
             results.append(
-                OntologyResolution(
-                    input_value=val,
-                    resolved_value=term.label,
-                    confidence=0.8,
-                    source="ols4_clo",
-                    ontology_term_id=term.obo_id,
-                    ontology_name="CLO",
-                    alternatives=alternatives,
+                _make_cell_line_resolution(
+                    val, synonym_index[key], 0.9, "reference_db_synonym", record_lookup
                 )
             )
             continue
 
+        # Step 3: FTS fuzzy search
+        db = get_reference_db()
+        fts_table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
+        fts_results = fts_table.search(val.strip(), query_type="fts").limit(5).to_polars()
+        if not fts_results.is_empty():
+            top_id = fts_results.row(0, named=True)["cellosaurus_id"]
+            results.append(
+                _make_cell_line_resolution(val, top_id, 0.7, "reference_db_fts", record_lookup)
+            )
+            continue
+
+        # Step 4: unresolved
         results.append(
-            OntologyResolution(
+            CellLineResolution(
                 input_value=val,
                 resolved_value=None,
                 confidence=0.0,
                 source="none",
-                ontology_name="CLO",
             )
         )
 
@@ -397,7 +475,7 @@ def resolve_assays(values: list[str]) -> ResolutionReport:
 
 
 def resolve_cell_lines(values: list[str]) -> ResolutionReport:
-    """Resolve cell line names to CLO (Cell Line Ontology) terms via OLS4."""
+    """Resolve cell line names to Cellosaurus cell line records."""
     return resolve_ontology_terms(values, OntologyEntity.CELL_LINE)
 
 

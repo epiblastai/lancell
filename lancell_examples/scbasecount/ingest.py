@@ -1,7 +1,7 @@
 """Ingest a single scBaseCount h5ad file into a lancell ragged atlas.
 
 Usage:
-    python -m examples.scbasecount.ingest \
+    python -m lancell_examples.scbasecount.ingest \
         --h5ad /path/to/SRX12345.h5ad \
         --atlas-dir ./atlas/scbasecount \
         --sample-metadata ./data/scbasecount/sample_metadata.parquet \
@@ -19,16 +19,16 @@ import polars as pl
 import pyarrow as pa
 import scipy.sparse as sp
 
-from examples.scbasecount.schema import (
-    CellObs,
-    GeneFeatureSpace,
-    ScBasecountDatasetRecord,
-)
 from lancell.atlas import RaggedAtlas
 from lancell.codecs.bitpacking import BitpackingCodec
 from lancell.ingestion import add_csc
 from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields
 from lancell.schema import make_uid
+from lancell_examples.scbasecount.schema import (
+    CellObs,
+    GeneFeatureSpace,
+    ScBasecountDatasetRecord,
+)
 
 FEATURE_SPACE = "genefull_expression"
 CHUNK_SIZE = 40_960

@@ -1,10 +1,13 @@
 """LanceModel schemas and DB helpers for self-hosted reference databases.
 
-Eight tables: organisms, genomic features, genomic feature aliases, ontology terms,
-compounds, compound synonyms, proteins, and protein aliases.
-Stored in a single LanceDB at ``~/.cache/lancell/reference_db/``.
+Nine tables: organisms, genomic features, genomic feature aliases, ontology terms,
+compounds, compound synonyms, proteins, protein aliases, and guide RNAs.
+Stored in a single LanceDB at ``~/.cache/lancell/reference_db/`` by default,
+or at the path specified by the ``LANCELL_REFERENCE_DB_PATH`` environment
+variable when it is set.
 """
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -20,8 +23,15 @@ COMPOUNDS_TABLE = "compounds"
 COMPOUND_SYNONYMS_TABLE = "compound_synonyms"
 PROTEINS_TABLE = "proteins"
 PROTEIN_ALIASES_TABLE = "protein_aliases"
+GUIDE_RNAS_TABLE = "guide_rnas"
+CELL_LINES_TABLE = "cell_lines"
+CELL_LINE_SYNONYMS_TABLE = "cell_line_synonyms"
 
-DEFAULT_REFERENCE_DB_PATH = Path.home() / ".cache" / "lancell" / "reference_db"
+REFERENCE_DB_PATH_ENV_VAR = "LANCELL_ONTOLOGY_DB_PATH"
+DEFAULT_REFERENCE_DB_PATH = os.environ.get(
+    REFERENCE_DB_PATH_ENV_VAR,
+    str(Path.home() / ".cache" / "lancell" / "reference_db"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +229,11 @@ class ProteinRecord(LanceModel):
         Normalized scientific name, e.g. ``"homo_sapiens"``.
     ncbi_taxonomy_id:
         From OX line, e.g. ``9606`` for human.
+    sequence:
+        Amino acid sequence from the SQ block. ``None`` if not
+        parsed (e.g. taxonomy-filtered entries).
+    sequence_length:
+        Length of the amino acid sequence in residues.
     """
 
     uniprot_id: str
@@ -226,6 +241,8 @@ class ProteinRecord(LanceModel):
     gene_name: str | None = None
     organism: str
     ncbi_taxonomy_id: int
+    sequence: str | None = None
+    sequence_length: int | None = None
 
 
 class ProteinAliasRecord(LanceModel):
@@ -257,6 +274,124 @@ class ProteinAliasRecord(LanceModel):
     uniprot_id: str
     organism: str
     is_canonical: bool
+    source: str
+
+
+class GuideRnaRecord(LanceModel):
+    """Cached guide RNA resolution result.
+
+    One row per unique (guide_sequence, organism) pair. Populated
+    lazily as guide sequences are resolved via BLAT + Ensembl.
+
+    Parameters
+    ----------
+    guide_sequence:
+        Uppercase DNA sequence (typically 20bp). Lookup key.
+    organism:
+        Scientific name FK (e.g., ``"homo_sapiens"``). Lookup key.
+    chromosome:
+        BLAT-aligned chromosome, e.g. ``"chr17"``.
+    target_start:
+        Genomic start coordinate.
+    target_end:
+        Genomic end coordinate.
+    target_strand:
+        ``"+"`` or ``"-"``.
+    intended_gene_name:
+        Symbol of the closest protein-coding gene.
+    intended_ensembl_gene_id:
+        Ensembl gene ID of the intended gene.
+    target_context:
+        Where the guide lands relative to gene structure.
+    assembly:
+        Genome assembly, e.g. ``"hg38"``, ``"mm39"``.
+    blat_pct_match:
+        BLAT alignment quality percentage (0–100).
+    confidence:
+        Resolution confidence (1.0=single gene, 0.9=multiple,
+        0.5=no gene, 0.0=failed).
+    resolved_value:
+        Gene name or locus string, ``None`` if unresolved.
+    alternatives:
+        Pipe-delimited alternative overlapping gene names.
+    """
+
+    guide_sequence: str
+    organism: str
+    chromosome: str | None = None
+    target_start: int | None = None
+    target_end: int | None = None
+    target_strand: str | None = None
+    intended_gene_name: str | None = None
+    intended_ensembl_gene_id: str | None = None
+    target_context: str | None = None
+    assembly: str | None = None
+    blat_pct_match: float | None = None
+    confidence: float = 0.0
+    resolved_value: str | None = None
+    alternatives: str | None = None
+
+
+class CellLineRecord(LanceModel):
+    """One row per Cellosaurus cell line entry.
+
+    Parameters
+    ----------
+    cellosaurus_id:
+        Primary accession, e.g. ``"CVCL_0030"`` for HeLa.
+    cell_line_name:
+        Cell line name from the ID line, e.g. ``"HeLa"``.
+    species:
+        Species name from the OX line, e.g. ``"Homo sapiens"``.
+    ncbi_taxonomy_id:
+        NCBI Taxonomy ID from the OX line, e.g. ``9606``.
+    disease:
+        Disease name from the DI line, e.g. ``"Cervical adenocarcinoma"``.
+    sex:
+        Sex from the SX line, e.g. ``"Female"``.
+    category:
+        Cell line category from the CA line,
+        e.g. ``"Cancer cell line"``, ``"Hybridoma"``.
+    cross_references:
+        Pipe-delimited cross-references from DR lines,
+        e.g. ``"BTO:BTO:0000567 | CLO:CLO_0003684 | ATCC:CCL-2"``.
+    """
+
+    cellosaurus_id: str
+    cell_line_name: str
+    species: str | None = None
+    ncbi_taxonomy_id: int | None = None
+    disease: str | None = None
+    sex: str | None = None
+    category: str | None = None
+    cross_references: str | None = None
+
+
+class CellLineSynonymRecord(LanceModel):
+    """Flattened synonym table for fast cell line name lookup.
+
+    The ``synonym`` column is lowercased at ingestion time so that lookups
+    can use a case-insensitive exact match.
+
+    Parameters
+    ----------
+    synonym:
+        Lowercased synonym string for case-insensitive exact match.
+    synonym_original:
+        Original casing of the synonym.
+    cellosaurus_id:
+        FK to ``CellLineRecord.cellosaurus_id``.
+    is_primary_name:
+        ``True`` if this synonym is the cell line name from the ID line.
+    source:
+        Origin of the synonym: ``"name"``, ``"synonym"``, or
+        ``"secondary_accession"``.
+    """
+
+    synonym: str
+    synonym_original: str
+    cellosaurus_id: str
+    is_primary_name: bool
     source: str
 
 

@@ -193,7 +193,7 @@ class RaggedAtlas:
         db_uri: str,
         cell_table_name: str,
         cell_schema: type[LancellBaseSchema] | None = None,
-        dataset_table_name: str = "_datasets",
+        dataset_table_name: str = "datasets",
         *,
         store: obstore.store.ObjectStore,
         registry_tables: dict[str, str] | None = None,
@@ -232,7 +232,12 @@ class RaggedAtlas:
                 if not datasets_df.is_empty()
                 else []
             )
-            registry_tables = {fs: f"{fs}_registry" for fs in feature_spaces}
+            # Not all feature spaces are guaranteed to have registries, only
+            # load the ones that do
+            all_tables = set(db.table_names())
+            registry_tables = {
+                fs: f"{fs}_registry" for fs in feature_spaces if f"{fs}_registry" in all_tables
+            }
 
         resolved_registries: dict[str, lancedb.table.Table] = {}
         for fs, table_name in registry_tables.items():

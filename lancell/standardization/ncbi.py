@@ -1,7 +1,8 @@
-"""NCBI metadata fetching — GEO, BioSample, BioProject.
+"""NCBI metadata fetching — GEO, BioSample, BioProject, PubMed, PMC.
 
-Fetches raw metadata from NCBI E-utilities and GEO SOFT files.
-Resolution through ontology resolvers is the caller's responsibility.
+Fetches raw metadata from NCBI E-utilities, GEO SOFT files, PubMed,
+and PMC Open Access. Resolution through ontology resolvers is the
+caller's responsibility.
 
 Rate limiting: 10 req/s with NCBI_API_KEY, 3 req/s without.
 """
@@ -10,7 +11,8 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from xml.etree import ElementTree
 
 import requests
@@ -92,6 +94,37 @@ class BioProjectMetadata:
     organism: str | None
     data_type: str | None
     scope: str | None
+
+
+@dataclass
+class PublicationMetadata:
+    """Metadata for a single publication from PubMed."""
+
+    pmid: int
+    doi: str | None
+    title: str
+    journal: str | None
+    publication_date: datetime | None
+    authors: list[str] = field(default_factory=list)
+    pmc_id: str | None = None
+
+
+@dataclass
+class PublicationSection:
+    """A single section from a publication's full text or abstract."""
+
+    section_title: str | None
+    section_text: str
+
+
+@dataclass
+class PublicationFullText:
+    """Full text of a publication, broken into sections."""
+
+    pmid: int
+    pmc_id: str | None
+    sections: list[PublicationSection]
+    source: str  # "pmc" or "abstract_only"
 
 
 # ---------------------------------------------------------------------------
@@ -534,3 +567,399 @@ def fetch_geo_biosample_attrs(gsm_accession: str) -> dict[str, str]:
 
     bs = fetch_biosample(biosample_acc)
     return bs.attributes
+
+
+# ---------------------------------------------------------------------------
+# Publication helpers (private)
+# ---------------------------------------------------------------------------
+
+_PMC_ID_CONVERTER = "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/"
+
+
+def _detect_identifier_type(identifier: str) -> str:
+    """Classify a publication identifier as 'pmid', 'doi', or 'title'."""
+    cleaned = identifier.strip()
+    if cleaned.startswith("PMID:"):
+        return "pmid"
+    if cleaned.isdigit():
+        return "pmid"
+    if cleaned.startswith("10.") or "/10." in cleaned:
+        return "doi"
+    if cleaned.lower().startswith("doi:"):
+        return "doi"
+    return "title"
+
+
+def _search_pmid_by_doi(doi: str) -> int | None:
+    """Search PubMed for a DOI and return the PMID."""
+    doi = doi.strip().removeprefix("doi:").removeprefix("DOI:").strip()
+    resp = _entrez_get(
+        "esearch.fcgi",
+        _entrez_params(db="pubmed", term=f"{doi}[DOI]", retmode="json", retmax="1"),
+    )
+    id_list = resp.json().get("esearchresult", {}).get("idlist", [])
+    if id_list:
+        return int(id_list[0])
+    return None
+
+
+def _search_pmid_by_title(title: str) -> int | None:
+    """Search PubMed by title and return the top-ranked PMID."""
+    # Try exact title field search first
+    resp = _entrez_get(
+        "esearch.fcgi",
+        _entrez_params(db="pubmed", term=f"{title}[Title]", retmode="json", retmax="1"),
+    )
+    id_list = resp.json().get("esearchresult", {}).get("idlist", [])
+    if id_list:
+        return int(id_list[0])
+
+    # Fall back to broader search without field tag
+    resp = _entrez_get(
+        "esearch.fcgi",
+        _entrez_params(db="pubmed", term=title, retmode="json", retmax="1"),
+    )
+    id_list = resp.json().get("esearchresult", {}).get("idlist", [])
+    if id_list:
+        return int(id_list[0])
+
+    return None
+
+
+def _parse_pubmed_article(xml_text: str) -> PublicationMetadata:
+    """Parse PubMed efetch XML into PublicationMetadata."""
+    root = ElementTree.fromstring(xml_text)
+
+    article = root.find(".//PubmedArticle")
+    if article is None:
+        raise ValueError("No PubmedArticle element found in XML response")
+
+    # PMID
+    pmid_elem = article.find(".//MedlineCitation/PMID")
+    if pmid_elem is None or not pmid_elem.text:
+        raise ValueError("No PMID found in PubMed XML")
+    pmid = int(pmid_elem.text)
+
+    # DOI and PMC ID from ArticleIdList
+    doi = None
+    pmc_id = None
+    for aid in article.findall(".//PubmedData/ArticleIdList/ArticleId"):
+        id_type = aid.get("IdType", "")
+        if id_type == "doi" and aid.text:
+            doi = aid.text
+        elif id_type == "pmc" and aid.text:
+            pmc_id = aid.text
+
+    # Title
+    title_elem = article.find(".//Article/ArticleTitle")
+    title = "".join(title_elem.itertext()).strip() if title_elem is not None else ""
+
+    # Journal
+    journal_elem = article.find(".//Article/Journal/Title")
+    if journal_elem is None or not journal_elem.text:
+        journal_elem = article.find(".//MedlineJournalInfo/MedlineTA")
+    journal = journal_elem.text.strip() if journal_elem is not None and journal_elem.text else None
+
+    # Publication date
+    publication_date = _parse_pubmed_date(article)
+
+    # Authors
+    authors: list[str] = []
+    for author in article.findall(".//Article/AuthorList/Author"):
+        last = author.find("LastName")
+        fore = author.find("ForeName")
+        if last is not None and last.text:
+            name = last.text
+            if fore is not None and fore.text:
+                name = f"{fore.text} {last.text}"
+            authors.append(name)
+        else:
+            collective = author.find("CollectiveName")
+            if collective is not None and collective.text:
+                authors.append(collective.text)
+
+    return PublicationMetadata(
+        pmid=pmid,
+        doi=doi,
+        title=title,
+        journal=journal,
+        publication_date=publication_date,
+        authors=authors,
+        pmc_id=pmc_id,
+    )
+
+
+def _parse_pubmed_date(article: ElementTree.Element) -> datetime | None:
+    """Extract publication date from a PubMed article element."""
+    # Try ArticleDate first (electronic publication date)
+    for date_elem in article.findall(".//Article/ArticleDate"):
+        year = date_elem.find("Year")
+        month = date_elem.find("Month")
+        day = date_elem.find("Day")
+        if year is not None and year.text:
+            return _build_date(year.text, month, day)
+
+    # Fall back to Journal PubDate
+    pubdate = article.find(".//Article/Journal/JournalIssue/PubDate")
+    if pubdate is not None:
+        year = pubdate.find("Year")
+        month = pubdate.find("Month")
+        day = pubdate.find("Day")
+        if year is not None and year.text:
+            return _build_date(year.text, month, day)
+        # Some articles only have MedlineDate
+        medline_date = pubdate.find("MedlineDate")
+        if medline_date is not None and medline_date.text:
+            # e.g. "2020 Jan-Feb" or "2020 Spring"
+            match = re.match(r"(\d{4})", medline_date.text)
+            if match:
+                return datetime(int(match.group(1)), 1, 1)
+
+    return None
+
+
+_MONTH_MAP: dict[str, int] = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def _build_date(
+    year_str: str,
+    month_elem: ElementTree.Element | None,
+    day_elem: ElementTree.Element | None,
+) -> datetime:
+    """Build a datetime from year/month/day elements."""
+    year = int(year_str)
+    month = 1
+    day = 1
+
+    if month_elem is not None and month_elem.text:
+        m = month_elem.text.strip()
+        if m.isdigit():
+            month = int(m)
+        else:
+            month = _MONTH_MAP.get(m.lower()[:3], 1)
+
+    if day_elem is not None and day_elem.text and day_elem.text.strip().isdigit():
+        day = int(day_elem.text.strip())
+
+    return datetime(year, month, day)
+
+
+@rate_limited("ncbi", max_per_second=_NCBI_RATE)
+def _convert_pmid_to_pmcid(pmid: int) -> str | None:
+    """Convert PMID to PMC ID via the PMC ID converter API."""
+    resp = requests.get(
+        _PMC_ID_CONVERTER,
+        params={"ids": str(pmid), "format": "json"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    records = data.get("records", [])
+    if records and records[0].get("pmcid"):
+        return records[0]["pmcid"]
+    return None
+
+
+def _fetch_pmc_sections(pmc_id: str) -> list[PublicationSection]:
+    """Fetch full text from PMC and parse into sections."""
+    # Strip "PMC" prefix for the API call
+    numeric_id = pmc_id.removeprefix("PMC")
+    resp = _entrez_get(
+        "efetch.fcgi",
+        _entrez_params(db="pmc", id=numeric_id, rettype="xml", retmode="xml"),
+    )
+
+    root = ElementTree.fromstring(resp.text)
+    body = root.find(".//body")
+    if body is None:
+        return []
+
+    sections: list[PublicationSection] = []
+    _walk_sections(body, parent_title=None, sections=sections)
+    return sections
+
+
+def _walk_sections(
+    elem: ElementTree.Element,
+    parent_title: str | None,
+    sections: list[PublicationSection],
+) -> None:
+    """Recursively walk <sec> elements and collect sections."""
+    for sec in elem.findall("sec"):
+        title_elem = sec.find("title")
+        section_title = (
+            title_elem.text.strip() if title_elem is not None and title_elem.text else None
+        )
+
+        if parent_title and section_title:
+            section_title = f"{parent_title} > {section_title}"
+        elif parent_title:
+            section_title = parent_title
+
+        # Collect paragraph text from direct <p> children
+        paragraphs: list[str] = []
+        for p in sec.findall("p"):
+            text = "".join(p.itertext()).strip()
+            if text:
+                paragraphs.append(text)
+
+        if paragraphs:
+            sections.append(
+                PublicationSection(
+                    section_title=section_title,
+                    section_text="\n\n".join(paragraphs),
+                )
+            )
+
+        # Recurse into nested <sec> elements
+        _walk_sections(sec, parent_title=section_title, sections=sections)
+
+
+def _extract_abstract_sections(xml_text: str) -> list[PublicationSection]:
+    """Extract abstract sections from PubMed efetch XML."""
+    root = ElementTree.fromstring(xml_text)
+
+    sections: list[PublicationSection] = []
+
+    # Handle structured abstracts with labeled sections
+    abstract_texts = root.findall(".//Abstract/AbstractText")
+    if abstract_texts:
+        for at in abstract_texts:
+            label = at.get("Label")
+            text = "".join(at.itertext()).strip()
+            if text:
+                section_title = label if label else "Abstract"
+                sections.append(
+                    PublicationSection(
+                        section_title=section_title,
+                        section_text=text,
+                    )
+                )
+    else:
+        # Try unstructured abstract
+        abstract_elem = root.find(".//Abstract")
+        if abstract_elem is not None:
+            text = "".join(abstract_elem.itertext()).strip()
+            if text:
+                sections.append(
+                    PublicationSection(
+                        section_title="Abstract",
+                        section_text=text,
+                    )
+                )
+
+    return sections
+
+
+# ---------------------------------------------------------------------------
+# Publication API (public)
+# ---------------------------------------------------------------------------
+
+
+def fetch_publication(identifier: str) -> PublicationMetadata:
+    """Fetch publication metadata from PubMed.
+
+    Accepts a PMID (numeric string), DOI, or paper title.
+    Auto-detects the identifier type and resolves to a PubMed record.
+
+    Raises ValueError if the identifier cannot be resolved.
+    """
+    id_type = _detect_identifier_type(identifier)
+
+    if id_type == "pmid":
+        pmid_str = identifier.strip().removeprefix("PMID:").strip()
+        pmid = int(pmid_str)
+    elif id_type == "doi":
+        pmid = _search_pmid_by_doi(identifier)
+        if pmid is None:
+            raise ValueError(
+                f"Could not find PubMed record for DOI: {identifier}. "
+                "The paper may not be indexed in PubMed yet."
+            )
+    else:
+        pmid = _search_pmid_by_title(identifier)
+        if pmid is None:
+            raise ValueError(
+                f"Could not find PubMed record for title: {identifier!r}. "
+                "Try searching with a more specific title or use a PMID/DOI instead."
+            )
+
+    # Fetch full PubMed record
+    resp = _entrez_get(
+        "efetch.fcgi",
+        _entrez_params(db="pubmed", id=str(pmid), rettype="xml", retmode="xml"),
+    )
+    pub = _parse_pubmed_article(resp.text)
+
+    # If no PMC ID from PubMed, try the converter API
+    if pub.pmc_id is None:
+        pub.pmc_id = _convert_pmid_to_pmcid(pmid)
+
+    return pub
+
+
+def fetch_publication_text(pmid: int, pmc_id: str | None = None) -> PublicationFullText:
+    """Fetch full text sections for a publication.
+
+    Tries PMC full text first (if pmc_id is available), then falls back
+    to the PubMed abstract.
+    """
+    # Try PMC full text
+    if pmc_id:
+        sections = _fetch_pmc_sections(pmc_id)
+        if sections:
+            return PublicationFullText(pmid=pmid, pmc_id=pmc_id, sections=sections, source="pmc")
+
+    # Fall back to abstract from PubMed
+    resp = _entrez_get(
+        "efetch.fcgi",
+        _entrez_params(db="pubmed", id=str(pmid), rettype="xml", retmode="xml"),
+    )
+    sections = _extract_abstract_sections(resp.text)
+    return PublicationFullText(pmid=pmid, pmc_id=pmc_id, sections=sections, source="abstract_only")
+
+
+def search_pubmed_by_title(title: str) -> int | None:
+    """Search PubMed by paper title and return the PMID, or None."""
+    return _search_pmid_by_title(title)
+
+
+def fetch_publication_metadata(pmid: str | int) -> dict:
+    """Fetch publication metadata as a dict (backward-compatible).
+
+    Returns a dict with keys: pmid, doi, title, journal, publication_date,
+    full_text. The full_text field concatenates all sections with headers.
+    """
+    pub = fetch_publication(str(pmid))
+    text_data = fetch_publication_text(pub.pmid, pub.pmc_id)
+
+    # Build full_text string from sections
+    parts: list[str] = []
+    for section in text_data.sections:
+        if section.section_title:
+            parts.append(f"## {section.section_title}\n\n{section.section_text}")
+        else:
+            parts.append(section.section_text)
+    full_text = "\n\n".join(parts)
+
+    return {
+        "pmid": pub.pmid,
+        "doi": pub.doi,
+        "title": pub.title,
+        "journal": pub.journal,
+        "publication_date": (pub.publication_date.isoformat() if pub.publication_date else None),
+        "full_text": full_text,
+    }

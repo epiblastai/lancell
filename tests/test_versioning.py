@@ -56,7 +56,7 @@ def _make_atlas(tmp_path, store) -> RaggedAtlas:
         cell_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
-        dataset_table_name="_datasets",
+        dataset_table_name="datasets",
         dataset_schema=DatasetRecord,
     )
     gene_uids = [f"gene_{i}" for i in range(10)]
@@ -150,7 +150,7 @@ class TestSnapshot:
                 db_uri=str(tmp_path / "atlas.lancedb"),
                 cell_table_name="cells",
                 cell_schema=TestCellSchema,
-                dataset_table_name="_datasets",
+                dataset_table_name="datasets",
                 store=store,
                 registry_tables={"gene_expression": "gene_expression_registry"},
                 version_table_name="nonexistent_versions",
@@ -165,7 +165,7 @@ class TestSnapshot:
             cell_schema=TestCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
-            dataset_table_name="_datasets",
+            dataset_table_name="datasets",
             dataset_schema=DatasetRecord,
         )
         # Register features but deliberately skip reindex_registry
@@ -550,7 +550,7 @@ class TestBackwardCompat:
                 db_uri=str(tmp_path / "atlas.lancedb"),
                 cell_table_name="cells",
                 cell_schema=TestCellSchema,
-                dataset_table_name="_datasets",
+                dataset_table_name="datasets",
                 store=store,
                 registry_tables={"gene_expression": "gene_expression_registry"},
                 version_table_name="nonexistent_versions",

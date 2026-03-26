@@ -75,7 +75,7 @@ def two_group_atlas(tmp_path):
         cell_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
-        dataset_table_name="_datasets",
+        dataset_table_name="datasets",
         dataset_schema=DatasetRecord,
     )
 
@@ -133,7 +133,7 @@ def single_group_atlas(tmp_path):
         cell_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
-        dataset_table_name="_datasets",
+        dataset_table_name="datasets",
         dataset_schema=DatasetRecord,
     )
 

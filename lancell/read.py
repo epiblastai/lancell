@@ -95,6 +95,20 @@ async def _read_dense_group(
     return list(await asyncio.gather(*coros))
 
 
+async def _read_parallel_arrays(
+    readers: list[BatchAsyncArray],
+    starts: np.ndarray,
+    ends: np.ndarray,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Read N arrays concurrently with shared start/end ranges.
+
+    Returns [(flat_data, lengths), ...] for each reader.
+    Unlike :func:`_read_sparse_group`, does not assume a 1-index + N-layers
+    structure — all arrays are treated symmetrically.
+    """
+    return list(await asyncio.gather(*(r.read_ranges(starts, ends) for r in readers)))
+
+
 def _sync_gather(coroutines: list) -> list:
     """Run coroutines concurrently on a zarr-managed event loop and return results."""
 

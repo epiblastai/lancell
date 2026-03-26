@@ -1,7 +1,10 @@
 import datetime
 import uuid
 from types import UnionType
-from typing import Union, get_args, get_origin
+from typing import TYPE_CHECKING, Union, get_args, get_origin
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
@@ -51,6 +54,18 @@ def make_uid() -> str:
     return uuid.uuid4().hex[:16]
 
 
+_LANCELL_NS = uuid.UUID("b3e7a9f1-6c2d-4a8b-9f01-3d5e7a2b8c4f")
+
+
+def make_stable_uid(*identity_values: str) -> str:
+    """Deterministic 16-char hex UID from identity values.
+
+    Same inputs always produce the same UID. Used for entity deduplication
+    across datasets (genes, proteins, molecules, perturbations, publications).
+    """
+    return uuid.uuid5(_LANCELL_NS, "|".join(identity_values)).hex[:16]
+
+
 class LancellBaseSchema(LanceModel):
     """
     Base schema for all lancell datasets. The only requirements are a uid string
@@ -60,6 +75,15 @@ class LancellBaseSchema(LanceModel):
 
     uid: str = Field(default_factory=make_uid)
     dataset_uid: str = ""
+
+    @classmethod
+    def compute_auto_fields(cls, obs_df: "pd.DataFrame") -> "pd.DataFrame":
+        """Compute auto-generated fields on an obs DataFrame.
+
+        Override in subclasses to populate fields that are derived from other columns.
+        Must return the DataFrame (may modify in-place).
+        """
+        return obs_df
 
     def __init_subclass__(cls, **kwargs):
         """Class-definition-time: subclass must declare at least one pointer field."""

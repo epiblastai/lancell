@@ -23,6 +23,23 @@ from lancell.util import sql_escape
 
 _ENSEMBL_ID_RE = re.compile(r"^ENS[A-Z]*G\d+(\.\d+)?$")
 
+# Accession-based placeholder symbols assigned by GENCODE (e.g., AC134879.3, AL590822.2)
+_ACCESSION_PLACEHOLDER_RE = re.compile(r"^[A-Z]{2}\d{6}\.\d+$")
+
+# Riken clone symbols from mouse datasets (e.g., 1700049J03Rik, 2410002F23Rik)
+_RIKEN_CLONE_RE = re.compile(r"^\d+[A-Z]\d+Rik$")
+
+
+def is_placeholder_symbol(symbol: str) -> bool:
+    """Check if a gene symbol is an accession-based placeholder or Riken clone.
+
+    These are provisional identifiers assigned by GENCODE or RIKEN to genes
+    that lack a proper HGNC/MGI symbol — typically lncRNAs, pseudogenes, and
+    antisense RNAs. They are valid identifiers but often fail resolution
+    against canonical gene databases.
+    """
+    return bool(_ACCESSION_PLACEHOLDER_RE.match(symbol) or _RIKEN_CLONE_RE.match(symbol))
+
 
 # ---------------------------------------------------------------------------
 # Organism cache

@@ -3,11 +3,22 @@
 No external API calls — pure parsing and classification logic.
 """
 
-from __future__ import annotations
-
 import re
+from enum import Enum
 
-from examples.multimodal_perturbation_atlas.schema import GeneticPerturbationType
+
+class GeneticPerturbationType(str, Enum):
+    """The class of genetic perturbation reagent."""
+
+    CRISPR_KO = "CRISPRko"
+    CRISPR_I = "CRISPRi"
+    CRISPR_A = "CRISPRa"
+    SI_RNA = "siRNA"
+    SH_RNA = "shRNA"
+    ASO = "ASO"
+    OVEREXPRESSION = "overexpression"
+    OTHER = "other"
+
 
 # ---------------------------------------------------------------------------
 # Control label detection
