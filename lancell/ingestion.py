@@ -33,6 +33,36 @@ _CHUNKS_PER_SHARD = 1024
 _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
 
 
+def _check_var_no_duplicate_uids(var: pd.DataFrame) -> None:
+    """Raise if adata.var has duplicate global_feature_uid values."""
+    if "global_feature_uid" not in var.columns:
+        return
+    n_total = len(var)
+    n_unique = var["global_feature_uid"].nunique()
+    if n_unique != n_total:
+        n_dupes = n_total - n_unique
+        raise ValueError(
+            f"adata.var has {n_dupes} duplicate global_feature_uid value(s) "
+            f"({n_total} rows, {n_unique} unique). "
+            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
+        )
+
+
+def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
+    """Raise if a polars var DataFrame has duplicate global_feature_uid values."""
+    if "global_feature_uid" not in var_df.columns:
+        return
+    n_total = var_df.height
+    n_unique = var_df["global_feature_uid"].n_unique()
+    if n_unique != n_total:
+        n_dupes = n_total - n_unique
+        raise ValueError(
+            f"var_df has {n_dupes} duplicate global_feature_uid value(s) "
+            f"({n_total} rows, {n_unique} unique). "
+            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
+        )
+
+
 def _is_backed_csr(adata: ad.AnnData) -> bool:
     """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
     import h5py
@@ -305,6 +335,9 @@ def add_anndata_batch(
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
+    if spec.has_var_df:
+        _check_var_no_duplicate_uids(adata.var)
+
     pointer_field: PointerFieldInfo | None = None
     for pf in atlas._pointer_fields.values():
         if pf.feature_space == feature_space:
@@ -574,6 +607,8 @@ def add_coo_batch(
     if "global_feature_uid" not in var_df.columns:
         raise ValueError("var_df must have a 'global_feature_uid' column")
 
+    _check_var_no_duplicate_uids_pl(var_df)
+
     pointer_field: PointerFieldInfo | None = None
     for pf in atlas._pointer_fields.values():
         if pf.feature_space == feature_space:
@@ -600,10 +635,6 @@ def add_coo_batch(
     # -----------------------------------------------------------------------
     # Pass 1: Count nonzeros per cell using polars streaming aggregation
     # -----------------------------------------------------------------------
-    import time
-
-    print(f"Pass 1: counting nonzeros in {coo_path.name}...", flush=True)
-    t0 = time.monotonic()
     counts_df = (
         pl.scan_csv(coo_path, has_header=False, separator=separator)
         .select(pl.col(cell_col_name))
@@ -611,7 +642,6 @@ def add_coo_batch(
         .agg(pl.len().alias("count"))
         .collect(streaming=True)
     )
-    t1 = time.monotonic()
 
     cell_nnz = np.zeros(n_cells, dtype=np.int64)
     cell_indices = counts_df[cell_col_name].to_numpy() - offset
@@ -619,10 +649,6 @@ def add_coo_batch(
     cell_nnz[cell_indices] = cell_counts
     total_nnz = int(cell_counts.sum())
     del counts_df, cell_indices, cell_counts
-    print(
-        f"  {total_nnz:,} nonzeros across {n_cells:,} cells ({t1 - t0:.1f}s)",
-        flush=True,
-    )
 
     # Build CSR indptr
     indptr = np.zeros(n_cells + 1, dtype=np.int64)
@@ -690,9 +716,6 @@ def add_coo_batch(
     batch_rows = 5_000_000
     written = 0
 
-    print(f"Pass 2: streaming {total_nnz:,} triplets into zarr...", flush=True)
-    t0 = time.monotonic()
-
     if is_gzip:
         proc = subprocess.Popen(
             ["gzip", "-dc", str(coo_path)],
@@ -714,7 +737,6 @@ def add_coo_batch(
                 value_col_name: pl.Int32,
             },
         )
-        n_batches = 0
         while True:
             batches = reader.next_batches(1)
             if not batches:
@@ -726,24 +748,12 @@ def add_coo_batch(
             zarr_indices[written : written + n] = genes.astype(np.uint32)
             zarr_values[written : written + n] = vals.astype(value_dtype)
             written += n
-            n_batches += 1
-            elapsed = time.monotonic() - t0
-            rate = written / elapsed if elapsed > 0 else 0
-            eta = (total_nnz - written) / rate if rate > 0 else 0
-            print(
-                f"  batch {n_batches}: {written:,} / {total_nnz:,} "
-                f"({written * 100 / total_nnz:.1f}%) "
-                f"[{elapsed:.0f}s elapsed, ~{eta:.0f}s remaining]",
-                flush=True,
-            )
     finally:
         if is_gzip:
             source.close()
             proc.wait()
         else:
             source.close()
-
-    print(f"  Wrote {written:,} nonzeros to zarr ({time.monotonic() - t0:.1f}s)", flush=True)
 
     # -----------------------------------------------------------------------
     # Write feature layout
