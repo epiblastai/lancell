@@ -30,7 +30,7 @@ class FragmentResult:
     """Cell-sorted chromatin accessibility fragments.
 
     The three flat arrays (``chromosomes``, ``starts``, ``lengths``) are
-    parallel — element *i* across all three describes one fragment.
+    parallel -- element *i* across all three describes one fragment.
     ``offsets`` is a CSR-style indptr of length ``n_cells + 1``:
     fragments for cell *j* are at indices ``offsets[j]:offsets[j+1]``.
     """

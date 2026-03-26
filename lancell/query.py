@@ -5,9 +5,12 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import mudata as mu
+    import pandas
     from lancedb.query import LanceQueryBuilder
 
     from lancell.dataloader import CellDataset, MultimodalCellDataset
+    from lancell.fragments.reconstruction import FragmentResult
+    from lancell.multimodal import MultimodalResult
 
 import anndata as ad
 import numpy as np
@@ -327,21 +330,122 @@ class AtlasQuery:
         return self._reconstruct_single_space_anndata(cells_pl, pf)
 
     def to_mudata(self) -> "mu.MuData":
-        """Execute the query and return a MuData with one modality per feature space."""
-        import mudata as mu
+        """Execute the query and return a MuData with one modality per feature space.
+
+        Non-AnnData modalities (fragments, raw arrays) are silently dropped
+        with a warning. Use :meth:`to_multimodal` for full heterogeneous access.
+        """
+        return self.to_multimodal().to_mudata()
+
+    def to_multimodal(self) -> "MultimodalResult":
+        """Execute the query and return all active modalities in their native format.
+
+        Each modality is reconstructed as its natural type:
+
+        - AnnData for matrix-based modalities (gene expression, protein abundance, etc.)
+        - :class:`~lancell.fragments.reconstruction.FragmentResult` for chromatin accessibility
+        - :class:`numpy.ndarray` for raw dense arrays without feature annotations (image tiles)
+
+        Returns
+        -------
+        MultimodalResult
+            Container with shared ``obs``, per-modality data in ``mod``,
+            and boolean presence masks in ``present``.
+        """
+        from lancell.fragments.reconstruction import IntervalReconstructor
+        from lancell.multimodal import MultimodalResult
+        from lancell.reconstruction import DenseReconstructor, _build_obs_df
 
         cells_pl = self._materialize_cells()
+        obs = _build_obs_df(cells_pl)
+
         if cells_pl.is_empty():
-            return mu.MuData({})
+            return MultimodalResult(obs=obs)
 
         active_pfs = self._active_pointer_fields()
-        modalities: dict[str, ad.AnnData] = {}
-        for pf in active_pfs.values():
-            adata = self._reconstruct_single_space_anndata(cells_pl, pf)
-            if adata.n_obs > 0:
-                modalities[pf.feature_space] = adata
+        mod: dict[str, ad.AnnData | np.ndarray] = {}
+        present: dict[str, np.ndarray] = {}
 
-        return mu.MuData(modalities)
+        for pf in active_pfs.values():
+            fs = pf.feature_space
+            spec = get_spec(fs)
+            reconstructor = spec.reconstructor
+
+            # Compute presence mask from pointer column
+            ptr_col = cells_pl[pf.field_name]
+            zg_series = ptr_col.struct.field("zarr_group")
+            mask = (zg_series != "").to_numpy()
+
+            if not mask.any():
+                continue
+
+            # Dispatch to the appropriate reconstruction method
+            if isinstance(reconstructor, IntervalReconstructor):
+                result = reconstructor.as_fragments(self._atlas, cells_pl, pf, spec)
+            elif isinstance(reconstructor, DenseReconstructor) and not spec.has_var_df:
+                result = reconstructor.as_array(self._atlas, cells_pl, pf, spec)
+            else:
+                result = self._reconstruct_single_space_anndata(cells_pl, pf)
+
+            mod[fs] = result
+            present[fs] = mask
+
+        return MultimodalResult(obs=obs, mod=mod, present=present)
+
+    def to_fragments(self, feature_space: str = "chromatin_accessibility") -> "FragmentResult":
+        """Reconstruct a single fragment-based feature space.
+
+        Parameters
+        ----------
+        feature_space
+            Feature space to reconstruct. Must use an
+            :class:`~lancell.fragments.reconstruction.IntervalReconstructor`.
+        """
+        from lancell.fragments.reconstruction import IntervalReconstructor
+
+        pf = self._atlas._pointer_fields[feature_space]
+        spec = get_spec(feature_space)
+        if not isinstance(spec.reconstructor, IntervalReconstructor):
+            raise TypeError(
+                f"Feature space '{feature_space}' does not use IntervalReconstructor "
+                f"(got {type(spec.reconstructor).__name__})"
+            )
+
+        cells_pl = self._materialize_cells()
+        return spec.reconstructor.as_fragments(self._atlas, cells_pl, pf, spec)
+
+    def to_array(self, feature_space: str) -> "tuple[np.ndarray, pandas.DataFrame]":
+        """Reconstruct a single dense feature space as a raw array.
+
+        Returns the full-dimensionality array (e.g. 4D for image tiles)
+        alongside the obs DataFrame for present cells.
+
+        Parameters
+        ----------
+        feature_space
+            Feature space to reconstruct. Must use a
+            :class:`~lancell.reconstruction.DenseReconstructor`.
+
+        Returns
+        -------
+        (array, obs)
+            The raw NumPy array and a DataFrame of cell metadata for the
+            cells present in this modality.
+        """
+        from lancell.reconstruction import DenseReconstructor, _build_obs_df
+
+        pf = self._atlas._pointer_fields[feature_space]
+        spec = get_spec(feature_space)
+        if not isinstance(spec.reconstructor, DenseReconstructor):
+            raise TypeError(
+                f"Feature space '{feature_space}' does not use DenseReconstructor "
+                f"(got {type(spec.reconstructor).__name__})"
+            )
+
+        cells_pl = self._materialize_cells()
+        array = spec.reconstructor.as_array(self._atlas, cells_pl, pf, spec)
+        obs = _build_obs_df(cells_pl)
+        return array, obs
 
     def to_batches(self, batch_size: int = 1024) -> Iterator[ad.AnnData]:
         """Stream results as AnnData batches.

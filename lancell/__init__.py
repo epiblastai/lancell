@@ -24,6 +24,15 @@ __all__ = [
     "LancellBaseSchema",
     "FeatureBaseSchema",
     "DatasetRecord",
+    # Fragments
+    "FragmentResult",
+    "IntervalReconstructor",
+    "FragmentCounter",
+    "GenomicRange",
+    "GenomeSortedReader",
+    "RegionResult",
+    # Multimodal
+    "MultimodalResult",
 ]
 
 
@@ -46,6 +55,13 @@ def __getattr__(name: str):
         "LancellBaseSchema": "lancell.schema",
         "FeatureBaseSchema": "lancell.schema",
         "DatasetRecord": "lancell.schema",
+        "FragmentResult": "lancell.fragments.reconstruction",
+        "IntervalReconstructor": "lancell.fragments.reconstruction",
+        "FragmentCounter": "lancell.fragments.peak_matrix",
+        "GenomicRange": "lancell.fragments.peak_matrix",
+        "GenomeSortedReader": "lancell.fragments.genome_query",
+        "RegionResult": "lancell.fragments.genome_query",
+        "MultimodalResult": "lancell.multimodal",
     }
     if name in _import_map:
         import importlib
