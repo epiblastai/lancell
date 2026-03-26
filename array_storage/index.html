@@ -1,0 +1,1465 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal cell database built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/lancell/array_storage/">
+      
+      
+        <link rel="prev" href="../reconstructors/">
+      
+      
+        <link rel="next" href="../dataloader/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Array Storage - lancell</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#array-storage-csr-and-csc" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="lancell" class="md-header__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            lancell
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Array Storage
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="lancell" class="md-nav__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    lancell
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data_structure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../group_specs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Group Specs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../querying/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstructors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#ingesting-data-add_from_anndata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ingesting data: add_from_anndata
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Ingesting data: add_from_anndata">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-happens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#chunking-and-sharding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunking and sharding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integer-compression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integer compression
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backed-h5ad-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backed .h5ad files
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-_feature_layouts-feature-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The _feature_layouts feature mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The _feature_layouts feature mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prerequisite-global_index-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisite: global_index assignment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-the-csc-index-add_csc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building the CSC index: add_csc
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Building the CSC index: add_csc">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-happens_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-to-run-add_csc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to run add_csc
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-csc-is-not-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When CSC is not needed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csr-vs-csc-access-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSR vs CSC access patterns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csc-fallback-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSC fallback behavior
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#typical-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Typical workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#imports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imports
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dex/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Differential Expression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#ingesting-data-add_from_anndata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ingesting data: add_from_anndata
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Ingesting data: add_from_anndata">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-happens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#chunking-and-sharding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunking and sharding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integer-compression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integer compression
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backed-h5ad-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backed .h5ad files
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-_feature_layouts-feature-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The _feature_layouts feature mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The _feature_layouts feature mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prerequisite-global_index-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisite: global_index assignment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-the-csc-index-add_csc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building the CSC index: add_csc
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Building the CSC index: add_csc">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-happens_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-to-run-add_csc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to run add_csc
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-csc-is-not-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When CSC is not needed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csr-vs-csc-access-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSR vs CSC access patterns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csc-fallback-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSC fallback behavior
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#typical-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Typical workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#imports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imports
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="array-storage-csr-and-csc">Array Storage (CSR and CSC)</h1>
+<p>Array data in lancell is stored in zarr, organized by dataset and feature space. For sparse assays (gene expression, chromatin accessibility), two complementary layouts exist:</p>
+<ul>
+<li><strong>CSR (row-sorted)</strong> — the primary storage format. Every ingest call writes CSR. Appending a new dataset is a pure array append with no read-modify-write on existing data.</li>
+<li><strong>CSC (column-sorted)</strong> — an optional transpose index. Enables efficient feature-oriented reads (e.g., "give me all cells' values for gene X") by providing direct byte ranges per feature column. Built on-demand via <code>add_csc()</code>.</li>
+</ul>
+<p>The key design principle: <strong>CSC is not required</strong>. Reconstructors always fall back to CSR and filter the relevant columns when CSC is unavailable. You can add CSC incrementally to existing groups without disrupting reads on groups that do not yet have it.</p>
+<hr />
+<h2 id="ingesting-data-add_from_anndata">Ingesting data: <code>add_from_anndata</code></h2>
+<p><code>add_from_anndata</code> is the primary entry point for writing a dataset into the atlas. It accepts either an in-memory <code>AnnData</code> object or a path to an <code>.h5ad</code> file.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">add_from_anndata</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">n</span> <span class="o">=</span> <span class="n">add_from_anndata</span><span class="p">(</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">atlas</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">adata</span><span class="p">,</span>                          <span class="c1"># AnnData object or path to .h5ad file</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">zarr_layer</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">,</span>            <span class="c1"># destination layer name within the zarr group</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">dataset_record</span><span class="o">=</span><span class="n">dataset_record</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;ingested </span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2"> cells&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="what-happens">What happens</h3>
+<ol>
+<li>Validates <code>zarr_layer</code> against the spec's <code>layers.allowed</code> and validates obs columns against the cell schema.</li>
+<li>Locates the pointer field for this feature space in the cell schema.</li>
+<li>Pre-allocates zarr arrays with the configured chunk and shard shapes, then streams data in shard-sized batches.</li>
+<li>For backed <code>.h5ad</code> files, reads directly from HDF5 <code>indptr</code>, <code>indices</code>, and <code>data</code> datasets without materializing the full matrix into memory.</li>
+<li>Writes the <code>_feature_layouts</code> feature mapping (one row per feature, recording <code>local_index</code> and <code>global_index</code>).</li>
+<li>Inserts cell records with <code>SparseZarrPointer</code> fields (<code>start</code>, <code>end</code>, <code>zarr_row</code>) derived from the CSR <code>indptr</code> array.</li>
+</ol>
+<p>For sparse assays, ingest produces the CSR layout under the zarr group:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>&lt;zarr_group&gt;/
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>└── csr/
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    ├── indices          # (N_entries,)  uint32 — local feature indices
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    └── layers/
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        └── counts       # (N_entries,)  dtype  — values
+</code></pre></div>
+<p>For dense assays (e.g., image feature vectors, protein panels):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>&lt;zarr_group&gt;/
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>└── layers/
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    └── counts           # (N_cells, N_features)  float32
+</code></pre></div>
+<h3 id="chunking-and-sharding">Chunking and sharding</h3>
+<p>Sharding is important for object-store performance: a shard is a single file, so large shards reduce the number of HTTP requests required to read a dataset. The defaults are:</p>
+<ul>
+<li>Sparse: chunk shape <code>(40960,)</code>, shard shape <code>(41943040,)</code> — one shard holds 1024 chunks.</li>
+<li>Dense: chunk shape <code>(max(1, 40960 // n_vars), n_vars)</code>, shard shape <code>(max(1, 41943040 // n_vars), n_vars)</code>.</li>
+</ul>
+<p>These can be overridden at ingest time:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">n</span> <span class="o">=</span> <span class="n">add_from_anndata</span><span class="p">(</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">atlas</span><span class="p">,</span> <span class="n">adata</span><span class="p">,</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">zarr_layer</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">dataset_record</span><span class="o">=</span><span class="n">dataset_record</span><span class="p">,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">chunk_shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4096</span><span class="p">,),</span>       <span class="c1"># zarr chunk shape for 1D CSR arrays</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">shard_shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4194304</span><span class="p">,),</span>    <span class="c1"># outer shard; must be a multiple of chunk_shape</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">)</span>
+</code></pre></div>
+<p>For sparse feature spaces, <code>chunk_shape</code> and <code>shard_shape</code> must be 1-element tuples. For dense feature spaces they must be 2-element tuples <code>(n_cells_per_chunk, n_features)</code>. Chunk sizes that are multiples of 128 align well with BP-128 bitpacking.</p>
+<h3 id="integer-compression">Integer compression</h3>
+<p>When the source data has an integer dtype (<code>int32</code>, <code>int64</code>, <code>uint32</code>, <code>uint64</code>), <code>add_from_anndata</code> automatically applies BP-128 bitpacking with delta encoding on the <code>indices</code> array and BP-128 (no delta) on the values layer. This is a lossless codec that typically halves storage for typical single-cell count matrices. Float data is stored uncompressed at the zarr level (outer compression from the zarr store is still applied).</p>
+<h3 id="backed-h5ad-files">Backed <code>.h5ad</code> files</h3>
+<p>If you pass an <code>.h5ad</code> path (or an <code>AnnData</code> opened with <code>backed="r"</code>), <code>add_from_anndata</code> streams CSR data directly from disk without loading the full matrix into memory. This is the recommended approach for large datasets.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">n</span> <span class="o">=</span> <span class="n">add_from_anndata</span><span class="p">(</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">atlas</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="s2">&quot;/path/to/large_dataset.h5ad&quot;</span><span class="p">,</span>  <span class="c1"># opened backed=&quot;r&quot; automatically</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">zarr_layer</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="n">dataset_record</span><span class="o">=</span><span class="n">dataset_record</span><span class="p">,</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="p">)</span>
+</code></pre></div>
+<p>For dense arrays, AnnData handles backed vs in-memory transparently — <code>adata.X[start:end]</code> streams from disk regardless.</p>
+<hr />
+<h2 id="the-_feature_layouts-feature-mapping">The <code>_feature_layouts</code> feature mapping</h2>
+<p>At ingest time, <code>add_from_anndata</code> writes one <code>FeatureLayout</code> row per feature into the <code>_feature_layouts</code> LanceDB table (or reuses an existing layout if the feature ordering matches). The full function reference is on the <a href="../feature_layouts/">Feature Layouts</a> page. Each row records:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>layout_uid</code></td>
+<td>Content-hash of the ordered feature list; shared across datasets with identical feature orderings</td>
+</tr>
+<tr>
+<td><code>feature_uid</code></td>
+<td>Stable global feature identifier (from <code>adata.var["global_feature_uid"]</code>)</td>
+</tr>
+<tr>
+<td><code>local_index</code></td>
+<td>0-based column index in this dataset's zarr array — i.e. the value stored in <code>csr/indices</code></td>
+</tr>
+<tr>
+<td><code>global_index</code></td>
+<td>The feature's position in the shared global feature space; used for scatter/gather at query time</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>local_index → global_index</code> mapping is what allows the reconstruction layer to correctly align features from different datasets into a single output matrix. Each dataset may have measured a different subset of features, in a different order. The remap array (<code>remap[local_i] = global_index</code>) derived from <code>_feature_layouts</code> drives the scatter step.</p>
+<h3 id="prerequisite-global_index-assignment">Prerequisite: <code>global_index</code> assignment</h3>
+<p>Before <code>add_from_anndata</code> can write <code>_feature_layouts</code>, features must have a non-null <code>global_index</code> in the registry. <code>global_index</code> is assigned by <code>atlas.optimize()</code>, which runs <code>reindex_registry</code> as part of its maintenance pass. If any feature in <code>adata.var</code> has <code>global_index = None</code> in the registry, <code>add_from_anndata</code> raises a <code>ValueError</code> reporting the offending UIDs.</p>
+<p>The typical pattern is to batch-register features across all datasets first, call <code>optimize()</code> once to assign indices, and then ingest:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Register features for each dataset (idempotent — safe to call multiple times)</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">atlas</span><span class="o">.</span><span class="n">register_features</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="n">features_dataset_a</span><span class="p">)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">atlas</span><span class="o">.</span><span class="n">register_features</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="n">features_dataset_b</span><span class="p">)</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="c1"># optimize() assigns global_index to all newly registered features</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">atlas</span><span class="o">.</span><span class="n">optimize</span><span class="p">()</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="c1"># Now ingest</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">n_a</span> <span class="o">=</span> <span class="n">add_from_anndata</span><span class="p">(</span><span class="n">atlas</span><span class="p">,</span> <span class="n">adata_a</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="n">n_b</span> <span class="o">=</span> <span class="n">add_from_anndata</span><span class="p">(</span><span class="n">atlas</span><span class="p">,</span> <span class="n">adata_b</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</code></pre></div>
+<hr />
+<h2 id="building-the-csc-index-add_csc">Building the CSC index: <code>add_csc</code></h2>
+<p>CSC is a transposed view of the CSR data, sorted by local feature index. Where CSR stores entries in cell order (all non-zeros for cell 0, then all for cell 1, …), CSC stores them in feature order (all non-zeros for feature 0 across all cells, then feature 1, …).</p>
+<p>After CSC is built, the zarr group contains a <code>csc/indptr</code> array with byte-range pointers for each feature. A feature-filtered query can then read exactly <code>csc/indices[indptr[i]:indptr[i+1]]</code> to get the cell row IDs that expressed that feature, without touching any other data.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">add_csc</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">add_csc</span><span class="p">(</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">atlas</span><span class="p">,</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;pbmc3k&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="n">layer_name</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="p">)</span>
+</code></pre></div>
+<h3 id="what-happens_1">What happens</h3>
+<ol>
+<li>Looks up the <code>dataset_uid</code> for this <code>(zarr_group, feature_space)</code> pair.</li>
+<li>Queries all cell records for this group; sorts them by <code>zarr_row</code> and validates that <code>zarr_row</code> is a contiguous 0..N-1 sequence (a prerequisite for the CSC index to be internally consistent).</li>
+<li>Reads the full <code>csr/indices</code> and <code>csr/layers/&lt;layer&gt;</code> flat arrays via <code>BatchArray.read_ranges</code>.</li>
+<li>Reconstructs <code>(cell_row, feature_idx)</code> pairs for every non-zero entry, then sorts by <code>feature_idx</code> (stable sort, so cell order is preserved within each feature column).</li>
+<li>Writes <code>csc/indices</code> (sorted cell row IDs, <code>uint32</code>) and <code>csc/layers/&lt;layer&gt;</code> (corresponding values) as sharded zarr arrays.</li>
+<li>Computes CSC <code>indptr</code> for each feature via <code>np.searchsorted</code> and writes it as a zarr array in the group.</li>
+</ol>
+<p>After this call, the zarr group contains:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>&lt;zarr_group&gt;/
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>├── csr/
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>│   ├── indices          # row-sorted: entry order matches cell order
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>│   └── layers/
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>│       └── counts
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>└── csc/
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>    ├── indices          # col-sorted: cell row IDs in feature order
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    ├── indptr           # (n_features + 1,) int64 — byte-range boundaries per feature
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    └── layers/
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>        └── counts
+</code></pre></div>
+<p>The <code>chunk_size</code> and <code>shard_size</code> parameters (defaulting to 4096 and 65536 respectively) control the CSC arrays' zarr layout independently of the CSR layout.</p>
+<h3 id="when-to-run-add_csc">When to run <code>add_csc</code></h3>
+<ul>
+<li>After bulk ingestion is complete for a dataset, before snapshotting.</li>
+<li>When queries frequently filter by specific feature UIDs (e.g., marker gene panels, pathway genes, guide sequences).</li>
+<li>When the atlas is large — the I/O savings are proportional to <code>1 - (n_wanted_features / n_total_features)</code>. For a dataset with 20,000 genes where you want 50, CSC reads ~0.25% of the data that full-CSR would read.</li>
+</ul>
+<h3 id="when-csc-is-not-needed">When CSC is not needed</h3>
+<ul>
+<li>Small atlases where full-CSR reads complete in acceptable time.</li>
+<li>Workloads that always load all features (<code>.to_anndata()</code> with union join and no feature filter).</li>
+<li>Prototyping and development — CSC can be added at any point without modifying existing CSR data or cell records.</li>
+</ul>
+<hr />
+<h2 id="csr-vs-csc-access-patterns">CSR vs CSC access patterns</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>CSR</th>
+<th>CSC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Storage</td>
+<td>Always present</td>
+<td>Optional; built by <code>add_csc()</code></td>
+</tr>
+<tr>
+<td>Sorted by</td>
+<td>Cell row (entry order matches cell order)</td>
+<td>Feature column (entry order matches feature order)</td>
+</tr>
+<tr>
+<td>Efficient for</td>
+<td>Fetching all features for a set of cells</td>
+<td>Fetching all cells' values for a specific feature</td>
+</tr>
+<tr>
+<td>Reconstruction cost</td>
+<td>O(nnz for queried cells)</td>
+<td>O(nnz for wanted features)</td>
+</tr>
+<tr>
+<td>Setup cost</td>
+<td>None — written at ingest time</td>
+<td>Full CSR read + sort + zarr write</td>
+</tr>
+<tr>
+<td>Space overhead</td>
+<td>Baseline</td>
+<td>~2× storage for the transposed copy</td>
+</tr>
+<tr>
+<td>When querying N features from F total</td>
+<td>Reads all nnz for those cells, then filters columns</td>
+<td>Reads only the nnz belonging to those N features</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="csc-fallback-behavior">CSC fallback behavior</h2>
+<p><code>FeatureCSCReconstructor</code> (invoked automatically by <code>SparseCSRReconstructor</code> when <code>wanted_globals</code> is provided) checks each group independently:</p>
+<ul>
+<li>Groups <strong>with</strong> CSC: reads <code>csc/indices[csc_start:csc_end]</code> and the corresponding layer slice for each wanted feature. The result is assembled as a COO matrix and converted to CSR.</li>
+<li>Groups <strong>without</strong> CSC: reads the full <code>csr/indices</code> slice for each cell, remaps local indices to global positions, and filters to the wanted columns. Equivalent to a standard CSR read followed by column selection.</li>
+</ul>
+<p>Both paths produce identical output. The fallback is not a degraded mode — it is the full-fidelity CSR reconstruction path. You can run <code>add_csc()</code> on your largest or most-queried groups while leaving smaller groups CSR-only.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Only add CSC to the two largest groups</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">add_csc</span><span class="p">(</span><span class="n">atlas</span><span class="p">,</span> <span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;large_dataset_1&quot;</span><span class="p">,</span> <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="n">layer_name</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">add_csc</span><span class="p">(</span><span class="n">atlas</span><span class="p">,</span> <span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;large_dataset_2&quot;</span><span class="p">,</span> <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="n">layer_name</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># small_dataset_3 stays CSR-only — reconstructors fall back automatically</span>
+</code></pre></div>
+<p><code>GroupReader.has_csc</code> is the property that drives this decision at read time. It returns <code>True</code> only when the zarr group contains a <code>csc/</code> subgroup — meaning <code>add_csc()</code> completed successfully for that group.</p>
+<hr />
+<h2 id="typical-workflow">Typical workflow</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">add_from_anndata</span><span class="p">,</span> <span class="n">add_csc</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># 1. Register features</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">atlas</span><span class="o">.</span><span class="n">register_features</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="n">features</span><span class="p">)</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="c1"># 2. Assign global_index and compact — optimize() handles reindex internally</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="n">atlas</span><span class="o">.</span><span class="n">optimize</span><span class="p">()</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="c1"># 3. Ingest</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="n">n</span> <span class="o">=</span> <span class="n">add_from_anndata</span><span class="p">(</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>    <span class="n">atlas</span><span class="p">,</span> <span class="n">adata</span><span class="p">,</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>    <span class="n">zarr_layer</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="n">dataset_record</span><span class="o">=</span><span class="n">record</span><span class="p">,</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="p">)</span>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="c1"># 4. Build CSC for feature-filtered queries (optional but recommended for large groups)</span>
+<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="n">add_csc</span><span class="p">(</span>
+<a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a>    <span class="n">atlas</span><span class="p">,</span>
+<a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a>    <span class="n">zarr_group</span><span class="o">=</span><span class="n">record</span><span class="o">.</span><span class="n">zarr_group</span><span class="p">,</span>
+<a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a>    <span class="n">layer_name</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="p">)</span>
+<a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a>
+<a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="c1"># 5. Compact and snapshot</span>
+<a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a><span class="n">atlas</span><span class="o">.</span><span class="n">optimize</span><span class="p">()</span>
+<a id="__codelineno-9-27" name="__codelineno-9-27" href="#__codelineno-9-27"></a><span class="n">v</span> <span class="o">=</span> <span class="n">atlas</span><span class="o">.</span><span class="n">snapshot</span><span class="p">()</span>
+</code></pre></div>
+<hr />
+<h2 id="imports">Imports</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">add_from_anndata</span><span class="p">,</span> <span class="n">add_csc</span>
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

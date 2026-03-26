@@ -1,0 +1,1372 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal cell database built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/lancell/data_structure/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../atlas/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Data Structure - lancell</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#data-structure" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="lancell" class="md-header__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            lancell
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Data Structure
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="lancell" class="md-nav__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    lancell
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Structure
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overall-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overall layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cell-table-lancellbaseschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cell table: LancellBaseSchema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cell table: LancellBaseSchema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pointer-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pointer types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#zarr-group-layouts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Zarr group layouts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Zarr group layouts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sparse-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sparse groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dense-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dense groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datasets-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Datasets table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_feature_layouts-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _feature_layouts table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-registries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature registries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../group_specs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Group Specs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../querying/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstructors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dex/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Differential Expression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overall-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overall layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cell-table-lancellbaseschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cell table: LancellBaseSchema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cell table: LancellBaseSchema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pointer-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pointer types
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#zarr-group-layouts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Zarr group layouts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Zarr group layouts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sparse-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sparse groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dense-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dense groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datasets-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Datasets table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_feature_layouts-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _feature_layouts table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-registries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature registries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="data-structure">Data Structure</h1>
+<p>A <code>RaggedAtlas</code> is backed by two co-located stores:</p>
+<ul>
+<li><strong>LanceDB database</strong> — all tabular data: cell metadata, feature registries, dataset inventory, and the per-dataset feature mapping</li>
+<li><strong>Zarr object store</strong> — all array data: count matrices, embeddings, image tiles</li>
+</ul>
+<p>No manifest files or external sidecars need to be maintained outside the atlas.</p>
+<h2 id="overall-layout">Overall layout</h2>
+<pre class="mermaid"><code>graph TD
+    subgraph LanceDB
+        cells["cell table\n(LancellBaseSchema subclass)"]
+        datasets["datasets table\n(DatasetRecord)"]
+        layouts["_feature_layouts table\n(FeatureLayout)"]
+        reg["registry tables\n(FeatureBaseSchema subclasses)"]
+        versions["atlas_versions table\n(AtlasVersionRecord)"]
+    end
+
+    subgraph Zarr["Zarr object store"]
+        sparse["sparse groups\n(csr/ + optional csc/)"]
+        dense["dense groups\n(data or layers/)"]
+    end
+
+    cells -- "pointer fields" --&gt; Zarr
+    datasets -- "zarr_group" --&gt; Zarr
+    layouts -. "feature_uid" .-&gt; reg
+    layouts -. "layout_uid" .-&gt; datasets</code></pre>
+<hr />
+<h2 id="cell-table-lancellbaseschema">Cell table: <code>LancellBaseSchema</code></h2>
+<p>Each row in the cell table is one observation — a cell, nucleus, spatial tile, etc. The exact schema is user-defined by subclassing <code>LancellBaseSchema</code>.</p>
+<p>Every cell row carries:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uid</code></td>
+<td><code>str</code></td>
+<td>Random 16-char hex. Unique per cell; safe for concurrent writes.</td>
+</tr>
+<tr>
+<td><code>dataset_uid</code></td>
+<td><code>str</code></td>
+<td>Links back to the originating <code>DatasetRecord</code>.</td>
+</tr>
+<tr>
+<td><em>pointer fields</em></td>
+<td><code>SparseZarrPointer \| DenseZarrPointer \| None</code></td>
+<td>One column per feature space the cell may have been profiled in.</td>
+</tr>
+</tbody>
+</table>
+<p>Pointer field names must match a registered feature space name (enforced at class definition time). At least one pointer field must be declared.</p>
+<h3 id="pointer-types">Pointer types</h3>
+<p><strong><code>SparseZarrPointer</code></strong> — used for high-dimensional sparse assays (gene expression, chromatin peaks):</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>zarr_group</code></td>
+<td>Path to the zarr group within the object store</td>
+</tr>
+<tr>
+<td><code>start</code> / <code>end</code></td>
+<td>Element positions into <code>csr/indices</code> (derived from the CSR <code>indptr</code>). Slice <code>[start:end]</code> gives this cell's non-zero entries.</td>
+</tr>
+<tr>
+<td><code>zarr_row</code></td>
+<td>0-indexed row in the group; used for column-oriented (CSC) reads</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>DenseZarrPointer</code></strong> — used for dense assays (protein abundance, image embeddings):</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>zarr_group</code></td>
+<td>Path to the zarr group</td>
+</tr>
+<tr>
+<td><code>position</code></td>
+<td>Row index into the group's dense array</td>
+</tr>
+</tbody>
+</table>
+<p>A typical multimodal schema looks like:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">MySchema</span><span class="p">(</span><span class="n">LancellBaseSchema</span><span class="p">):</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gene_expression</span><span class="p">:</span> <span class="n">SparseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">protein_abundance</span><span class="p">:</span> <span class="n">DenseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</code></pre></div>
+<pre class="mermaid"><code>classDiagram
+    class LancellBaseSchema {
+        +str uid
+        +str dataset_uid
+    }
+    class MySchema {
+        +SparseZarrPointer | None gene_expression
+        +DenseZarrPointer | None protein_abundance
+    }
+    class SparseZarrPointer {
+        +str zarr_group
+        +int start
+        +int end
+        +int zarr_row
+    }
+    class DenseZarrPointer {
+        +str zarr_group
+        +int position
+    }
+    LancellBaseSchema &lt;|-- MySchema
+    MySchema --&gt; SparseZarrPointer : gene_expression
+    MySchema --&gt; DenseZarrPointer : protein_abundance</code></pre>
+<hr />
+<h2 id="zarr-group-layouts">Zarr group layouts</h2>
+<p>Each ingested dataset occupies one zarr group. The internal layout depends on the feature space's <code>PointerKind</code>.</p>
+<h3 id="sparse-groups">Sparse groups</h3>
+<p>Used for gene expression, chromatin peaks, and other high-dimensional sparse assays. Data is stored in coordinate order — appending a new dataset is a pure array append.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>&lt;zarr_group&gt;/
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>└── csr/
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    ├── indices          # (N_entries,)  uint32 — local feature indices
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    └── layers/
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        └── counts       # (N_entries,)  dtype  — values
+</code></pre></div>
+<p><code>indices</code> holds <strong>local</strong> column indices (0-based within this dataset's feature ordering). The mapping from local to global feature index is stored in <code>_feature_layouts.global_index</code> and used at read time for scatter/gather operations.</p>
+<p>A cell's data is at <code>csr/indices[start:end]</code> (and the matching slice from each layer), where <code>start</code>/<code>end</code> come from the cell's <code>SparseZarrPointer</code>.</p>
+<p>After calling <code>add_csc()</code>, a column-sorted counterpart is written alongside CSR. This enables efficient feature-filtered queries (reading a feature across many cells) without scanning all cells:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>&lt;zarr_group&gt;/
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>├── csr/
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>│   ├── indices          # row-sorted: entry order matches cell order
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>│   └── layers/
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>│       └── counts
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>└── csc/
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    ├── indices          # col-sorted: entry order matches feature order (cell row ids)
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    └── layers/
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        └── counts
+</code></pre></div>
+<h3 id="dense-groups">Dense groups</h3>
+<p>Used for protein abundance, image feature vectors, and other low-dimensional dense assays. Dense groups write a 2-D array with shape <code>(N_cells, N_features)</code>. Depending on whether a layer name was specified at ingest time, the array lives either directly at <code>data</code> or under a <code>layers/</code> subgroup:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>&lt;zarr_group&gt;/
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>└── data                 # (N_cells, N_features)  float32
+</code></pre></div>
+<p>or:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>&lt;zarr_group&gt;/
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>└── layers/
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    └── &lt;layer_name&gt;     # (N_cells, N_features)  float32
+</code></pre></div>
+<p>A cell is located at row index <code>position</code> from the cell's <code>DenseZarrPointer</code>.</p>
+<hr />
+<h2 id="datasets-table">Datasets table</h2>
+<p>Every ingested zarr group is registered as a <code>DatasetRecord</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uid</code></td>
+<td>Stable dataset identifier</td>
+</tr>
+<tr>
+<td><code>zarr_group</code></td>
+<td>Path to the zarr group (matches pointer fields in cell table)</td>
+</tr>
+<tr>
+<td><code>feature_space</code></td>
+<td>Which feature space this group belongs to</td>
+</tr>
+<tr>
+<td><code>n_cells</code></td>
+<td>Number of cells in this dataset</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>UTC ISO timestamp</td>
+</tr>
+</tbody>
+</table>
+<p>The datasets table is the authoritative inventory of what zarr groups exist. <code>validate()</code> uses it to enumerate groups for consistency checks.</p>
+<hr />
+<h2 id="_feature_layouts-table"><code>_feature_layouts</code> table</h2>
+<p><code>_feature_layouts</code> stores feature orderings ("layouts") shared across datasets. Each <code>FeatureLayout</code> row records one (layout, feature) pair. Datasets with identical feature orderings share the same <code>layout_uid</code>, dramatically reducing row count compared to a per-dataset approach. For the Python API, see <a href="../feature_layouts/">Feature Layouts</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>layout_uid</code></td>
+<td>Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. Scalar-indexed for layout → features lookup.</td>
+</tr>
+<tr>
+<td><code>feature_uid</code></td>
+<td><code>global_feature_uid</code> from the registry. FTS-indexed for feature → layouts lookup.</td>
+</tr>
+<tr>
+<td><code>local_index</code></td>
+<td>0-based position of this feature in the layout's zarr array (i.e. the column index stored in <code>csr/indices</code>).</td>
+</tr>
+<tr>
+<td><code>global_index</code></td>
+<td>Denormalized from the registry. Used as a scatter/gather key at training time — no database lookup needed in the hot path.</td>
+</tr>
+</tbody>
+</table>
+<p>An FTS index on <code>feature_uid</code> and a scalar index on <code>layout_uid</code> make two queries efficient:</p>
+<ul>
+<li><strong>Feature → datasets</strong>: which layouts (and thus datasets) include feature X? (<code>find_datasets_with_features</code>)</li>
+<li><strong>Layout → features</strong>: given a <code>layout_uid</code>, reconstruct the <code>local → global</code> index remap for vectorized scatter/gather</li>
+</ul>
+<pre class="mermaid"><code>erDiagram
+    DatasetRecord {
+        str uid PK
+        str zarr_group
+        str feature_space
+        int n_cells
+        str layout_uid FK
+    }
+    FeatureRegistry {
+        str uid PK
+        int global_index
+    }
+    FeatureLayout {
+        str layout_uid FK
+        str feature_uid FK
+        int local_index
+        int global_index
+    }
+    DatasetRecord }o--|| FeatureLayout : "references layout"
+    FeatureRegistry ||--o{ FeatureLayout : "referenced by"</code></pre>
+<hr />
+<h2 id="feature-registries">Feature registries</h2>
+<p>Each feature space with a stable feature axis maintains a LanceDB registry table. All schemas subclass <code>FeatureBaseSchema</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uid</code></td>
+<td>Stable canonical identifier. Never reassigned. Use for durable references across atlas rebuilds.</td>
+</tr>
+<tr>
+<td><code>global_index</code></td>
+<td>Dense integer (0 .. N-1) assigned by <code>reindex_registry()</code>. Used as an array index in compute paths. Never reassigned once set — new features get <code>max + 1</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Modality-specific subclasses add fields like gene symbol, Ensembl ID, UniProt ID, SMILES, guide sequence, etc.</p>
+<p>The <code>uid</code> / <code>global_index</code> split separates two concerns: <code>uid</code> is safe for concurrent writers (no coordination needed); <code>global_index</code> is assigned in a single-writer reindexing pass so it always forms a contiguous range suitable for array indexing and scatter/gather operations.</p>
+<hr />
+<h2 id="versioning">Versioning</h2>
+<p><code>snapshot()</code> records a consistent point-in-time view across all Lance table versions as an <code>AtlasVersionRecord</code>. <code>checkout(version)</code> (or <code>checkout_latest()</code>) reopens every table pinned to the exact Lance version captured in that record — giving a reproducible, read-only view of the atlas state. <code>query()</code> is only available on a checked-out atlas.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    participant User
+    participant Atlas
+
+    User-&gt;&gt;Atlas: ingest datasets
+    User-&gt;&gt;Atlas: optimize()
+    Note right of Atlas: assigns global_index,&lt;br/&gt;compacts tables,&lt;br/&gt;rebuilds FTS indexes
+    User-&gt;&gt;Atlas: snapshot()
+    Atlas--&gt;&gt;User: version = N
+    User-&gt;&gt;Atlas: checkout_latest(db_uri, schema, store)
+    Atlas--&gt;&gt;User: read-only atlas @ version N
+    User-&gt;&gt;Atlas: query()</code></pre>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

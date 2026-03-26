@@ -1,0 +1,1318 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal cell database built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/lancell/reconstructors/">
+      
+      
+        <link rel="prev" href="../querying/">
+      
+      
+        <link rel="next" href="../array_storage/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Reconstructors - lancell</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#reconstructors" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="lancell" class="md-header__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            lancell
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Reconstructors
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="lancell" class="md-nav__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    lancell
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data_structure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../group_specs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Group Specs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../querying/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-reconstructor-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Reconstructor protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#built-in-reconstructors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Built-in reconstructors
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Built-in reconstructors">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sparsecsrreconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SparseCSRReconstructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#densereconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DenseReconstructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#featurecscreconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FeatureCSCReconstructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-reconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a reconstructor
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-join-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature join semantics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementing-a-custom-reconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementing a custom reconstructor
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementing a custom reconstructor">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_load_remaps_and_featuresatlas-groups-spec-feature_join-wanted_globals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _load_remaps_and_features(atlas, groups, spec, feature_join, wanted_globals)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_build_obs_dfcells_pl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _build_obs_df(cells_pl)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_build_varatlas-feature_space-joined_globals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _build_var(atlas, feature_space, joined_globals)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_build_feature_spaceremaps-join" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _build_feature_space(remaps, join)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#imports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imports
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dex/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Differential Expression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-reconstructor-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Reconstructor protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#built-in-reconstructors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Built-in reconstructors
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Built-in reconstructors">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sparsecsrreconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SparseCSRReconstructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#densereconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DenseReconstructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#featurecscreconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FeatureCSCReconstructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-reconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a reconstructor
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-join-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature join semantics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementing-a-custom-reconstructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementing a custom reconstructor
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementing a custom reconstructor">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_load_remaps_and_featuresatlas-groups-spec-feature_join-wanted_globals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _load_remaps_and_features(atlas, groups, spec, feature_join, wanted_globals)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_build_obs_dfcells_pl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _build_obs_df(cells_pl)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_build_varatlas-feature_space-joined_globals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _build_var(atlas, feature_space, joined_globals)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_build_feature_spaceremaps-join" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _build_feature_space(remaps, join)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#imports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imports
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="reconstructors">Reconstructors</h1>
+<p>A reconstructor converts raw zarr data into an <code>AnnData</code> object. Every <code>ZarrGroupSpec</code> carries a <code>reconstructor</code> instance; at query time, <code>AtlasQuery</code> calls <code>spec.reconstructor.as_anndata(...)</code> for each feature space being loaded.</p>
+<p>The reconstructor is responsible for:</p>
+<ul>
+<li>Loading the per-group local-to-global feature index remap from <a href="../feature_layouts/"><code>_feature_layouts</code></a></li>
+<li>Reading zarr arrays for each dataset group</li>
+<li>Remapping per-group local feature indices to the global feature space</li>
+<li>Assembling the final <code>AnnData</code> with obs, var, and X (and any additional layers)</li>
+</ul>
+<p>Lancell ships three built-in reconstructors. Most users will pick one of them when defining a custom <code>ZarrGroupSpec</code>; implementing a custom reconstructor from scratch is rarely needed.</p>
+<hr />
+<h2 id="the-reconstructor-protocol">The <code>Reconstructor</code> protocol</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.protocols</span><span class="w"> </span><span class="kn">import</span> <span class="n">Reconstructor</span>
+</code></pre></div>
+<p><code>Reconstructor</code> is a <code>runtime_checkable</code> protocol. Any class that implements <code>as_anndata</code> with the following signature satisfies it — no explicit inheritance needed.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">Reconstructor</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">as_anndata</span><span class="p">(</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>        <span class="bp">self</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>        <span class="n">atlas</span><span class="p">:</span> <span class="n">RaggedAtlas</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        <span class="n">cells_pl</span><span class="p">:</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        <span class="n">pf</span><span class="p">:</span> <span class="n">PointerFieldInfo</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>        <span class="n">spec</span><span class="p">:</span> <span class="n">ZarrGroupSpec</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>        <span class="n">layer_overrides</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        <span class="n">feature_join</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;union&quot;</span><span class="p">,</span> <span class="s2">&quot;intersection&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;union&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>        <span class="n">wanted_globals</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ad</span><span class="o">.</span><span class="n">AnnData</span><span class="p">:</span> <span class="o">...</span>
+</code></pre></div>
+<p>Key parameters:</p>
+<ul>
+<li><code>cells_pl</code> — Polars DataFrame of the queried cells. Includes the zarr pointer struct columns used to locate each cell's row within its zarr group.</li>
+<li><code>pf</code> — <code>PointerFieldInfo</code> identifying which pointer field this reconstructor handles (field name, feature space, and pointer kind).</li>
+<li><code>spec</code> — the <code>ZarrGroupSpec</code> for this feature space, carrying the declared array layout and layer names.</li>
+<li><code>layer_overrides</code> — if set, read these layers instead of <code>spec.layers.required</code>.</li>
+<li><code>feature_join</code> — <code>"union"</code> includes all features from any group; <code>"intersection"</code> includes only features present in every group. Ignored when <code>wanted_globals</code> is set.</li>
+<li><code>wanted_globals</code> — if set, pin the output feature space to these global feature indices. Overrides <code>feature_join</code>.</li>
+</ul>
+<hr />
+<h2 id="built-in-reconstructors">Built-in reconstructors</h2>
+<h3 id="sparsecsrreconstructor"><code>SparseCSRReconstructor</code></h3>
+<p><strong>Use for:</strong> high-dimensional sparse data — gene expression, chromatin accessibility, any assay stored in CSR format.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.reconstruction</span><span class="w"> </span><span class="kn">import</span> <span class="n">SparseCSRReconstructor</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">ZarrGroupSpec</span><span class="p">(</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">pointer_kind</span><span class="o">=</span><span class="n">PointerKind</span><span class="o">.</span><span class="n">SPARSE</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">reconstructor</span><span class="o">=</span><span class="n">SparseCSRReconstructor</span><span class="p">(),</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="o">...</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">)</span>
+</code></pre></div>
+<p>Each sparse cell pointer encodes a byte range <code>[_start, _end)</code> into the <code>csr/indices</code> array and the corresponding layer arrays. The reconstructor reads the flat index and value segments for each cell, remaps the local feature indices to their global positions using the <code>_feature_layouts</code> remap, builds a <code>scipy.sparse.csr_matrix</code> per layer, and stacks them vertically across groups.</p>
+<p>For union queries, cells from groups that don't measure a given feature simply have no entries in that column; the sparse format represents this without any fill. For intersection queries, the reconstructor masks out any feature index that does not appear in every group's remap before building the CSR, effectively discarding non-shared features.</p>
+<p>When <code>wanted_globals</code> is provided and the number of queried cells exceeds the number of requested features, the reconstructor automatically delegates to <code>FeatureCSCReconstructor</code>. This heuristic — cells outnumber features — identifies the regime where CSC reads are cheaper: reading one column at a time across many cells costs less I/O than reading many full cell rows and then slicing. The delegation is transparent; you do not need to configure anything.</p>
+<h3 id="densereconstructor"><code>DenseReconstructor</code></h3>
+<p><strong>Use for:</strong> dense assays — protein abundance (CITE-seq ADT), image feature vectors, log-normalized expression where all values are non-zero (e.g., after HVG selection and normalization), any data stored as a 2D float array.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.reconstruction</span><span class="w"> </span><span class="kn">import</span> <span class="n">DenseReconstructor</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">ZarrGroupSpec</span><span class="p">(</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;protein_abundance&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">pointer_kind</span><span class="o">=</span><span class="n">PointerKind</span><span class="o">.</span><span class="n">DENSE</span><span class="p">,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">reconstructor</span><span class="o">=</span><span class="n">DenseReconstructor</span><span class="p">(),</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="o">...</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">)</span>
+</code></pre></div>
+<p>Each dense cell pointer carries a single row index <code>_pos</code>. The reconstructor pre-allocates a float32 output array of shape <code>(n_cells, n_features)</code>, then fills it group by group: for each group it reads the relevant rows from <code>layers/{layer_name}</code>, remaps the local feature columns to their global positions, and scatters the values into the pre-allocated array.</p>
+<p>For union queries, positions corresponding to features not measured in a group remain at their initialized value of zero. For intersection queries, only the columns present in every group's remap are written; all other columns remain zero. For <code>wanted_globals</code> queries, the same scatter logic applies but the output column set is pinned to the requested global indices.</p>
+<p>Dense data does not support a CSC equivalent. Feature-filtered queries on dense data always read the relevant rows in full and then select columns during scatter.</p>
+<h3 id="featurecscreconstructor"><code>FeatureCSCReconstructor</code></h3>
+<p><strong>Use for:</strong> sparse data where feature-filtered queries are performance-critical — i.e., when users often request a small set of genes or peaks (such as a marker gene panel) across a large number of cells.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.reconstruction</span><span class="w"> </span><span class="kn">import</span> <span class="n">FeatureCSCReconstructor</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">ZarrGroupSpec</span><span class="p">(</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">pointer_kind</span><span class="o">=</span><span class="n">PointerKind</span><span class="o">.</span><span class="n">SPARSE</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="n">reconstructor</span><span class="o">=</span><span class="n">FeatureCSCReconstructor</span><span class="p">(),</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="o">...</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="p">)</span>
+</code></pre></div>
+<p>When <code>wanted_globals</code> is provided, the reconstructor looks up the CSC byte ranges from the zarr <code>csc/indptr</code> array for each requested feature. It then reads only those column segments from <code>csc/indices</code> and the corresponding <code>csc/layers/{layer}</code> arrays — O(nnz for wanted features) instead of O(nnz across all cells). This is a significant win when the atlas is large and only a handful of features are requested.</p>
+<p>For groups that do not yet have CSC data — groups where <code>add_csc()</code> has not been called — the reconstructor falls back to reading CSR and filtering columns. This fallback produces the same output as <code>SparseCSRReconstructor</code> for those groups. The fallback means CSC is optional on a per-group basis: you can add it incrementally to existing groups without breaking reconstruction for groups that don't have it yet.</p>
+<p>When <code>wanted_globals</code> is not provided, <code>FeatureCSCReconstructor</code> delegates entirely to <code>SparseCSRReconstructor</code>. The CSC path only activates when a feature filter is in play.</p>
+<hr />
+<h2 id="choosing-a-reconstructor">Choosing a reconstructor</h2>
+<table>
+<thead>
+<tr>
+<th>Data type</th>
+<th>Reconstructor</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sparse counts (gene expression, ATAC)</td>
+<td><code>SparseCSRReconstructor</code></td>
+<td>Default choice for sparse assays</td>
+</tr>
+<tr>
+<td>Dense float arrays (protein, embeddings, log-normalized HVGs)</td>
+<td><code>DenseReconstructor</code></td>
+<td>Required for <code>PointerKind.DENSE</code></td>
+</tr>
+<tr>
+<td>Sparse + frequent feature-filtered queries</td>
+<td><code>FeatureCSCReconstructor</code></td>
+<td>Requires <code>add_csc()</code> on groups; falls back gracefully per group</td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>FeatureCSCReconstructor</code> instead of <code>SparseCSRReconstructor</code> when:</p>
+<ul>
+<li>Users frequently query specific genes or peaks by UID (e.g., a fixed marker gene panel or a set of GWAS peaks).</li>
+<li>The atlas is large enough that reading all cell rows and then slicing columns is noticeably slower than reading the column slices directly.</li>
+<li>You have already run <code>add_csc()</code> on your groups, or plan to. Groups without CSC data incur no penalty — they silently fall back to CSR reads.</li>
+</ul>
+<p><code>SparseCSRReconstructor</code> is the simpler default and requires no post-processing step. <code>FeatureCSCReconstructor</code> is purely additive: switching the reconstructor on a registered spec requires no changes to ingestion code, schema definitions, or existing zarr data.</p>
+<hr />
+<h2 id="feature-join-semantics">Feature join semantics</h2>
+<p>Both sparse and dense reconstructors respect the <code>feature_join</code> argument passed down from <code>AtlasQuery.feature_join()</code>.</p>
+<p><strong>Union (default):</strong> the output feature space is the union of global indices across all groups. Each group contributes values only for the features it measures; positions for unmeasured features are zero (sparse: absent from the matrix; dense: zero-filled).</p>
+<p><strong>Intersection:</strong> the output feature space contains only global indices present in every group's remap. Cells from groups that don't have a feature in the intersection have that feature excluded from the output — not zero-filled, simply not in the matrix.</p>
+<p><strong><code>wanted_globals</code>:</strong> when set (via <code>AtlasQuery.features()</code>), the feature space is pinned to exactly the requested global indices regardless of what any group measures. Groups that don't have a given feature contribute nothing to that column; <code>feature_join</code> has no effect.</p>
+<hr />
+<h2 id="implementing-a-custom-reconstructor">Implementing a custom reconstructor</h2>
+<p>If the built-in reconstructors don't match your data format, implement the <code>Reconstructor</code> protocol directly:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">anndata</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">ad</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Literal</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.atlas</span><span class="w"> </span><span class="kn">import</span> <span class="n">RaggedAtlas</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.obs_alignment</span><span class="w"> </span><span class="kn">import</span> <span class="n">PointerFieldInfo</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.group_specs</span><span class="w"> </span><span class="kn">import</span> <span class="n">ZarrGroupSpec</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="k">class</span><span class="w"> </span><span class="nc">MyCustomReconstructor</span><span class="p">:</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">as_anndata</span><span class="p">(</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>        <span class="bp">self</span><span class="p">,</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>        <span class="n">atlas</span><span class="p">:</span> <span class="n">RaggedAtlas</span><span class="p">,</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>        <span class="n">cells_pl</span><span class="p">:</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">,</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>        <span class="n">pf</span><span class="p">:</span> <span class="n">PointerFieldInfo</span><span class="p">,</span>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>        <span class="n">spec</span><span class="p">:</span> <span class="n">ZarrGroupSpec</span><span class="p">,</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>        <span class="n">layer_overrides</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>        <span class="n">feature_join</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;union&quot;</span><span class="p">,</span> <span class="s2">&quot;intersection&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;union&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>        <span class="n">wanted_globals</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ad</span><span class="o">.</span><span class="n">AnnData</span><span class="p">:</span>
+<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>        <span class="c1"># Load feature metadata, read zarr arrays, assemble AnnData</span>
+<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>        <span class="o">...</span>
+</code></pre></div>
+<p>Pass the instance as the <code>reconstructor</code> argument to <code>ZarrGroupSpec</code>.</p>
+<p>The following helpers from <code>lancell.reconstruction</code> handle the parts that are identical across all built-in reconstructors. Using them avoids reimplementing the feature space join logic.</p>
+<h3 id="_load_remaps_and_featuresatlas-groups-spec-feature_join-wanted_globals"><code>_load_remaps_and_features(atlas, groups, spec, feature_join, wanted_globals)</code></h3>
+<p>Loads the per-group local-to-global remap arrays from <code>_feature_layouts</code> and computes the joined feature space. Returns a four-tuple:</p>
+<ul>
+<li><code>group_remaps</code> — <code>{zarr_group: remap_array}</code> where <code>remap[local_i] = global_index</code>.</li>
+<li><code>joined_globals</code> — sorted array of unique global indices in the output feature space.</li>
+<li><code>group_remap_to_joined</code> — <code>{zarr_group: positions_array}</code> where <code>positions[local_i]</code> is the column in the joined-space output matrix. For intersection or <code>wanted_globals</code> mode, local features not in the joined space are mapped to <code>-1</code>.</li>
+<li><code>n_features</code> — length of <code>joined_globals</code>.</li>
+</ul>
+<p>When <code>wanted_globals</code> is set, the union/intersection step is skipped and the returned <code>joined_globals</code> is exactly <code>wanted_globals</code>.</p>
+<h3 id="_build_obs_dfcells_pl"><code>_build_obs_df(cells_pl)</code></h3>
+<p>Strips zarr pointer struct columns and any internal <code>_</code>-prefixed columns from <code>cells_pl</code>, sets <code>uid</code> as the index if present, and returns a pandas DataFrame suitable for use as <code>adata.obs</code>.</p>
+<h3 id="_build_varatlas-feature_space-joined_globals"><code>_build_var(atlas, feature_space, joined_globals)</code></h3>
+<p>Queries the feature registry table for the rows matching <code>joined_globals</code>, sorts them by <code>global_index</code>, and returns a pandas DataFrame with <code>uid</code> as the index. Used to build <code>adata.var</code>.</p>
+<h3 id="_build_feature_spaceremaps-join"><code>_build_feature_space(remaps, join)</code></h3>
+<p>Lower-level helper used by <code>_load_remaps_and_features</code>. Computes the union or intersection of global indices from a <code>{group: remap_array}</code> dict and returns <code>(joined_globals, group_remap_to_joined)</code>.</p>
+<hr />
+<h2 id="imports">Imports</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.reconstruction</span><span class="w"> </span><span class="kn">import</span> <span class="n">SparseCSRReconstructor</span><span class="p">,</span> <span class="n">DenseReconstructor</span><span class="p">,</span> <span class="n">FeatureCSCReconstructor</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.protocols</span><span class="w"> </span><span class="kn">import</span> <span class="n">Reconstructor</span>
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

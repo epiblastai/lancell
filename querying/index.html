@@ -1,0 +1,1418 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal cell database built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/lancell/querying/">
+      
+      
+        <link rel="prev" href="../group_specs/">
+      
+      
+        <link rel="next" href="../reconstructors/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Querying - lancell</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#querying-the-atlas" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="lancell" class="md-header__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            lancell
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Querying
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="lancell" class="md-nav__button md-logo" aria-label="lancell" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    lancell
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/lancell" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/lancell
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data_structure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../group_specs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Group Specs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Introduction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#checked-out-atlases-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checked-out atlases only
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#filtering-cells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filtering cells
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Filtering cells">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#wherecondition-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .where(condition: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#limitn-int" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .limit(n: int)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#balanced_limitn-int-column-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .balanced_limit(n: int, column: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#search" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .search(...)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#controlling-feature-reconstruction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Controlling feature reconstruction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Controlling feature reconstruction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#feature_spacesspaces-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .feature_spaces(*spaces: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layersfeature_space-str-names-liststr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .layers(feature_space: str, names: list[str])
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feature_joinjoin-literalunion-intersection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .feature_join(join: Literal["union", "intersection"])
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#featuresuids-liststr-feature_space-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .features(uids: list[str], feature_space: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#terminal-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminal methods
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Terminal methods">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#counting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Counting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metadata-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata only
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#anndata-and-mudata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AnnData and MuData
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ml-training-datasets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ML training datasets
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chaining-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaining example
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstructors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dex/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Differential Expression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Introduction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#checked-out-atlases-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checked-out atlases only
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#filtering-cells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filtering cells
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Filtering cells">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#wherecondition-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .where(condition: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#limitn-int" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .limit(n: int)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#balanced_limitn-int-column-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .balanced_limit(n: int, column: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#search" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .search(...)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#controlling-feature-reconstruction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Controlling feature reconstruction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Controlling feature reconstruction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#feature_spacesspaces-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .feature_spaces(*spaces: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layersfeature_space-str-names-liststr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .layers(feature_space: str, names: list[str])
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feature_joinjoin-literalunion-intersection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .feature_join(join: Literal["union", "intersection"])
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#featuresuids-liststr-feature_space-str" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .features(uids: list[str], feature_space: str)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#terminal-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminal methods
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Terminal methods">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#counting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Counting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metadata-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata only
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#anndata-and-mudata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AnnData and MuData
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ml-training-datasets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ML training datasets
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chaining-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaining example
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="querying-the-atlas">Querying the Atlas</h1>
+<h2 id="introduction">Introduction</h2>
+<p>Once you have a checked-out atlas, <code>atlas.query()</code> returns an <code>AtlasQuery</code> — a lazy, fluent query builder that lets you express complex data retrieval in a single readable chain. Methods like <code>.where()</code>, <code>.feature_join()</code>, and <code>.layers()</code> accumulate parameters without touching the database; execution is deferred until a terminal method (<code>.to_anndata()</code>, <code>.count()</code>, etc.) is called.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">lancell.atlas</span><span class="w"> </span><span class="kn">import</span> <span class="n">RaggedAtlas</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">atlas_r</span> <span class="o">=</span> <span class="n">RaggedAtlas</span><span class="o">.</span><span class="n">checkout_latest</span><span class="p">(</span><span class="s2">&quot;/path/to/db&quot;</span><span class="p">,</span> <span class="n">CellSchema</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">q</span> <span class="o">=</span> <span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span>  <span class="c1"># returns AtlasQuery</span>
+</code></pre></div>
+<p><code>AtlasQuery</code> is returned by <code>atlas.query()</code> — it is not imported directly.</p>
+<h3 id="checked-out-atlases-only">Checked-out atlases only</h3>
+<p><code>query()</code> is only available on a checked-out atlas, opened via <code>checkout()</code> or <code>checkout_latest()</code>. Calling it on a writable atlas raises <code>RuntimeError</code>. This constraint exists by design: queries always execute against a stable, versioned snapshot of the cell table. A writable atlas may be in the middle of ingesting new cells, so the cell table is not guaranteed to be consistent.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Correct: open a read-only snapshot first</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">atlas_r</span> <span class="o">=</span> <span class="n">RaggedAtlas</span><span class="o">.</span><span class="n">checkout_latest</span><span class="p">(</span><span class="s2">&quot;/path/to/db&quot;</span><span class="p">,</span> <span class="n">CellSchema</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">q</span> <span class="o">=</span> <span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># Wrong: writable atlas raises RuntimeError</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">atlas_w</span> <span class="o">=</span> <span class="n">RaggedAtlas</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;/path/to/db&quot;</span><span class="p">,</span> <span class="n">CellSchema</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">q</span> <span class="o">=</span> <span class="n">atlas_w</span><span class="o">.</span><span class="n">query</span><span class="p">()</span>  <span class="c1"># RuntimeError</span>
+</code></pre></div>
+<hr />
+<h2 id="filtering-cells">Filtering cells</h2>
+<h3 id="wherecondition-str"><code>.where(condition: str)</code></h3>
+<p>Filter cells with a SQL predicate string using LanceDB syntax. The predicate is evaluated against the flat cell table, so any column in your schema is available.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># String equality</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="s2">&quot;cell_type = &#39;CD4 T cells&#39;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Numeric filter</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="s2">&quot;n_genes &gt; 500&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Compound predicate</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="s2">&quot;cell_type = &#39;B cells&#39; AND dataset = &#39;pbmc3k&#39;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<p>Predicates are forwarded directly to LanceDB, so any expression that LanceDB's SQL dialect supports — <code>IN</code>, <code>IS NOT NULL</code>, <code>BETWEEN</code>, nested <code>AND</code>/<code>OR</code> — works here.</p>
+<h3 id="limitn-int"><code>.limit(n: int)</code></h3>
+<p>Cap the number of cells returned. Useful for exploratory work or when you want a quick representative sample without loading the full result set.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">limit</span><span class="p">(</span><span class="mi">100</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<p><code>limit</code> applies after filtering, so <code>.where(...).limit(100)</code> returns the first 100 cells matching the predicate rather than 100 random cells from the full atlas.</p>
+<h3 id="balanced_limitn-int-column-str"><code>.balanced_limit(n: int, column: str)</code></h3>
+<p>Cap the number of cells returned, drawing equally from each unique value of <code>column</code>. The result contains at most <code>n</code> cells split evenly across each unique value of <code>column</code> that passes any <code>.where()</code> filter.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Return at most 1000 cells, ~equal numbers per cell_type</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">balanced_limit</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="s2">&quot;cell_type&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<p>This is useful for quickly building balanced evaluation sets without manually querying each category. Cannot be combined with <code>.limit()</code> — using both on the same query raises a <code>ValueError</code>.</p>
+<h3 id="search"><code>.search(...)</code></h3>
+<p>Run a vector similarity search or full-text search, forwarded directly to LanceDB's <code>Table.search()</code>. Pair with <code>.limit()</code> to control how many nearest neighbors are retrieved.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Retrieve the 50 cells most similar to a query embedding</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="n">embedding_vector</span><span class="p">,</span> <span class="n">vector_column_name</span><span class="o">=</span><span class="s2">&quot;embedding&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">limit</span><span class="p">(</span><span class="mi">50</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<p>Vector search and scalar filtering can be combined: <code>.where()</code> applies as a post-filter on the ANN results.</p>
+<hr />
+<h2 id="controlling-feature-reconstruction">Controlling feature reconstruction</h2>
+<p>By default, every feature space with a pointer in the cell schema is reconstructed and included in the output. For multimodal atlases or atlases with many layers, the default can pull far more data than you need. The methods below let you scope reconstruction precisely.</p>
+<h3 id="feature_spacesspaces-str"><code>.feature_spaces(*spaces: str)</code></h3>
+<p>Restrict reconstruction to a named subset of feature spaces. Any space not listed is skipped entirely — no array I/O is performed for it.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Only reconstruct gene expression; skip protein in a multimodal atlas</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">feature_spaces</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<h3 id="layersfeature_space-str-names-liststr"><code>.layers(feature_space: str, names: list[str])</code></h3>
+<p>Override which layers are loaded for a given feature space. By default, reconstruction loads the layers defined as defaults in the schema (usually raw counts). Use this method when you want a different representation.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Load log_normalized instead of counts for gene expression</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">layers</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="p">[</span><span class="s2">&quot;log_normalized&quot;</span><span class="p">])</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<p>Multiple calls to <code>.layers()</code> for different feature spaces are cumulative and independent.</p>
+<h3 id="feature_joinjoin-literalunion-intersection"><code>.feature_join(join: Literal["union", "intersection"])</code></h3>
+<p>Control how the reconstruction layer handles cells from datasets with different feature panels. This is the core of what makes <code>RaggedAtlas</code> practical for heterogeneous collections.</p>
+<ul>
+<li><code>"union"</code> (default) — the output matrix includes every feature from any dataset. Cells that were not profiled for a given feature receive zero in that column.</li>
+<li><code>"intersection"</code> — the output matrix includes only features measured in every dataset that contributes cells to the result.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Union (default): result contains all genes from both PBMC panels</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>  <span class="c1"># n_vars = 2395</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Intersection: only the genes shared by both panels</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">feature_join</span><span class="p">(</span><span class="s2">&quot;intersection&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>  <span class="c1"># n_vars = 208</span>
+</code></pre></div>
+<p>Union is the right default for most exploratory queries because no information is discarded. Intersection is useful when downstream analysis requires a consistent feature space across all cells, such as running a single PCA across heterogeneous datasets.</p>
+<h3 id="featuresuids-liststr-feature_space-str"><code>.features(uids: list[str], feature_space: str)</code></h3>
+<p>Restrict output to a specific list of features, identified by their registry UIDs. When <code>.features()</code> is set, it overrides <code>feature_join</code>: the output matrix contains exactly those features, filled with zeros for cells whose dataset did not measure them.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Load only a handful of marker genes</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">features</span><span class="p">([</span><span class="s2">&quot;CD3D&quot;</span><span class="p">,</span> <span class="s2">&quot;CD19&quot;</span><span class="p">,</span> <span class="s2">&quot;MS4A1&quot;</span><span class="p">],</span> <span class="s2">&quot;gene_expression&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<p>This is the most targeted way to load data when you only care about a known gene or protein panel.</p>
+<hr />
+<h2 id="terminal-methods">Terminal methods</h2>
+<p>Terminal methods execute the query and return data. Calling a terminal method is what triggers LanceDB lookups and zarr reads.</p>
+<h3 id="counting">Counting</h3>
+<p><strong><code>.count(group_by=None)</code></strong> performs a cheap cell count without loading any array data. Because it only touches the cell table, it is fast even for very large atlases.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">count</span><span class="p">()</span>  <span class="c1"># → int: total cells</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">count</span><span class="p">(</span><span class="n">group_by</span><span class="o">=</span><span class="s2">&quot;cell_type&quot;</span><span class="p">)</span>  <span class="c1"># → pl.DataFrame with value_counts</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">count</span><span class="p">(</span><span class="n">group_by</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;cell_type&quot;</span><span class="p">,</span> <span class="s2">&quot;dataset_uid&quot;</span><span class="p">])</span>  <span class="c1"># multi-column grouping</span>
+</code></pre></div>
+<p>When <code>group_by</code> is provided, the result is a Polars DataFrame with one row per group and a <code>count</code> column.</p>
+<h3 id="metadata-only">Metadata only</h3>
+<p><strong><code>.to_polars()</code></strong> returns the cell metadata as a Polars DataFrame without performing any array reconstruction. Use this when you only need the cell table — for inspecting distributions, debugging a filter predicate, or feeding cell IDs into a separate pipeline.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">meta</span> <span class="o">=</span> <span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="s2">&quot;cell_type IS NOT NULL&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_polars</span><span class="p">()</span>
+</code></pre></div>
+<p><strong><code>.select(columns: list[str])</code></strong> restricts which metadata columns appear in the output of <code>.to_polars()</code>. Pointer columns (the per-dataset zarr pointers stored in the cell table) are always fetched internally and stripped from the output regardless of what you pass to <code>.select()</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="s2">&quot;cell_type&quot;</span><span class="p">,</span> <span class="s2">&quot;n_genes&quot;</span><span class="p">])</span><span class="o">.</span><span class="n">to_polars</span><span class="p">()</span>
+</code></pre></div>
+<h3 id="anndata-and-mudata">AnnData and MuData</h3>
+<p><strong><code>.to_anndata()</code></strong> reconstructs a single <code>AnnData</code> object. It uses the first sparse feature space in the schema, falling back to the first dense space if no sparse space is present. For unimodal atlases this is the natural terminal; for multimodal atlases, consider <code>.to_mudata()</code> instead.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">adata</span> <span class="o">=</span> <span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="s2">&quot;cell_type = &#39;NK cells&#39;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+</code></pre></div>
+<p><strong><code>.to_mudata()</code></strong> reconstructs one <code>AnnData</code> per feature space and wraps them in a <code>MuData</code> object. Each modality is keyed by its feature space name.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="n">mdata</span> <span class="o">=</span> <span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">to_mudata</span><span class="p">()</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="n">mdata</span><span class="p">[</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">]</span>    <span class="c1"># AnnData for RNA</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="n">mdata</span><span class="p">[</span><span class="s2">&quot;protein_abundance&quot;</span><span class="p">]</span>  <span class="c1"># AnnData for protein</span>
+</code></pre></div>
+<p><strong><code>.to_batches(batch_size: int = 1024)</code></strong> returns a streaming iterator of <code>AnnData</code> objects. Each batch contains at most <code>batch_size</code> cells. Use this for large queries that would exhaust memory if materialised all at once.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">atlas_r</span><span class="o">.</span><span class="n">query</span><span class="p">()</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="s2">&quot;tissue = &#39;lung&#39;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">to_batches</span><span class="p">(</span><span class="n">batch_size</span><span class="o">=</span><span class="mi">2048</span><span class="p">):</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>    <span class="n">process</span><span class="p">(</span><span class="n">batch</span><span class="p">)</span>  <span class="c1"># each batch is a small AnnData</span>
+</code></pre></div>
+<p>The iterator respects all other query parameters — filters, feature spaces, layers, and feature join mode apply to every batch identically.</p>
+<h3 id="ml-training-datasets">ML training datasets</h3>
+<p><strong><code>.to_cell_dataset(...)</code></strong> returns a <code>CellDataset</code> for PyTorch training. See the PyTorch Data Loading page for full details.</p>
+<p><strong><code>.to_multimodal_dataset(...)</code></strong> returns a <code>MultimodalCellDataset</code> covering all selected feature spaces. See the PyTorch Data Loading page.</p>
+<hr />
+<h2 id="chaining-example">Chaining example</h2>
+<p>Every builder method returns <code>self</code>, so you can compose an entire query in a single expression. This example loads log-normalized gene expression for bone marrow cells, intersecting the feature sets across all contributing datasets, capped at 5000 cells:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="n">adata</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>    <span class="n">atlas_r</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>    <span class="o">.</span><span class="n">query</span><span class="p">()</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="s2">&quot;tissue = &#39;bone marrow&#39;&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    <span class="o">.</span><span class="n">feature_spaces</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>    <span class="o">.</span><span class="n">layers</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="p">[</span><span class="s2">&quot;log_normalized&quot;</span><span class="p">])</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>    <span class="o">.</span><span class="n">feature_join</span><span class="p">(</span><span class="s2">&quot;intersection&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    <span class="o">.</span><span class="n">limit</span><span class="p">(</span><span class="mi">5000</span><span class="p">)</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>    <span class="o">.</span><span class="n">to_anndata</span><span class="p">()</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="p">)</span>
+</code></pre></div>
+<p>The call order of builder methods does not matter — parameters accumulate independently and are resolved at execution time.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
