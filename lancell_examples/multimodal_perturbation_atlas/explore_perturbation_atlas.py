@@ -67,36 +67,48 @@ def _():
 
     import obstore.store
     import polars as pl
+    import matplotlib.pyplot as plt
 
     from lancell.atlas import RaggedAtlas
     from lancell_examples.multimodal_perturbation_atlas.atlas import PerturbationAtlas
     from lancell_examples.multimodal_perturbation_atlas.schema import CellIndex
 
     ATLAS_DIR = Path.home() / "multimodal_perturbation_atlas"
+    # ATLAS_DIR = Path("/tmp/atlas/cpg0021_test")
     DB_URI = str(ATLAS_DIR / "lance_db")
     ZARR_PATH = str(ATLAS_DIR / "zarr_store")
-    return DB_URI, PerturbationAtlas, RaggedAtlas, pl
+    return (
+        CellIndex,
+        DB_URI,
+        PerturbationAtlas,
+        RaggedAtlas,
+        ZARR_PATH,
+        obstore,
+        pl,
+        plt,
+    )
 
 
 @app.cell
-def _():
-    # _atlas_restore = RaggedAtlas.restore(
-    #   db_uri="/home/ubuntu/multimodal_perturbation_atlas/lance_db",
-    #   version=4,  # or whatever your snapshot version is
-    # )
+def _(RaggedAtlas):
+    _atlas_restore = RaggedAtlas.restore(
+      db_uri="/home/ubuntu/multimodal_perturbation_atlas/lance_db",
+      version=3,  # or whatever your snapshot version is
+    )
     return
 
 
 @app.cell
-def _():
+def _(CellIndex, DB_URI, RaggedAtlas, ZARR_PATH, obstore):
     # # --- Run once after ingestion, then comment out ---
-    # _store = obstore.store.LocalStore(ZARR_PATH)
-    # _atlas_rw = RaggedAtlas.open(
-    #     db_uri=DB_URI,
-    #     cell_table_name="cells",
-    #     cell_schema=CellIndex,
-    #     store=_store,
-    # )
+    _store = obstore.store.LocalStore(ZARR_PATH)
+    _atlas_rw = RaggedAtlas.open(
+        db_uri=DB_URI,
+        cell_table_name="cells",
+        cell_schema=CellIndex,
+        store=_store,
+    )
+    print(_atlas_rw.cell_table.count_rows())
     # _atlas_rw.optimize()
     # version = _atlas_rw.snapshot()
     # print(f"Optimized and snapshotted: version {version}")
@@ -199,8 +211,8 @@ def _(atlas_rw):
 
 
 @app.cell
-def _(atlas_rw):
-    atlas_rw.small_molecules_table.search().to_pandas()
+def _():
+    # atlas_rw.small_molecules_table.search().to_pandas()
     return
 
 
@@ -500,6 +512,17 @@ def _(mo):
     All `by_*` methods compose via AND: calling `.by_gene().by_compound()`
     finds cells with both perturbations (combinatorial).
     """)
+    return
+
+
+@app.cell
+def _(atlas_rw):
+    atlas_rw.db.open_table("genetic_perturbations").search().to_pandas()
+    return
+
+
+@app.cell
+def _():
     return
 
 
@@ -905,9 +928,7 @@ def _(mo):
 
 
 @app.cell
-def _(frag_result, np):
-    import matplotlib.pyplot as plt
-
+def _(frag_result, np, plt):
     fig_frag, ax_frag = plt.subplots(figsize=(8, 3))
     ax_frag.hist(frag_result.lengths, bins=np.arange(0, 1001, 10), edgecolor="none", alpha=0.7)
     ax_frag.set_xlabel("Fragment length (bp)")
@@ -915,7 +936,7 @@ def _(frag_result, np):
     ax_frag.set_title("Fragment length distribution (500 K-562 cells)")
     fig_frag.tight_layout()
     fig_frag
-    return (plt,)
+    return
 
 
 @app.cell(hide_code=True)

@@ -147,6 +147,373 @@ def _count_nnz_batched(h5_dataset, batch_rows: int) -> tuple[int, np.ndarray]:
     return total_nnz, nnz_per_row
 
 
+# ---------------------------------------------------------------------------
+# Streaming sparse ingestion helpers
+# ---------------------------------------------------------------------------
+
+
+class SparseZarrWriter:
+    """Incrementally write CSR data into a zarr group.
+
+    Use this when the total number of nonzeros is not known upfront
+    (e.g., streaming from a remote source). The zarr arrays are created
+    with an initial capacity and resized as needed.
+
+    Usage::
+
+        writer = SparseZarrWriter.create(group, "counts", data_dtype=np.float32)
+        starts, ends = writer.append_csr(csr_matrix_1)
+        starts, ends = writer.append_csr(csr_matrix_2)
+        writer.trim()  # shrink to actual size
+
+    Parameters returned by ``append_csr`` are absolute offsets into the
+    flat arrays, suitable for constructing ``SparseZarrPointer`` structs.
+    """
+
+    def __init__(
+        self,
+        zarr_indices: zarr.Array,
+        zarr_values: zarr.Array,
+        shard_elems: int,
+    ) -> None:
+        self._zarr_indices = zarr_indices
+        self._zarr_values = zarr_values
+        self._written = 0
+        self._capacity = int(zarr_indices.shape[0])
+        self._shard_elems = shard_elems
+
+    @classmethod
+    def create(
+        cls,
+        group: zarr.Group,
+        zarr_layer: str,
+        *,
+        data_dtype: np.dtype = np.float32,
+        use_bitpacking: bool = False,
+        feature_space: str = "gene_expression",
+        initial_capacity: int = _SHARD_ELEMS,
+        chunk_elems: int = _CHUNK_ELEMS,
+        shard_elems: int = _SHARD_ELEMS,
+    ) -> "SparseZarrWriter":
+        """Create zarr arrays for incremental sparse writes.
+
+        Parameters
+        ----------
+        group
+            Zarr group (e.g., ``atlas._root.create_group(uid)``).
+        zarr_layer
+            Layer name (e.g., ``"counts"``).
+        data_dtype
+            Data type for the values array.
+        use_bitpacking
+            Whether to use bitpacking codec for the values array.
+        feature_space
+            Feature space name, used to look up the zarr group spec.
+        initial_capacity
+            Initial size for the flat arrays. Will be grown as needed.
+        chunk_elems
+            Chunk size for zarr arrays.
+        shard_elems
+            Shard size for zarr arrays.
+        """
+        from lancell.codecs.bitpacking import BitpackingCodec
+
+        spec = get_spec(feature_space)
+        prefix = spec.layers.prefix
+
+        indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
+        layer_kwargs: dict = {}
+        if use_bitpacking:
+            layer_kwargs["compressors"] = BitpackingCodec(transform="none")
+
+        chunk_shape = (chunk_elems,)
+        shard_shape = (shard_elems,)
+
+        if prefix:
+            prefix_group = group.create_group(prefix)
+            zarr_indices = prefix_group.create_array(
+                "indices",
+                shape=(initial_capacity,),
+                dtype=np.uint32,
+                chunks=chunk_shape,
+                shards=shard_shape,
+                **indices_kwargs,
+            )
+            layers_group = prefix_group.create_group("layers")
+        else:
+            zarr_indices = group.create_array(
+                "indices",
+                shape=(initial_capacity,),
+                dtype=np.uint32,
+                chunks=chunk_shape,
+                shards=shard_shape,
+                **indices_kwargs,
+            )
+            layers_group = group.create_group("layers")
+
+        zarr_values = layers_group.create_array(
+            zarr_layer,
+            shape=(initial_capacity,),
+            dtype=data_dtype,
+            chunks=chunk_shape,
+            shards=shard_shape,
+            **layer_kwargs,
+        )
+
+        return cls(zarr_indices, zarr_values, shard_elems)
+
+    @classmethod
+    def open(
+        cls,
+        group: zarr.Group,
+        zarr_layer: str,
+        *,
+        feature_space: str = "gene_expression",
+        written: int = 0,
+        shard_elems: int = _SHARD_ELEMS,
+    ) -> "SparseZarrWriter":
+        """Reopen existing zarr arrays for resumed appending.
+
+        Parameters
+        ----------
+        group
+            Existing zarr group containing the arrays.
+        zarr_layer
+            Layer name (e.g., ``"counts"``).
+        feature_space
+            Feature space name, used to look up the zarr group spec.
+        written
+            Number of nonzero elements already written (from checkpoint).
+        shard_elems
+            Shard size, must match the original arrays.
+        """
+        spec = get_spec(feature_space)
+        prefix = spec.layers.prefix
+
+        if prefix:
+            zarr_indices = group[f"{prefix}/indices"]
+            zarr_values = group[f"{prefix}/layers/{zarr_layer}"]
+        else:
+            zarr_indices = group["indices"]
+            zarr_values = group[f"layers/{zarr_layer}"]
+
+        writer = cls(zarr_indices, zarr_values, shard_elems)
+        writer._written = written
+        writer._capacity = int(zarr_indices.shape[0])
+        return writer
+
+    def _ensure_capacity(self, needed: int) -> None:
+        """Grow arrays if needed to fit ``needed`` more elements."""
+        required = self._written + needed
+        if required <= self._capacity:
+            return
+        # Grow by at least 2x or to required, rounded up to shard boundary.
+        new_cap = max(self._capacity * 2, required)
+        new_cap = ((new_cap + self._shard_elems - 1) // self._shard_elems) * self._shard_elems
+        self._zarr_indices.resize(new_cap)
+        self._zarr_values.resize(new_cap)
+        self._capacity = new_cap
+
+    def append_csr(self, csr: sp.csr_matrix) -> tuple[np.ndarray, np.ndarray]:
+        """Append a CSR matrix's flat arrays. Returns (starts, ends).
+
+        The returned starts/ends are absolute offsets into the flat zarr
+        arrays, suitable for ``SparseZarrPointer.start`` / ``.end``.
+        """
+        nnz = csr.nnz
+        if nnz == 0:
+            n_cells = csr.shape[0]
+            pos = self._written
+            starts = np.full(n_cells, pos, dtype=np.int64)
+            ends = np.full(n_cells, pos, dtype=np.int64)
+            return starts, ends
+
+        self._ensure_capacity(nnz)
+
+        offset = self._written
+        batch_size = self._shard_elems
+        written = 0
+        while written < nnz:
+            end = min(written + batch_size, nnz)
+            self._zarr_indices[offset + written : offset + end] = (
+                csr.indices[written:end].astype(np.uint32, copy=False)
+            )
+            self._zarr_values[offset + written : offset + end] = csr.data[written:end]
+            written = end
+
+        # Build per-cell start/end from indptr
+        starts = csr.indptr[:-1].astype(np.int64) + offset
+        ends = csr.indptr[1:].astype(np.int64) + offset
+
+        self._written += nnz
+        return starts, ends
+
+    @property
+    def n_written(self) -> int:
+        """Total number of nonzero elements written so far."""
+        return self._written
+
+    def trim(self) -> None:
+        """Shrink arrays to actual written size. Call after all appends."""
+        if self._written < self._capacity:
+            self._zarr_indices.resize(self._written)
+            self._zarr_values.resize(self._written)
+            self._capacity = self._written
+
+
+def _build_cell_arrow_table(
+    atlas: RaggedAtlas,
+    obs_df: pd.DataFrame,
+    *,
+    dataset_uid: str,
+    pointer_data: dict[str, pa.StructArray],
+) -> pa.Table:
+    """Build an Arrow table of cell records ready for insertion.
+
+    Parameters
+    ----------
+    atlas
+        Open RaggedAtlas (provides schema and pointer field info).
+    obs_df
+        Validated obs DataFrame with schema-aligned columns.
+    dataset_uid
+        Dataset UID for every cell in this batch.
+    pointer_data
+        ``{pointer_field_name: pa.StructArray}`` for pointer fields that
+        have real data. All other pointer fields are zero-filled.
+
+    Returns
+    -------
+    pa.Table
+        Arrow table matching the cell schema, ready for ``cell_table.add()``.
+    """
+    n_cells = len(obs_df)
+    arrow_schema = atlas._cell_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas._cell_schema)
+
+    columns: dict[str, pa.Array] = {
+        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
+        "dataset_uid": pa.array([dataset_uid] * n_cells, type=pa.string()),
+    }
+
+    # Fill pointer fields — real data where provided, zero-fill otherwise
+    for pf_name, pf in atlas._pointer_fields.items():
+        if pf_name in pointer_data:
+            columns[pf_name] = pointer_data[pf_name]
+        elif pf.pointer_kind is PointerKind.SPARSE:
+            columns[pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+            )
+        else:
+            columns[pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([0] * n_cells, type=pa.int64()),
+                ],
+                names=["feature_space", "zarr_group", "position"],
+            )
+
+    # Add obs columns
+    for col in schema_fields:
+        if col in obs_df.columns:
+            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
+    for col in schema_fields:
+        if col not in columns:
+            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
+
+    return pa.table(columns, schema=arrow_schema)
+
+
+def _make_sparse_pointer(
+    feature_space: str,
+    zarr_group: str,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    zarr_row_offset: int = 0,
+) -> pa.StructArray:
+    """Build a ``SparseZarrPointer`` struct array."""
+    n_cells = len(starts)
+    return pa.StructArray.from_arrays(
+        [
+            pa.array([feature_space] * n_cells, type=pa.string()),
+            pa.array([zarr_group] * n_cells, type=pa.string()),
+            pa.array(starts.astype(np.int64), type=pa.int64()),
+            pa.array(ends.astype(np.int64), type=pa.int64()),
+            pa.array(
+                np.arange(zarr_row_offset, zarr_row_offset + n_cells, dtype=np.int64),
+                type=pa.int64(),
+            ),
+        ],
+        names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+    )
+
+
+def insert_cell_records(
+    atlas: RaggedAtlas,
+    obs_df: pd.DataFrame,
+    *,
+    feature_space: str,
+    zarr_group: str,
+    dataset_uid: str,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    zarr_row_offset: int = 0,
+) -> int:
+    """Insert cell records into the atlas cell table.
+
+    Builds ``SparseZarrPointer`` structs from the provided start/end
+    arrays and adds the obs columns. Other pointer fields are zero-filled.
+
+    Parameters
+    ----------
+    atlas
+        Open RaggedAtlas.
+    obs_df
+        Validated obs DataFrame with schema-aligned columns.
+    feature_space
+        Feature space name (e.g., ``"gene_expression"``).
+    zarr_group
+        Zarr group path for the pointer structs.
+    dataset_uid
+        Dataset UID for the ``dataset_uid`` column.
+    starts, ends
+        Per-cell start/end offsets into the flat zarr arrays.
+    zarr_row_offset
+        Offset for ``zarr_row`` values (cumulative cell count).
+
+    Returns
+    -------
+    int
+        Number of cells inserted.
+    """
+    # Find the pointer field for this feature space
+    pointer_field: PointerFieldInfo | None = None
+    for pf in atlas._pointer_fields.values():
+        if pf.feature_space == feature_space:
+            pointer_field = pf
+            break
+    assert pointer_field is not None, f"No pointer field for {feature_space}"
+
+    pointer_struct = _make_sparse_pointer(
+        feature_space, zarr_group, starts, ends, zarr_row_offset
+    )
+    arrow_table = _build_cell_arrow_table(
+        atlas, obs_df,
+        dataset_uid=dataset_uid,
+        pointer_data={pointer_field.field_name: pointer_struct},
+    )
+    atlas.cell_table.add(arrow_table)
+    return len(obs_df)
+
+
 def _write_sparse_batched(
     group: zarr.Group,
     adata: ad.AnnData,
@@ -411,8 +778,16 @@ def add_anndata_batch(
         use_bitpacking = data_dtype in _INTEGER_DTYPES
     else:
         n_vars = adata.n_vars
-        chunk_shape = chunk_shape or (max(1, _CHUNK_ELEMS // n_vars), n_vars)
-        shard_shape = shard_shape or (max(1, _SHARD_ELEMS // n_vars), n_vars)
+        if chunk_shape is None:
+            chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
+            chunk_shape = (chunk_rows, n_vars)
+        else:
+            chunk_rows = chunk_shape[0]
+        if shard_shape is None:
+            shard_rows = max(1, _SHARD_ELEMS // n_vars)
+            # Shard must contain a whole number of chunks.
+            shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
+            shard_shape = (shard_rows, n_vars)
         if len(chunk_shape) != 2 or len(shard_shape) != 2:
             raise ValueError(
                 f"Dense feature space '{feature_space}' requires 2-element chunk_shape "
@@ -443,20 +818,10 @@ def add_anndata_batch(
     if spec.has_var_df:
         write_feature_layout(atlas, adata, feature_space, zarr_group, dataset_record.uid)
 
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    obs_df = adata.obs
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
-
+    # Build pointer struct for the active feature space
     if spec.pointer_kind is PointerKind.SPARSE:
-        pointer_struct = pa.StructArray.from_arrays(
-            [
-                pa.array([feature_space] * n_cells, type=pa.string()),
-                pa.array([zarr_group] * n_cells, type=pa.string()),
-                pa.array(starts.astype(np.int64), type=pa.int64()),
-                pa.array(ends.astype(np.int64), type=pa.int64()),
-                pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
-            ],
-            names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+        pointer_struct = _make_sparse_pointer(
+            feature_space, zarr_group, starts, ends
         )
     else:
         pointer_struct = pa.StructArray.from_arrays(
@@ -468,48 +833,11 @@ def add_anndata_batch(
             names=["feature_space", "zarr_group", "position"],
         )
 
-    columns = {
-        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
-        pointer_field.field_name: pointer_struct,
-    }
-
-    # Zero-fill any other pointer fields in the schema (multi-modal schemas).
-    # Lance requires non-null values for non-null struct fields; an empty zarr_group
-    # string ("") signals "absent" and is filtered by _prepare_*_cells.
-    for other_pf_name, other_pf in atlas._pointer_fields.items():
-        if other_pf_name == pointer_field.field_name:
-            continue
-        if other_pf.pointer_kind is PointerKind.SPARSE:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
-            )
-        else:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "position"],
-            )
-
-    for col in schema_fields:
-        if col in obs_df.columns:
-            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
-
-    for col in schema_fields:
-        if col not in columns:
-            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
-
-    arrow_table = pa.table(columns, schema=arrow_schema)
+    arrow_table = _build_cell_arrow_table(
+        atlas, adata.obs,
+        dataset_uid=dataset_record.uid,
+        pointer_data={pointer_field.field_name: pointer_struct},
+    )
     atlas.cell_table.add(arrow_table)
     return n_cells
 
