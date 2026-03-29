@@ -1,6 +1,7 @@
 """RaggedAtlas: user-facing API for writing, querying, and streaming lancell data."""
 
 import json
+import os
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -234,7 +235,7 @@ class RaggedAtlas:
             )
             # Not all feature spaces are guaranteed to have registries, only
             # load the ones that do
-            all_tables = set(db.table_names())
+            all_tables = set(db.list_tables().tables)
             registry_tables = {
                 fs: f"{fs}_registry" for fs in feature_spaces if f"{fs}_registry" in all_tables
             }
@@ -457,7 +458,11 @@ class RaggedAtlas:
         """
         self.cell_table.optimize()
         self._dataset_table.optimize()
+        self._deduplicate_new_rows(
+            self._feature_layouts_table, subset=["layout_uid", "feature_uid"]
+        )
         for table in self._registry_tables.values():
+            self._deduplicate_new_rows(table, subset=["uid"])
             reindex_registry(table)
             table.create_scalar_index("uid", replace=True)
             table.optimize()
@@ -468,6 +473,33 @@ class RaggedAtlas:
         self._feature_layouts_table.create_fts_index("feature_uid", replace=True)
         self._feature_layouts_table.create_scalar_index("layout_uid", replace=True)
         self._feature_layouts_table.optimize()
+
+    @staticmethod
+    def _deduplicate_new_rows(
+        table: lancedb.table.Table, subset: list[str]
+    ) -> None:
+        """Remove duplicate rows introduced since the last optimize/snapshot.
+
+        Only reads rows where ``global_index IS NULL`` (i.e. newly added),
+        deduplicates on *subset*, then deletes all new rows and re-adds the
+        unique set.  This avoids rewriting the entire table.
+        """
+        new_rows = (
+            table.search()
+            .where("global_index IS NULL", prefilter=True)
+            .to_polars()
+        )
+        if new_rows.is_empty():
+            return
+        deduped = new_rows.unique(subset=subset, keep="first")
+        n_removed = len(new_rows) - len(deduped)
+        if n_removed == 0:
+            return
+        # Delete all new rows, then add back the deduplicated set
+        table.delete("global_index IS NULL")
+        arrow_table = deduped.to_arrow().cast(table.schema)
+        table.add(arrow_table)
+        print(f"  Deduplicated {table.name}: removed {n_removed} duplicate rows")
 
     # -- Validation ---------------------------------------------------------
 
@@ -852,6 +884,97 @@ class RaggedAtlas:
         return atlas
 
     @classmethod
+    def restore(
+        cls,
+        db_uri: str,
+        version: int,
+        cell_schema: type[LancellBaseSchema] | None = None,
+        store: obstore.store.ObjectStore | None = None,
+        *,
+        store_kwargs: dict | None = None,
+        version_table_name: str = "atlas_versions",
+    ) -> "RaggedAtlas":
+        """Restore all tables to a previous snapshot and return a writable atlas.
+
+        Each managed table (cells, datasets, registries, feature layouts) is
+        restored to its version at the given snapshot. This creates new Lance
+        table versions whose data matches the snapshot — no data is deleted,
+        but subsequent reads see only the restored state.
+
+        Orphaned zarr groups (written after the snapshot) are not removed
+        automatically; use a separate cleanup pass if needed.
+
+        Parameters
+        ----------
+        db_uri:
+            LanceDB connection URI.
+        version:
+            Atlas version number to restore to (as returned by :meth:`snapshot`).
+        cell_schema:
+            The schema class used when the atlas was created.  If ``None``,
+            pointer fields are inferred from the cell table's Arrow schema.
+        store:
+            An obstore ObjectStore for zarr I/O.  If ``None``, reconstructed
+            from the version record or inferred from ``db_uri``.
+        store_kwargs:
+            Extra keyword arguments forwarded to ``obstore.store.from_url``
+            when constructing the store from a URI.
+        version_table_name:
+            Name of the version tracking table.
+        """
+        db = lancedb.connect(db_uri)
+        version_table = db.open_table(version_table_name)
+
+        records = version_table.search().where(f"version = {version}", prefilter=True).to_polars()
+        if records.is_empty():
+            raise ValueError(
+                f"Atlas version {version} not found. "
+                f"Use RaggedAtlas.list_versions('{db_uri}') to see available versions."
+            )
+        row = records.row(0, named=True)
+
+        if store is None:
+            zarr_store_uri = row.get("zarr_store_uri", "")
+            if not zarr_store_uri:
+                zarr_store_uri = _zarr_uri_from_db_uri(db_uri)
+            store = _store_from_uri(zarr_store_uri, **(store_kwargs or {}))
+
+        # Restore each table to its snapshot version
+        cell_table = db.open_table(row["cell_table_name"])
+        cell_table.checkout(row["cell_table_version"])
+        cell_table.restore()
+
+        dataset_table = db.open_table(row["dataset_table_name"])
+        dataset_table.checkout(row["dataset_table_version"])
+        dataset_table.restore()
+
+        registry_names: dict[str, str] = json.loads(row["registry_table_names"])
+        registry_versions: dict[str, int] = json.loads(row["registry_table_versions"])
+        resolved_registries: dict[str, lancedb.table.Table] = {}
+        for fs, table_name in registry_names.items():
+            t = db.open_table(table_name)
+            t.checkout(registry_versions[fs])
+            t.restore()
+            resolved_registries[fs] = t
+
+        feature_layouts_table = db.open_table("_feature_layouts")
+        feature_layouts_table.checkout(row["feature_layouts_table_version"])
+        feature_layouts_table.restore()
+
+        root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
+
+        return cls(
+            db=db,
+            cell_table=cell_table,
+            cell_schema=cell_schema,
+            root=root,
+            registry_tables=resolved_registries,
+            dataset_table=dataset_table,
+            version_table=version_table,
+            feature_layouts_table=feature_layouts_table,
+        )
+
+    @classmethod
     def checkout_latest(
         cls,
         db_uri: str,
@@ -895,5 +1018,98 @@ class RaggedAtlas:
             cell_schema=cell_schema,
             store=store,
             store_kwargs=store_kwargs,
+            version_table_name=version_table_name,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Atlas create-or-open helper
+# ---------------------------------------------------------------------------
+
+
+def create_or_open_atlas(
+    atlas_path: str,
+    cell_table_name: str,
+    cell_schema: type[LancellBaseSchema],
+    dataset_table_name: str,
+    dataset_schema: type[DatasetRecord],
+    *,
+    registry_schemas: dict[str, type[FeatureBaseSchema]],
+    version_table_name: str = "atlas_versions",
+    store_kwargs: dict | None = None,
+) -> RaggedAtlas:
+    """Create a new atlas or open an existing one.
+
+    Accepts both local filesystem paths and cloud URIs (e.g.
+    ``s3://bucket/prefix/my_atlas``).  For local paths, the required
+    directories are created automatically.
+
+    The LanceDB database is stored at ``{atlas_path}/lance_db`` and the
+    zarr object store at ``{atlas_path}/zarr_store``.
+
+    Parameters
+    ----------
+    atlas_path:
+        Root directory or URI for the atlas.  Local paths and ``s3://``
+        URIs are both supported.
+    cell_table_name:
+        Name for the cell table.
+    cell_schema:
+        A :class:`LancellBaseSchema` subclass declaring the pointer fields.
+    dataset_table_name:
+        Name for the dataset metadata table.
+    dataset_schema:
+        A :class:`DatasetRecord` subclass for the dataset schema.
+    registry_schemas:
+        Mapping of feature space names to their registry schema classes.
+    version_table_name:
+        Name for the version tracking table.
+    store_kwargs:
+        Extra keyword arguments forwarded to ``obstore.store.from_url``
+        when constructing the zarr store (e.g. ``region``,
+        ``skip_signature``, ``credential_provider``).
+    """
+    atlas_path = atlas_path.rstrip("/")
+    is_local = not atlas_path.startswith(("s3://", "gs://", "az://"))
+
+    db_uri = atlas_path + "/lance_db"
+    zarr_uri = atlas_path + "/zarr_store"
+
+    if is_local:
+        os.makedirs(atlas_path, exist_ok=True)
+        os.makedirs(zarr_uri, exist_ok=True)
+        store = obstore.store.LocalStore(zarr_uri)
+    else:
+        store = _store_from_uri(zarr_uri, **(store_kwargs or {}))
+
+    db = lancedb.connect(db_uri)
+    existing_tables = set(db.list_tables().tables)
+
+    if cell_table_name in existing_tables:
+        # Explicitly pass registry table names so open() doesn't rely on
+        # the datasets table (which may be empty for a freshly-initialised atlas).
+        registry_tables = {
+            fs: f"{fs}_registry"
+            for fs in registry_schemas
+            if f"{fs}_registry" in existing_tables
+        }
+        return RaggedAtlas.open(
+            db_uri=db_uri,
+            cell_table_name=cell_table_name,
+            cell_schema=cell_schema,
+            dataset_table_name=dataset_table_name,
+            store=store,
+            registry_tables=registry_tables,
+            version_table_name=version_table_name,
+        )
+    else:
+        return RaggedAtlas.create(
+            db_uri=db_uri,
+            cell_table_name=cell_table_name,
+            cell_schema=cell_schema,
+            dataset_table_name=dataset_table_name,
+            dataset_schema=dataset_schema,
+            store=store,
+            registry_schemas=registry_schemas,
             version_table_name=version_table_name,
         )

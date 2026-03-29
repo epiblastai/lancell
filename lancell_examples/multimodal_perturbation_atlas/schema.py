@@ -337,8 +337,9 @@ class GeneticPerturbationSchema(LanceModel):
     # The actual reagent sequence, e.g. the 20bp guide or siRNA duplex
     guide_sequence: str | None = None
 
-    # Foreign key to ReferenceSequenceSchema.uid, if applicable
-    target_sequence_uid: str | None = None
+    # genbank_accession code for the chromosome where the guide is targeting,
+    # e.g. "CM000663.2" for chr1 in GRCh38
+    target_chromosome: str | None = None
     # Genomic target coordinates — where the reagent physically acts
     target_start: int | None = None
     target_end: int | None = None
@@ -399,6 +400,28 @@ class BiologicPerturbationSchema(LanceModel):
         if self.biologic_type not in BiologicPerturbationType.__members__.values():
             raise ValueError(f"Invalid biologic type: {self.biologic_type}")
         return self
+
+
+# ---------------------------------------------------------------------------
+# Registry schemas mapping (feature space → registry schema)
+# ---------------------------------------------------------------------------
+
+REGISTRY_SCHEMAS: dict[str, type[FeatureBaseSchema]] = {
+    "gene_expression": GenomicFeatureSchema,
+    "chromatin_accessibility": ReferenceSequenceSchema,
+    "protein_abundance": ProteinSchema,
+    "image_features": ImageFeatureSchema,
+}
+
+# Foreign-key tables that should be pre-created when initializing the atlas.
+# Keyed by table name → LanceModel subclass.
+FK_TABLE_SCHEMAS: dict[str, type[LanceModel]] = {
+    "publications": PublicationSchema,
+    "publication_sections": PublicationSectionSchema,
+    "genetic_perturbations": GeneticPerturbationSchema,
+    "small_molecules": SmallMoleculeSchema,
+    "biologic_perturbations": BiologicPerturbationSchema,
+}
 
 
 # ---------------------------------------------------------------------------

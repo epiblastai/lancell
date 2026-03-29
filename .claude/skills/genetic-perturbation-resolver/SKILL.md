@@ -10,7 +10,7 @@ Resolve genetic perturbation targets and schema fields at the accession level: r
 Handles three input types that may co-exist in a single dataset:
 
 1. **Gene names/symbols** — Target gene names (e.g., "TP53", "BRCA1").
-2. **Guide RNA sequences** — Raw ~20bp guide sequences from CRISPR screens. Aligns via BLAT to get genomic coordinates, then annotates with overlapping genes and target context. 20bp is the minimum for BLAT resolution and generally works great for resolving guide RNAs. This is because guide RNAs are chosen to exactly match the reference genome and to be unique within it.
+2. **Guide RNA sequences** — Raw guide sequences from CRISPR screens. Aligns via BLAT to get genomic coordinates, then annotates with overlapping genes and target context. 20bp is the minimum for BLAT resolution and generally works great for resolving guide RNAs. This is because guide RNAs are chosen to exactly match the reference genome and to be unique within it.
 3. **Genomic coordinates** — Pre-computed target regions (e.g., enhancer/promoter-targeting screens). Annotates with overlapping genes and target context without BLAT.
 
 ## Interface
@@ -75,6 +75,7 @@ from lancell.standardization import (
     classify_perturbation_method,
     GeneticPerturbationType,
 )
+from lancell.standardization.assemblies import get_assembly_report
 from lancell.standardization.types import GeneResolution, GuideRnaResolution, ResolutionReport
 from lancell.schema import make_uid
 ```
@@ -182,6 +183,17 @@ After the base gene-resolution script runs, inspect the partially resolved CSV a
   - If multiple possible joins exist, prefer the one that preserves one reagent per row and document the join key.
 - `library_name`:
   - Prefer the library metadata file itself, then raw columns, then publication text if needed.
+- `target_chromosome`:
+  - BLAT and `GuideRnaResolution` return UCSC chromosome names (e.g., `chr1`). The schema may expect a different representation such as a GenBank accession (e.g., `CM000663.2`). Use `get_assembly_report()` from `lancell.standardization.assemblies` to convert:
+    ```python
+    from lancell.standardization.assemblies import get_assembly_report
+    report = get_assembly_report("human", "GRCh38")
+    seq = report.lookup("chr1")  # accepts UCSC, bare, GenBank, or RefSeq names
+    seq.genbank_accession  # "CM000663.2"
+    seq.ucsc_name          # "chr1"
+    seq.sequence_name      # "1"
+    ```
+  - Check the target schema's docstring/comment for the expected naming convention. Populate `target_chromosome` accordingly using the appropriate `AssemblySequence` field.
 - `target_start`, `target_end`, `target_strand`:
   - Prefer explicit columns from a guide library or manifest.
   - If absent, deterministically parse coordinates from reagent IDs when the identifier format encodes them.

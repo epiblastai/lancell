@@ -94,7 +94,7 @@ def _lookup_cached(sequences: list[str], species: str) -> dict[str, dict]:
     Returns ``{uppercase_sequence: row_dict}`` for sequences found in cache.
     """
     db = _get_cache_db()
-    if GUIDE_RNAS_TABLE not in db.table_names():
+    if GUIDE_RNAS_TABLE not in db.list_tables().tables:
         return {}
 
     table = db.open_table(GUIDE_RNAS_TABLE)
@@ -122,7 +122,7 @@ def _save_to_cache(records: list[dict]) -> None:
     if not records:
         return
     db = _get_cache_db()
-    if GUIDE_RNAS_TABLE in db.table_names():
+    if GUIDE_RNAS_TABLE in db.list_tables().tables:
         table = db.open_table(GUIDE_RNAS_TABLE)
         table.add(records)
     else:

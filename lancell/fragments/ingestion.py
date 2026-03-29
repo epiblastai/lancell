@@ -43,13 +43,17 @@ def parse_bed_fragments(
     path: Path,
     barcode_col: str = "barcode",
 ) -> pl.DataFrame:
-    """Parse a gzipped 4-column BED file into a polars DataFrame.
+    """Parse a gzipped BED fragment file into a polars DataFrame.
+
+    Supports both 4-column BED (``chrom, start, end, barcode``) and
+    5-column 10x format (``chrom, start, end, barcode, count``). The
+    column count is auto-detected; any columns beyond the fourth are
+    dropped.
 
     Parameters
     ----------
     path
-        Path to a (possibly gzipped) BED file with columns
-        ``chrom``, ``start``, ``end``, ``barcode``.
+        Path to a (possibly gzipped) BED fragment file.
     barcode_col
         Name to assign to the fourth column (cell barcode / identifier).
         Defaults to ``"barcode"``.
@@ -64,6 +68,11 @@ def parse_bed_fragments(
         path,
         separator="\t",
         has_header=False,
+        # Read only the first 4 columns regardless of how many the file has
+        # These are (chrom, start, end, barcode) in both 4-col and 5-col formats
+        # the fifth column in 10x format is a count. Currently we are choosing
+        # to ignore the counts, which are usually 1, and only occasionally higher
+        columns=[0, 1, 2, 3],
         new_columns=["chrom", "start", "end", barcode_col],
         schema_overrides={"start": pl.UInt32, "end": pl.UInt32},
     )

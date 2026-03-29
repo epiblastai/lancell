@@ -93,9 +93,12 @@ def _pubchem_get_cids(identifier: str, namespace: str = "name") -> list[int]:
     """Rate-limited PubChem CID lookup."""
     import pubchempy as pcp
 
+    if not identifier or not identifier.strip():
+        return []
+
     try:
         return pcp.get_cids(identifier, namespace=namespace)
-    except pcp.BadRequestError:
+    except (pcp.BadRequestError, ValueError):
         return []
 
 
@@ -177,7 +180,7 @@ def _has_compound_tables() -> bool:
     """Check if the compound LanceDB tables are populated."""
     try:
         db = get_reference_db()
-        tables = db.table_names()
+        tables = db.list_tables().tables
         return COMPOUND_SYNONYMS_TABLE in tables
     except (RuntimeError, Exception):
         return False
@@ -220,7 +223,7 @@ def _resolve_name_local(cleaned: str, original: str) -> MoleculeResolution | Non
 
     # Look up SMILES from the compounds table
     canonical_smiles = None
-    if COMPOUNDS_TABLE in db.table_names():
+    if COMPOUNDS_TABLE in db.list_tables().tables:
         compounds_table = db.open_table(COMPOUNDS_TABLE)
         comp_df = (
             compounds_table.search()
@@ -282,7 +285,7 @@ def _resolve_batch_names_local(names: list[str]) -> dict[str, MoleculeResolution
 
     # Look up SMILES for all matched CIDs
     smiles_map: dict[int, str | None] = {}
-    if COMPOUNDS_TABLE in db.table_names():
+    if COMPOUNDS_TABLE in db.list_tables().tables:
         matched_cids = all_syns.get_column("pubchem_cid").unique().to_list()
         compounds_table = db.open_table(COMPOUNDS_TABLE)
         for i in range(0, len(matched_cids), 500):

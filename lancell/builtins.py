@@ -42,7 +42,7 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     has_var_df=True,
     layers=LayersSpec(
         uniform_shape=True,
-        required=["raw"],
+        required=["ctrl_standardized"],
         allowed=["raw", "log_normalized", "ctrl_standardized"],
     ),
     reconstructor=DenseReconstructor(),

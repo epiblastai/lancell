@@ -456,12 +456,12 @@ def reference_db_exists(db_path: str | Path | None = None) -> bool:
         db_path = _custom_db_path or DEFAULT_REFERENCE_DB_PATH
     if _is_remote_path(db_path):
         db = lancedb.connect(str(db_path))
-        return ORGANISMS_TABLE in db.table_names()
+        return ORGANISMS_TABLE in db.list_tables().tables
     db_path = Path(db_path)
     if not db_path.exists():
         return False
     db = lancedb.connect(str(db_path))
-    return ORGANISMS_TABLE in db.table_names()
+    return ORGANISMS_TABLE in db.list_tables().tables
 
 
 # ---------------------------------------------------------------------------

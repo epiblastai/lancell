@@ -160,7 +160,7 @@ pub_df = pd.read_parquet(accession_dir / "PublicationSchema.parquet")
 publication_uid = pub_df["uid"].iloc[0]  # For use in DatasetSchema
 
 # Create or open the "publications" table
-if "publications" not in db.table_names():
+if "publications" not in db.list_tables().tables:
     pub_table = db.create_table("publications", schema=PublicationSchema.to_arrow_schema())
 else:
     pub_table = db.open_table("publications")
@@ -173,7 +173,7 @@ pub_table.add(pa.Table.from_pandas(pub_df, schema=PublicationSchema.to_arrow_sch
 section_parquet = accession_dir / "PublicationSectionSchema.parquet"
 if section_parquet.exists():
     section_df = pd.read_parquet(section_parquet)
-    if "publication_sections" not in db.table_names():
+    if "publication_sections" not in db.list_tables().tables:
         section_table = db.create_table("publication_sections", schema=PublicationSectionSchema.to_arrow_schema())
     else:
         section_table = db.open_table("publication_sections")
@@ -188,7 +188,7 @@ fk_df = pd.read_parquet(accession_dir / "GeneticPerturbationSchema.parquet")
 
 # Create or open table
 table_name = "genetic_perturbations"  # use a descriptive table name
-if table_name not in db.table_names():
+if table_name not in db.list_tables().tables:
     table = db.create_table(table_name, schema=SchemaClass.to_arrow_schema())
 else:
     table = db.open_table(table_name)

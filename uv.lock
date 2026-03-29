@@ -1860,6 +1860,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pylance" },
+    { name = "requests" },
     { name = "scipy" },
     { name = "zarr" },
 ]
@@ -1967,6 +1968,7 @@ requires-dist = [
     { name = "pydantic-ai-slim", marker = "extra == 'ai'" },
     { name = "pylance", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "requests" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "s3fs", marker = "extra == 'io'" },
     { name = "scanpy", marker = "extra == 'bio'" },
